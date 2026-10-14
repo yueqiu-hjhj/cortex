@@ -234,6 +234,13 @@ pub struct PomodoroSegment {
 
 // ---- generated materials ---------------------------------------------
 
+/// One editable flashcard draft returned by the vision extraction flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardDraft {
+    pub front: String,
+    pub back: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MaterialRec {
     pub id: String,

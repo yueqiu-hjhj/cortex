@@ -26,7 +26,7 @@
     desc: string;
     icon: string;
     /** tag used to color the icon background */
-    tone: "accent" | "ok" | "warn" | "info" | "err";
+    tone: "accent" | "ok" | "warn" | "info" | "err" | "lavender" | "amber";
     run: () => void;
   };
   function goToSubjectTab(tab: string) {
@@ -36,6 +36,7 @@
     app.setTab(tab);
   }
   const TOOLS: Tool[] = [
+    { id: "ocr", name: "OCR 截屏", desc: "截图问答卡", icon: "camera", tone: "amber", run: () => { void app.openOcrFromClipboard(); } },
     { id: "cheat",     name: "Cheatsheet",  desc: "自动生成的复习提纲",          icon: "book",    tone: "accent", run: () => goToSubjectTab("cheatsheet") },
     { id: "cards",     name: "Flashcards",  desc: "FSRS 间隔重复抽认卡",         icon: "cards",    tone: "ok",     run: () => goToSubjectTab("materials") },
     { id: "quiz",      name: "Quiz",        desc: "边做边检验掌握度",            icon: "check",    tone: "warn",   run: () => goToSubjectTab("materials") },
@@ -47,6 +48,10 @@
     { id: "insights",  name: "Insights",    desc: "时间线 + 准确率 + 弱项",         icon: "chart",    tone: "accent", run: () => app.setView("analytics") },
     { id: "calendar",  name: "Calendar",    desc: "日历 + 任务 + 截止日",           icon: "calendar", tone: "warn",   run: () => app.setView("calendar") },
     { id: "record",    name: "Recorder",    desc: "录课 + 转写 + AI 摘要",        icon: "record",   tone: "err",    run: () => app.setView("recorder") },
+    { id: "glossary",   name: "Glossary",   desc: "术语 + 定义卡组",                icon: "book",     tone: "lavender",run: () => {
+      if (!app.activeSubjectId && app.subjects[0]) app.openSubject(app.subjects[0].id);
+      app.setView("glossary");
+    } },
   ];
 
   // ── quick panel: today's due count + live pomodoro, one tap each ──
@@ -472,6 +477,8 @@
     background: color-mix(in srgb, var(--ok) 20%, transparent);
     color: var(--ok);
   }
+  .tool.tone-amber .tool-icon { color: var(--tone-amber); background: var(--tone-amber-bg); }
+  .tool.tone-amber:hover { border-color: var(--tone-amber); }
   .tool.tone-warn:hover { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
   .tool.tone-warn:hover .tool-icon {
     background: color-mix(in srgb, var(--warn) 18%, transparent);
@@ -486,7 +493,13 @@
     background: color-mix(in srgb, var(--err) 18%, transparent);
     color: var(--err);
   }
-
+  /* svelte-ignore css_unused_selector */
+  .tool.tone-lavender:hover { border-color: color-mix(in srgb, var(--tone-lavender) 55%, transparent); }
+  /* svelte-ignore css_unused_selector */
+  .tool.tone-lavender:hover .tool-icon {
+    background: color-mix(in srgb, var(--tone-lavender) 22%, transparent);
+    color: var(--tone-lavender);
+  }
 
   @keyframes tool-in {
     from { opacity: 0; transform: translateY(4px); }

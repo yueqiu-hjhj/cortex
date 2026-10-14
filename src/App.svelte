@@ -6,6 +6,7 @@
   import CommandPalette from "./components/CommandPalette.svelte";
   import GlobalSearch from "./components/GlobalSearch.svelte";
   import ToastStack from "./components/ToastStack.svelte";
+  import OcrModal from "./components/OcrModal.svelte";
   import DiffModal from "./components/DiffModal.svelte";
   import MusicPanel from "./components/MusicPanel.svelte";
   import SourceMetaModal from "./components/SourceMetaModal.svelte";
@@ -48,6 +49,7 @@
   let ExamViewC = $state<any>(null);
   let NeuralGraphC = $state<any>(null);
   let PomodoroTimelineC = $state<any>(null);
+  let GlossaryViewC = $state<any>(null);
   let ReviewTodayC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("./views/Settings.svelte").then((m) => (SettingsView = m.default));
@@ -63,6 +65,8 @@
     NeuralGraphC ?? import("./views/NeuralGraph.svelte").then((m) => (NeuralGraphC = m.default));
   const loadPomodoro = () =>
     PomodoroTimelineC ?? import("./views/PomodoroTimeline.svelte").then((m) => (PomodoroTimelineC = m.default));
+  const loadGlossary = () =>
+    GlossaryViewC ?? import("./views/Glossary.svelte").then((m) => (GlossaryViewC = m.default));
   const loadReviewToday = () =>
     ReviewTodayC ?? import("./views/ReviewToday.svelte").then((m) => (ReviewTodayC = m.default));
   $effect(() => {
@@ -75,6 +79,7 @@
     else if (app.view === "neural-graph") void loadNeuralGraph();
     else if (app.view === "pomodoro") void loadPomodoro();
     else if (app.view === "review") void loadReviewToday();
+    else if (app.view === "glossary") void loadGlossary();
   });
 
   // Custom title bar is only for macOS and Windows — on Linux (especially
@@ -382,6 +387,8 @@
           {#if PomodoroTimelineC}{@const PomodoroTimeline = PomodoroTimelineC}<PomodoroTimeline />{/if}
         {:else if app.view === "review"}
           {#if ReviewTodayC}{@const ReviewToday = ReviewTodayC}<ReviewToday />{/if}
+        {:else if app.view === "glossary"}
+          {#if GlossaryViewC}{@const GlossaryView = GlossaryViewC}<GlossaryView />{/if}
         {:else if app.view === "settings"}
           {#if SettingsView}{@const Settings = SettingsView}<Settings />{/if}
         {/if}
@@ -437,6 +444,7 @@
     <RecordingActivity />
     <ContextMenu />
     <ToastStack />
+    <OcrModal />
   </div>
 {/if}
 

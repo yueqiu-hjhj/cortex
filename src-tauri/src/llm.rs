@@ -4,6 +4,7 @@
 //! read from settings as `model_<task>` = "provider:model" (e.g. "gemini:gemini-2.5-flash").
 
 use crate::error::{Error, Result};
+use crate::models::CardDraft;
 
 pub trait Llm: Send + Sync {
     fn complete(&self, system: &str, user: &str) -> Result<String>;
@@ -18,6 +19,13 @@ pub trait Llm: Send + Sync {
     fn ocr(&self, _images: &[(String, String)]) -> Result<String> {
         Err(Error::Unsupported(format!(
             "{} can't read images — pick a vision model (e.g. an OpenRouter/Gemini multimodal model) in Settings",
+            self.name()
+        )))
+    }
+    /// Extract editable question/answer flashcards from one or more images.
+    fn extract_cards(&self, _images: &[(String, String)]) -> Result<Vec<CardDraft>> {
+        Err(Error::Unsupported(format!(
+            "{} cannot extract flashcards — pick a vision model in Settings",
             self.name()
         )))
     }
@@ -49,6 +57,7 @@ pub fn b64_encode(data: &[u8]) -> String {
     out
 }
 
+const OCR_CARDS_PROMPT: &str = r#"从图片中提取适合间隔重复学习的问答卡。只输出 JSON 对象，格式为 {"cards":[{"front":"问题","back":"答案"}]}。要求：提取 3 到 15 张高质量卡片；front 是明确、可独立回答的问题或术语；back 是忠实、简洁的答案；保留图片原语言；合并重复内容；跳过页眉页脚、装饰文字和 OCR 噪声；不要添加图片中没有的知识。"#;
 const OCR_PROMPT: &str = "Transcribe ALL text in these page image(s) EXACTLY, in reading order — \
 including HANDWRITTEN text (photographed notes, whiteboards): transcribe messy writing as \
 faithfully as you can and mark genuinely unreadable words as [illegible]. \
@@ -160,6 +169,63 @@ impl Llm for GeminiLlm {
             .map(|ps| ps.iter().filter_map(|p| p["text"].as_str()).collect::<String>())
             .unwrap_or_default())
     }
+    fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
+        let client = llm_client();
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, self.api_key
+        );
+        let mut parts = vec![serde_json::json!({ "text": OCR_CARDS_PROMPT })];
+        for (mime, b64) in images {
+            parts.push(serde_json::json!({ "inline_data": { "mime_type": mime, "data": b64 } }));
+        }
+        let mut body = serde_json::json!({
+            "contents": [{ "role": "user", "parts": parts }],
+            "generationConfig": {
+                "temperature": 0.1, "maxOutputTokens": 4096,
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "cards": {
+                            "type": "ARRAY", "minItems": 1, "maxItems": 15,
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": { "front": { "type": "STRING" }, "back": { "type": "STRING" } },
+                                "required": ["front", "back"]
+                            }
+                        }
+                    },
+                    "required": ["cards"]
+                }
+            }
+        });
+        if self.model.contains("2.5-flash") {
+            body["generationConfig"]["thinkingConfig"] = serde_json::json!({ "thinkingBudget": 0 });
+        }
+        let json = send_json("gemini", client.post(&url).json(&body))?;
+        let text: String = json["candidates"][0]["content"]["parts"]
+            .as_array().map(|ps| ps.iter().filter_map(|p| p["text"].as_str()).collect()).unwrap_or_default();
+        parse_card_drafts(&text)
+    }
+}
+
+fn parse_card_drafts(text: &str) -> Result<Vec<CardDraft>> {
+    let value = extract_json(text)?;
+    let raw = value.get("cards").and_then(|v| v.as_array()).cloned()
+        .or_else(|| value.as_array().cloned())
+        .ok_or_else(|| Error::Other("vision model returned no cards array".into()))?;
+    let mut out = Vec::new();
+    for item in raw {
+        let front = item.get("front").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let back = item.get("back").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if front.is_empty() || back.is_empty() { continue; }
+        if out.iter().any(|c: &CardDraft| c.front.eq_ignore_ascii_case(front)) { continue; }
+        out.push(CardDraft { front: front.to_string(), back: back.to_string() });
+        if out.len() >= 15 { break; }
+    }
+    if out.is_empty() { return Err(Error::Other("vision model returned no usable flashcards".into())); }
+    Ok(out)
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -370,6 +436,29 @@ impl Llm for OpenAiCompatLlm {
             .unwrap_or_default()
             .to_string())
     }
+    fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
+        let key = self.api_key.trim();
+        if key.is_empty() { return Err(Error::Other(format!("{}: API key is empty", self.label))); }
+        let client = llm_client();
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/').to_string());
+        let mut content = vec![serde_json::json!({ "type": "text", "text": OCR_CARDS_PROMPT })];
+        for (mime, b64) in images {
+            content.push(serde_json::json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{b64}") } }));
+        }
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [{ "role": "user", "content": content }],
+            "temperature": 0.1, "max_tokens": 4096,
+            "response_format": { "type": "json_object" }
+        });
+        let json = send_json(self.label, client.post(&url)
+            .header("Authorization", format!("Bearer {key}"))
+            .header("HTTP-Referer", "https://cortex.study")
+            .header("X-Title", "Cortex")
+            .json(&body))?;
+        let text = json["choices"][0]["message"]["content"].as_str().unwrap_or_default();
+        parse_card_drafts(text)
+    }
     fn gen_image(&self, prompt: &str) -> Result<String> {
         let key = self.api_key.trim();
         if key.is_empty() {
@@ -434,6 +523,24 @@ impl Llm for ClaudeLlm {
             .ok_or_else(|| Error::Other("claude: empty response".into()))?
             .to_string();
         Ok(text)
+    }
+    fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
+        let mut content = Vec::new();
+        for (mime, b64) in images {
+            content.push(serde_json::json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": b64 } }));
+        }
+        content.push(serde_json::json!({ "type": "text", "text": OCR_CARDS_PROMPT }));
+        let body = serde_json::json!({
+            "model": self.model, "max_tokens": self.max_tokens.unwrap_or(4096), "temperature": 0.1,
+            "system": "只输出合法 JSON，不要 Markdown 代码围栏或解释文字。",
+            "messages": [{ "role": "user", "content": content }]
+        });
+        let json = send_json("claude", llm_client().post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body))?;
+        let text = json["content"][0]["text"].as_str().unwrap_or_default();
+        parse_card_drafts(text)
     }
     fn name(&self) -> String {
         format!("claude:{}", self.model)
@@ -649,6 +756,24 @@ fn repair_json(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocr_cards_trim_deduplicate_and_skip_incomplete() {
+        let cards = parse_card_drafts(r#"```json
+{"cards":[{"front":" Term ","back":" Meaning "},{"front":"term","back":"duplicate"},{"front":"empty","back":" "}]}
+```"#).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].front, "Term");
+        assert_eq!(cards[0].back, "Meaning");
+        assert!(parse_card_drafts(r#"{"cards":[]}"#).is_err());
+        assert!(parse_card_drafts(r#"{"wrong":[]}"#).is_err());
+    }
+
+    #[test]
+    fn ocr_cards_accept_arrays_and_cap_at_fifteen() {
+        let raw: Vec<_> = (0..20).map(|i| serde_json::json!({"front": format!("q{i}"), "back":"a"})).collect();
+        assert_eq!(parse_card_drafts(&serde_json::to_string(&raw).unwrap()).unwrap().len(), 15);
+    }
 
     #[test]
     fn extract_json_from_fenced_prose() {

@@ -706,14 +706,81 @@ fn ocr_via_vision(state: &State<AppState>, kind: &str, path: Option<&str>) -> Re
     Ok(out)
 }
 
-/// Offload document parsing to the homelab ingest/parse service (Apache Tika) when a
-/// homelab ingest URL is configured. iOS can't run poppler/libreoffice, so scanned
-/// PDFs and legacy `.doc/.ppt` have no on-device path — Tika handles PDF/DOCX/PPTX/
-/// legacy and OCRs scanned pages (the `-full` image bundles Tesseract). PUTs the raw
-/// file to `{ingest_url}/tika` and returns the extracted plain text.
-///
-/// `Ok(None)` when no homelab ingest URL is set (desktop, or mobile without a homelab)
-/// — the caller then keeps whatever text it already had. `Err` only on a real failure.
+/// Extract structured Q/A flashcards from a clipboard image using the configured vision model.
+#[tauri::command]
+pub async fn extract_flashcards_from_image(state: State<'_, AppState>, mime: String, base64: String) -> Result<Vec<CardDraft>> {
+    validate_clipboard_image(&mime, &base64)?;
+    let (spec, keys) = {
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other("离线模式下无法使用云端 OCR，请先关闭离线模式".into()));
+        }
+        let spec = repo::get_setting(&c, "model_vision")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_VISION_MODEL.into());
+        (spec, read_keys(&c)?)
+    };
+    let model = clipboard_vision_model(&spec, &keys)?;
+    tauri::async_runtime::spawn_blocking(move || model.extract_cards(&[(mime, base64)]))
+        .await.map_err(|e| Error::Other(e.to_string()))?
+}
+
+fn validate_clipboard_image(mime: &str, base64: &str) -> Result<()> {
+    if !matches!(mime, "image/png" | "image/jpeg") || base64.is_empty() || base64.len() > 14 * 1024 * 1024 {
+        return Err(Error::Other("请提供不超过 10 MB 的 PNG 或 JPEG 图片".into()));
+    }
+    Ok(())
+}
+
+fn clipboard_vision_model(spec: &str, keys: &llm::Keys) -> Result<Box<dyn llm::Llm>> {
+    llm::from_spec(spec, keys).or_else(|| {
+        [DEFAULT_VISION_MODEL, "gemini:gemini-2.5-flash", "openai:gpt-4o-mini", "claude:claude-3-5-sonnet-20241022"]
+            .iter().find_map(|fallback| llm::from_spec(fallback, keys))
+    }).ok_or_else(|| Error::Other("请先在 Settings 配置 vision 模型的 API key".into()))
+}
+
+/// Compatibility entry point for the existing Notes screenshot transcription.
+#[tauri::command]
+pub async fn ocr_image_bytes(state: State<'_, AppState>, mime: String, base64: String) -> Result<String> {
+    validate_clipboard_image(&mime, &base64)?;
+    let (spec, keys) = {
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) { return Err(Error::Other("离线模式下无法使用云端 OCR".into())); }
+        (repo::get_setting(&c, "model_vision")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_VISION_MODEL.into()), read_keys(&c)?)
+    };
+    let model = clipboard_vision_model(&spec, &keys)?;
+    tauri::async_runtime::spawn_blocking(move || model.ocr(&[(mime, base64)]))
+        .await.map_err(|e| Error::Other(e.to_string()))?
+}
+
+/// Persist edited flashcards as one normal flashcard material.
+#[tauri::command]
+pub fn save_flashcards_to_subject(state: State<AppState>, subject_id: String, topic_id: Option<String>, cards: Vec<CardDraft>, title: String) -> Result<u32> {
+    let c = state.db.lock().unwrap();
+    save_card_drafts(&c, &subject_id, topic_id.as_deref(), cards, &title)
+}
+
+fn save_card_drafts(c: &Connection, subject_id: &str, topic_id: Option<&str>, cards: Vec<CardDraft>, title: &str) -> Result<u32> {
+    repo::get_subject(c, subject_id)?;
+    if let Some(id) = topic_id {
+        let belongs: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM topics WHERE id=?1 AND subject_id=?2)", rusqlite::params![id, subject_id], |r| r.get(0))?;
+        if !belongs { return Err(Error::Other("所选主题不属于该学科".into())); }
+    }
+    if cards.is_empty() || cards.len() > 50 || cards.iter().any(|c| c.front.trim().is_empty() || c.back.trim().is_empty()) {
+        return Err(Error::Other("需要 1 到 50 张完整的问答卡".into()));
+    }
+    let clean: Vec<serde_json::Value> = cards.into_iter().filter_map(|card| {
+        let front = card.front.trim().to_string();
+        let back = card.back.trim().to_string();
+        if front.is_empty() || back.is_empty() { None } else { Some(serde_json::json!({"q": front, "a": back})) }
+    }).take(50).collect();
+    if clean.is_empty() { return Err(Error::Other("至少需要一张完整的卡片".into())); }
+    let count = clean.len() as u32;
+    let title = if title.trim().is_empty() { "OCR flashcards".to_string() } else { title.trim().chars().take(120).collect() };
+    let meta = format!("{count} cards · OCR");
+    repo::save_material(c, subject_id, topic_id, "flashcards", &title, &meta, &serde_json::Value::Array(clean))?;
+    Ok(count)
+}
+
+/// Offload parsing to the configured homelab Tika service; None means no service configured.
 fn ingest_remote(state: &State<AppState>, path: &str) -> Result<Option<String>> {
     let base = {
         let c = state.db.lock().unwrap();
@@ -4799,4 +4866,47 @@ pub fn env_probe() -> Result<serde_json::Value> {
         "whisper": has("whisper"),
         "yt_dlp": has("yt-dlp"),
     }))
+}
+
+#[cfg(test)]
+mod ocr_tests {
+    use super::*;
+
+    fn draft() -> CardDraft { CardDraft { front: " Question ".into(), back: " Answer ".into() } }
+
+    #[test]
+    fn saves_compatible_deck_and_rejects_wrong_topic() {
+        let state = AppState::in_memory().unwrap();
+        let c = state.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "OCR test", None, None, None).unwrap();
+        let other = repo::insert_subject(&c, "Other", None, None, None).unwrap();
+        let tid = repo::insert_topic(&c, &other, "Wrong topic", None, &[]).unwrap();
+        assert!(save_card_drafts(&c, &sid, Some(&tid), vec![draft()], "Test").is_err());
+        assert!(save_card_drafts(&c, &sid, None, vec![CardDraft { front: " ".into(), back: "a".into() }], "Test").is_err());
+        assert_eq!(save_card_drafts(&c, &sid, None, vec![draft()], "Test").unwrap(), 1);
+        let decks = repo::list_materials(&c, &sid).unwrap();
+        assert_eq!(decks.len(), 1);
+        assert_eq!(decks[0].kind, "flashcards");
+        assert_eq!(decks[0].payload[0]["q"], "Question");
+        assert_eq!(decks[0].payload[0]["a"], "Answer");
+    }
+
+    #[test]
+    fn deck_survives_database_reopen() {
+        let path = std::env::temp_dir().join(format!("cortex-ocr-test-{}.sqlite", crate::db::new_id()));
+        let sid;
+        {
+            let state = AppState::new(&path).unwrap();
+            let c = state.db.lock().unwrap();
+            sid = repo::insert_subject(&c, "Persist", None, None, None).unwrap();
+            save_card_drafts(&c, &sid, None, vec![draft()], "Persistent OCR").unwrap();
+        }
+        {
+            let state = AppState::new(&path).unwrap();
+            let c = state.db.lock().unwrap();
+            let decks = repo::list_materials(&c, &sid).unwrap();
+            assert_eq!(decks[0].payload[0]["q"], "Question");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }

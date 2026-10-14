@@ -236,6 +236,19 @@ export const moodleLinkSubject = (subjectId: string, courseId: string | null) =>
   invoke<void>("moodle_link_subject", { subjectId, courseId });
 export const moodleAutolink = () => invoke<number>("moodle_autolink");
 
+// ---- OCR (clipboard screenshot → vision model) ----
+
+export interface CardDraft { front: string; back: string }
+export const extractFlashcards = (mime: string, base64: string) =>
+  invoke<CardDraft[]>("extract_flashcards_from_image", { mime, base64 });
+export const saveFlashcards = (subjectId: string, topicId: string | null, cards: CardDraft[], title: string) =>
+  invoke<number>("save_flashcards_to_subject", { subjectId, topicId, cards, title });
+
+/** Transcribe a single image (mime + base64) via the configured vision model.
+ *  Returns Markdown text. Used by the Notes "Paste screenshot" flow. */
+export const ocrImageBytes = (mime: string, base64: string) =>
+  invoke<string>("ocr_image_bytes", { mime, base64 });
+
 // ---- calendar event → subject matching (no AI) ----
 export const setSubjectAliases = (subjectId: string, aliases: string) =>
   invoke<number>("set_subject_aliases", { subjectId, aliases });

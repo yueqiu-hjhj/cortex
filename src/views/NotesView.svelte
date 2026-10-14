@@ -149,6 +149,72 @@
     return new Date(ms).toLocaleDateString();
   }
 
+  // ── Paste screenshot → OCR (vision model) → new note ──
+  let ocrOpen = $state(false);
+  let ocrBusy = $state(false);
+  let ocrTitle = $state("Screenshot");
+  let ocrBody = $state("");
+  let ocrPreview = $state<string | null>(null); // data URL of the pasted image, for visual confirmation
+
+  async function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onloadend = () => {
+        const s = (r.result as string) ?? "";
+        resolve(s.includes(",") ? s.split(",")[1] : s);
+      };
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function pasteScreenshot() {
+    if (ocrBusy) return;
+    try {
+      const items = await navigator.clipboard.read();
+      let imageType: string | null = null;
+      let imageBlob: Blob | null = null;
+      for (const it of items) {
+        for (const t of it.types) {
+          if (t.startsWith("image/")) { imageType = t; imageBlob = await it.getType(t); break; }
+        }
+        if (imageBlob) break;
+      }
+      if (!imageBlob || !imageType) {
+        app.pushToast({ kind: "warning", title: "No image on clipboard", body: "Copy a screenshot first (Win+Shift+S or Cmd+Ctrl+Shift+4)." });
+        return;
+      }
+      ocrOpen = true; ocrBusy = true; ocrBody = ""; ocrTitle = "Screenshot";
+      ocrPreview = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onloadend = () => resolve((r.result as string) ?? "");
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(imageBlob!);
+      });
+      const b64 = await blobToBase64(imageBlob);
+      const text = await api.ocrImageBytes(imageType, b64);
+      ocrBody = text.trim();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "OCR failed", body: String(e) });
+      ocrOpen = false;
+    } finally {
+      ocrBusy = false;
+    }
+  }
+
+  async function saveOcrAsNote() {
+    try {
+      const n = await api.createNote(ocrTitle || "Screenshot", ocrBody, app.activeSubjectId ?? null);
+      notes = [n, ...notes];
+      select(n);
+      ocrOpen = false;
+      app.pushToast({ kind: "success", title: "Note created", body: ocrTitle || "Screenshot" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "Create failed", body: String(e) });
+    }
+  }
+
+
   const canConvert = $derived(!!selectedId && !!app.activeSubjectId);
 </script>
 
@@ -184,6 +250,9 @@
           <div class="notes-list-head-actions">
             <button class="btn btn--primary btn--sm" type="button" onclick={newNote} title="New note">
               <Icon name="plus" size={12} /> New note
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" onclick={pasteScreenshot} disabled={ocrBusy} title="Paste a screenshot from the clipboard and transcribe it with the vision model">
+              <Icon name="camera" size={12} /> Paste screenshot
             </button>
             <!-- Collapse button: visually prominent, chevron points left (← close) -->
             <button
@@ -382,6 +451,40 @@
         <div class="mono faint" style="font-size:var(--t-xs)">Markdown notes you can convert into sources</div>
       </div>
       {@render notesWorkspace()}
+    </div>
+  </div>
+{/if}
+
+{#if ocrOpen}
+  <div class="ocr-overlay" role="dialog" aria-modal="true" aria-label="OCR result" tabindex="-1" onmousedown={() => !ocrBusy && (ocrOpen = false)}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="ocr-modal" onmousedown={e => e.stopPropagation()}>
+      <div class="ocr-head">
+        <h3>OCR — paste screenshot</h3>
+        <button class="btn btn--icon btn--sm btn--ghost" type="button" disabled={ocrBusy} onclick={() => (ocrOpen = false)} aria-label="Close">
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+      <div class="ocr-body">
+        {#if ocrPreview}
+          <img class="ocr-preview" src={ocrPreview} alt="Pasted screenshot" />
+        {/if}
+        <label class="ocr-label">
+          Title
+          <input class="input" type="text" bind:value={ocrTitle} disabled={ocrBusy} />
+        </label>
+        <label class="ocr-label">
+          Transcribed text
+          <textarea class="ocr-textarea" bind:value={ocrBody} disabled={ocrBusy} rows="14"></textarea>
+        </label>
+        {#if ocrBusy}
+          <div class="ocr-busy">Transcribing… this uses the configured vision model.</div>
+        {/if}
+      </div>
+      <div class="ocr-foot">
+        <button class="btn btn--ghost btn--sm" type="button" disabled={ocrBusy} onclick={() => (ocrOpen = false)}>Cancel</button>
+        <button class="btn btn--primary btn--sm" type="button" disabled={ocrBusy || !ocrBody.trim()} onclick={saveOcrAsNote}>Save as note</button>
+      </div>
     </div>
   </div>
 {/if}
@@ -718,4 +821,52 @@
       line-height: 1.6;
     }
   }
+  /* ── OCR paste modal ─────────────────────────────────────────────────── */
+  .ocr-overlay {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+  }
+  .ocr-modal {
+    width: min(640px, 92vw); max-height: 88vh;
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: var(--r-lg, 12px);
+    box-shadow: 0 20px 50px color-mix(in srgb, var(--bg) 50%, transparent);
+    overflow: hidden;
+  }
+  .ocr-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .ocr-head h3 { margin: 0; font-size: var(--t-md, 14px); color: var(--fg-bright); font-weight: 600; }
+  .ocr-body {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px 16px; overflow-y: auto;
+  }
+  .ocr-preview {
+    max-width: 100%; max-height: 180px; object-fit: contain;
+    align-self: center;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+  }
+  .ocr-label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: var(--t-2xs, 11px); color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .ocr-textarea {
+    width: 100%; min-height: 200px; resize: vertical;
+    font-family: var(--font-mono); font-size: var(--t-xs, 12.5px); line-height: 1.55;
+    color: var(--fg); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 10px 12px;
+    text-transform: none; letter-spacing: normal;
+  }
+  .ocr-textarea:focus { outline: none; border-color: var(--accent); }
+  .ocr-busy { font-size: var(--t-2xs, 11px); color: var(--fg-muted); }
+  .ocr-foot {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2);
+  }
+
 </style>

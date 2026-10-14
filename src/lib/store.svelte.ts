@@ -3,6 +3,7 @@
 // for not-yet-backed screens comes from src/lib/mock.ts.
 
 import * as api from "./api";
+import { readClipboardImage } from "./ocr";
 import type { Subject, Source } from "./api";
 import { music, BUILTIN_STATION_IDS, builtinStationUrl, builtinStationUrls } from "./music";
 import { keybinds } from "./keybinds.svelte";
@@ -22,6 +23,7 @@ export type View =
   | "neural-graph"
   | "pomodoro"
   | "review"
+  | "glossary"
   | "exam"
   | "settings";
 export type Mode = "NOR" | "INS" | "SEL";
@@ -284,6 +286,49 @@ class PomoTimer {
 }
 
 class AppStore {
+  ocrOpen = $state(false);
+  ocrImage = $state<{ mime: string; base64: string; url: string } | null>(null);
+  ocrCards = $state<api.CardDraft[]>([]);
+  ocrSaving = $state(false);
+  private ocrReading = false;
+
+  async openOcrFromClipboard() {
+    if (this.ocrReading || this.ocrOpen) return;
+    this.ocrReading = true;
+    try {
+      const image = await readClipboardImage();
+      if (!image) {
+        this.pushToast({ kind: "warning", title: "剪贴板里没有图，截个图再来" });
+        return;
+      }
+      this.ocrCards = [];
+      this.ocrImage = { ...image, url: `data:${image.mime};base64,${image.base64}` };
+      this.ocrOpen = true;
+    } catch (e) {
+      this.pushToast({ kind: "error", title: "无法读取剪贴板图片", body: String(e) });
+    } finally { this.ocrReading = false; }
+  }
+
+  closeOcr() {
+    if (this.ocrSaving) return;
+    this.ocrOpen = false;
+    this.ocrImage = null;
+    this.ocrCards = [];
+  }
+
+  async saveOcr(subjectId: string, topicId: string | null, title: string) {
+    if (this.ocrSaving) return;
+    this.ocrSaving = true;
+    try {
+      const count = await api.saveFlashcards(subjectId, topicId, this.ocrCards, title);
+      this.ocrSaving = false;
+      this.closeOcr();
+      this.pushToast({ kind: "success", title: `已加 ${count} 张卡` });
+      await this.refresh().catch((e) => {
+        this.pushToast({ kind: "warning", title: "卡片已保存，列表刷新失败", body: String(e) });
+      });
+    } finally { this.ocrSaving = false; }
+  }
   // data
   subjects = $state<Subject[]>([]);
   activeSubjectId = $state<string | null>(null);

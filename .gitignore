@@ -77,3 +77,7 @@ cortex-logo-transparent (1).png
 
 # Bundled sidecar binaries — fetched by scripts/fetch-sidecars.mjs at build time
 src-tauri/binaries/
+
+# Local UI verification screenshots and browser traces
+.shots/
+.playwright-cli/

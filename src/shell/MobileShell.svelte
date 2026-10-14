@@ -20,6 +20,7 @@
   // Shared overlays — all self-managed via app state (no props), exactly as in App.svelte.
   import ChatPanel from "../components/ChatPanel.svelte";
   import ToastStack from "../components/ToastStack.svelte";
+  import OcrModal from "../components/OcrModal.svelte";
   import Dialog from "../components/Dialog.svelte";
   import EditModal from "../components/EditModal.svelte";
   import GlobalSearch from "../components/GlobalSearch.svelte";
@@ -44,6 +45,7 @@
   let RecorderViewC = $state<any>(null);
   let NeuralGraphC = $state<any>(null);
   let PomodoroTimelineC = $state<any>(null);
+  let GlossaryViewC = $state<any>(null);
   let ReviewTodayC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("../views/Settings.svelte").then((m) => (SettingsView = m.default));
@@ -59,6 +61,8 @@
     NeuralGraphC ?? import("../views/NeuralGraph.svelte").then((m) => (NeuralGraphC = m.default));
   const loadPomodoro = () =>
     PomodoroTimelineC ?? import("../views/PomodoroTimeline.svelte").then((m) => (PomodoroTimelineC = m.default));
+  const loadGlossary = () =>
+    GlossaryViewC ?? import("../views/Glossary.svelte").then((m) => (GlossaryViewC = m.default));
   const loadReviewToday = () =>
     ReviewTodayC ?? import("../views/ReviewToday.svelte").then((m) => (ReviewTodayC = m.default));
   $effect(() => {
@@ -70,6 +74,7 @@
     else if (app.view === "neural-graph") void loadNeuralGraph();
     else if (app.view === "pomodoro") void loadPomodoro();
     else if (app.view === "review") void loadReviewToday();
+    else if (app.view === "glossary") void loadGlossary();
   });
 
   // If we land on the subject view with nothing active (fresh install), show Home.
@@ -174,6 +179,7 @@
     { id: "neural-graph",icon: "graph",    label: "Neural Graph" },
     { id: "pomodoro",    icon: "bolt",     label: "Pomodoro" },
     { id: "review",      icon: "cards",    label: "Review today" },
+    { id: "glossary",    icon: "book",     label: "Glossary" },
     { id: "analytics",   icon: "chart",    label: "Insights" },
     { id: "add-subject", icon: "plus",     label: "New subject" },
     { id: "settings",    icon: "settings", label: "Settings" },
@@ -233,6 +239,8 @@
       {#if PomodoroTimelineC}{@const C = PomodoroTimelineC}<C />{/if}
     {:else if app.view === "review"}
       {#if ReviewTodayC}{@const C = ReviewTodayC}<C />{/if}
+    {:else if app.view === "glossary"}
+      {#if GlossaryViewC}{@const C = GlossaryViewC}<C />{/if}
     {:else}
       <!-- Safety net: any view the shell doesn't render falls back to Home. -->
       <Dashboard />
@@ -280,6 +288,7 @@
 
 <!-- shared overlays (self-managed via app state) -->
 <ToastStack />
+<OcrModal />
 <Dialog />
 <EditModal />
 <GlobalSearch />
