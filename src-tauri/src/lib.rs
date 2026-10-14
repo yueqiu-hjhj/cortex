@@ -445,8 +445,10 @@ pub fn run() {
             review::srs_due,
             review::srs_preview,
             review::srs_stats,
+            review::review_today,
             // study analytics
             analytics::log_pomodoro_session,
+            analytics::pomodoro_segments,
             analytics::topic_stats,
             analytics::analytics_summary,
             // exam mode

@@ -69,6 +69,15 @@
     </g>
   {:else if name === "refresh"}
     <path d="M13 8a5 5 0 1 1-1.5-3.6 M13 3v2.5h-2.5" fill="none" stroke="currentColor" stroke-width={sw} stroke-linecap="round" stroke-linejoin="round" />
+  {:else if name === "graph"}
+    <g>
+      <path d="M8 8 L3.2 3.8 M8 8 L12.8 4.6 M8 8 L6.2 13.2 M8 8 L12.6 12.2" fill="none" stroke="currentColor" stroke-width={sw} stroke-linecap="round" />
+      <circle cx="8" cy="8" r="1.9" fill="currentColor" />
+      <circle cx="3.2" cy="3.8" r="1.3" fill="none" stroke="currentColor" stroke-width={sw} />
+      <circle cx="12.8" cy="4.6" r="1.3" fill="none" stroke="currentColor" stroke-width={sw} />
+      <circle cx="6.2" cy="13.2" r="1.3" fill="none" stroke="currentColor" stroke-width={sw} />
+      <circle cx="12.6" cy="12.2" r="1.3" fill="none" stroke="currentColor" stroke-width={sw} />
+    </g>
   {:else if name === "plus"}
     <path d="M8 3.5v9 M3.5 8h9" fill="none" stroke="currentColor" stroke-width={sw} stroke-linecap="round" stroke-linejoin="round" />
   {:else if name === "settings"}

@@ -858,6 +858,23 @@ export const srsPreview = (subjectId: string, kind: "quiz" | "flashcard", itemKe
 /** Due-now + total scheduled counts for a subject+kind. */
 export const srsStats = (subjectId: string, kind: "quiz" | "flashcard") =>
   invoke<SrsStats>("srs_stats", { subjectId, kind });
+/** One card in the cross-subject "review today" queue. */
+export interface ReviewTodayCard {
+  subject_id: string;
+  subject_name: string;
+  kind: string; // quiz | flashcard
+  material_id: string | null;
+  item_index: number;
+  item_key: string;
+  due_at: number;
+  reps: number;
+  interval_d: number;
+  stability: number | null;
+  difficulty: number | null;
+}
+/** Every card due right now across all subjects, oldest-due first. */
+export const reviewToday = (limit?: number) =>
+  invoke<ReviewTodayCard[]>("review_today", { limit });
 
 // ---- study analytics ----
 export interface DayMinutes { day: string; minutes: number }
@@ -912,6 +929,18 @@ export const logPomodoroSession = (
   startedMs: number,
   endedMs: number
 ) => invoke<void>("log_pomodoro_session", { subjectId, kind, startedMs, endedMs });
+/** One finished focus/break span for the time-block timeline. */
+export interface PomodoroSegment {
+  id: string;
+  subject_id: string | null;
+  subject_name: string | null;
+  kind: string; // work | break
+  started_ms: number;
+  ended_ms: number;
+}
+/** Today's finished focus/break segments (default [local midnight, now)). */
+export const pomodoroSegments = (sinceMs?: number, untilMs?: number) =>
+  invoke<PomodoroSegment[]>("pomodoro_segments", { sinceMs, untilMs });
 /** The whole Study Analytics dashboard in one call (default 30-day window). */
 export const analyticsSummary = (days?: number) =>
   invoke<AnalyticsSummary>("analytics_summary", { days });

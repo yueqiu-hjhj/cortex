@@ -205,6 +205,33 @@ pub struct CheatsheetVersionMeta {
     pub section_count: i64,
 }
 
+/// One card due in the global review queue.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewTodayCard {
+    pub subject_id: String,
+    pub subject_name: String,
+    pub kind: String,
+    pub material_id: Option<String>,
+    pub item_index: i64,
+    pub item_key: String,
+    pub due_at: i64,
+    pub reps: i64,
+    pub interval_d: i64,
+    pub stability: Option<f64>,
+    pub difficulty: Option<f64>,
+}
+
+/// One finished Pomodoro segment returned to the timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct PomodoroSegment {
+    pub id: String,
+    pub subject_id: Option<String>,
+    pub subject_name: Option<String>,
+    pub kind: String,
+    pub started_ms: i64,
+    pub ended_ms: i64,
+}
+
 // ---- generated materials ---------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]

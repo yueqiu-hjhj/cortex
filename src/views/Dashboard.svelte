@@ -1,8 +1,8 @@
 <script lang="ts">
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
-  import Mascot from "../components/Mascot.svelte";
   import Icon from "../components/Icon.svelte";
+  import Mascot from "../components/Mascot.svelte";
   import { moveItem, reorderable } from "../lib/dnd";
 
   // ── pointer-based card reordering (no native HTML5 drag — see lib/dnd.ts) ──
@@ -16,6 +16,47 @@
   // Simple week number calculation
   const startOfYear = new Date(now.getFullYear(), 0, 1);
   const weekNum = Math.ceil(((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7);
+
+  // 工具 / Workspace — Reviva-style tool grid. Each tool is a card that links to
+  // the most relevant view in cortex. Tool-specific actions land on a sensible tab
+  // (e.g. Flashcards → subject · materials tab where the deck lives).
+  type Tool = {
+    id: string;
+    name: string;
+    desc: string;
+    icon: string;
+    /** tag used to color the icon background */
+    tone: "accent" | "ok" | "warn" | "info" | "err";
+    run: () => void;
+  };
+  function goToSubjectTab(tab: string) {
+    const s = app.subjects[0];
+    if (!s) { app.setView("add-subject"); return; }
+    app.openSubject(s.id);
+    app.setTab(tab);
+  }
+  const TOOLS: Tool[] = [
+    { id: "cheat",     name: "Cheatsheet",  desc: "自动生成的复习提纲",          icon: "book",    tone: "accent", run: () => goToSubjectTab("cheatsheet") },
+    { id: "cards",     name: "Flashcards",  desc: "FSRS 间隔重复抽认卡",         icon: "cards",    tone: "ok",     run: () => goToSubjectTab("materials") },
+    { id: "quiz",      name: "Quiz",        desc: "边做边检验掌握度",            icon: "check",    tone: "warn",   run: () => goToSubjectTab("materials") },
+    { id: "graph",     name: "Neural Graph",desc: "知识图谱 / 神经星图",          icon: "graph",    tone: "accent", run: () => app.setView("neural-graph") },
+    { id: "pomo",      name: "Pomodoro",   desc: "今天的专注时间线",                icon: "bolt",     tone: "accent", run: () => app.setView("pomodoro") },
+    { id: "materials", name: "Materials",   desc: "学习材料 + 讲义 + 导图",        icon: "grid",     tone: "info",   run: () => goToSubjectTab("materials") },
+    { id: "notes",     name: "Notes",       desc: "Markdown 笔记 + 闪念",         icon: "reader",   tone: "ok",     run: () => app.setView("notes") },
+    { id: "cite",      name: "Citations",   desc: "引用 + 大纲 + 学习计划",        icon: "cards",    tone: "info",   run: () => goToSubjectTab("citations") },
+    { id: "insights",  name: "Insights",    desc: "时间线 + 准确率 + 弱项",         icon: "chart",    tone: "accent", run: () => app.setView("analytics") },
+    { id: "calendar",  name: "Calendar",    desc: "日历 + 任务 + 截止日",           icon: "calendar", tone: "warn",   run: () => app.setView("calendar") },
+    { id: "record",    name: "Recorder",    desc: "录课 + 转写 + AI 摘要",        icon: "record",   tone: "err",    run: () => app.setView("recorder") },
+  ];
+
+  // ── quick panel: today's due count + live pomodoro, one tap each ──
+  let dueCount = $state<number | null>(null);
+  $effect(() => {
+    api.reviewToday(500)
+      .then((cs) => { dueCount = cs.length; })
+      .catch(() => { dueCount = null; });
+  });
+
   // ── hero 第二句：只用真实数据 ──────────────────────────────
   // 拉 30 天汇总，用 reviews_per_day 自己切出「本周 / 上周」两段 7 天，
   // 比正确率。数据不足两周（<14 天）时返回 null，hero 就不显示任何数字，
@@ -74,6 +115,56 @@
         </div>
       </div>
       <div class="hero-blob" aria-hidden="true"></div>
+    </section>
+
+    <!-- Quick panel: Pomodoro 一键开始 + 今日 FSRS 复习 -->
+    <section class="quick" aria-label="Quick actions">
+      <button class="q-card q-focus" onclick={() => app.setView("pomodoro")}>
+        <span class="q-icon"><Icon name="bolt" size={16} /></span>
+        <span class="q-body">
+          <b>{app.pomo.running ? app.pomo.phaseLabel : "开始专注"}</b>
+          <span class="mono">{app.pomo.running ? "进行中 — 查看时间线" : "番茄钟 · 今天的时间块"}</span>
+        </span>
+        <em class="mono">{app.pomo.running ? app.pomo.mmss : `${app.pomo.workMin}:00`}</em>
+      </button>
+      <button class="q-card q-review" onclick={() => app.setView("review")}>
+        <span class="q-icon"><Icon name="cards" size={16} /></span>
+        <span class="q-body">
+          <b>今日复习</b>
+          <span class="mono">FSRS 到期队列</span>
+        </span>
+        <em class="mono">{dueCount == null ? "…" : dueCount === 0 ? "清零" : `${dueCount} 张`}</em>
+      </button>
+    </section>
+
+    <!-- 工具 / Workspace: Reviva-style tool grid. Each card jumps to the most
+         relevant existing view (cortex already has all these tools — the grid is
+         a visual index of what is available). Cards show icon + name + 1-line desc
+         and react on hover with an accent border + soft lift. -->
+    <section class="tools">
+      <div class="tools-head">
+        <h2>工具</h2>
+        <span class="tools-sub">Workspace · {TOOLS.length} 个</span>
+      </div>
+      <div class="tools-grid">
+        {#each TOOLS as t, i (t.id)}
+          <button
+            class="tool tone-{t.tone}"
+            onclick={t.run}
+            style:animation-delay="{i * 30}ms"
+            aria-label="{t.name} — {t.desc}"
+          >
+            <span class="tool-icon">
+              <Icon name={t.icon} size={16} />
+            </span>
+            <div class="tool-body">
+              <span class="tool-name">{t.name}</span>
+              <span class="tool-desc">{t.desc}</span>
+            </div>
+            <span class="tool-go"><Icon name="arrowR" size={12} /></span>
+          </button>
+        {/each}
+      </div>
     </section>
 
     <div class="subj-grid">
@@ -210,4 +301,195 @@
     .hero-blob { width: 180px; height: 180px; right: -50px; top: -30px; }
   }
 
+  /* ── Quick panel: two one-tap actions above the tool grid ── */
+  .quick {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 9px;
+    margin: 0 0 18px;
+  }
+  .q-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 15px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--surface);
+    cursor: pointer;
+    text-align: left;
+    transition: transform var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease);
+  }
+  .q-card:hover {
+    transform: translateY(-1px);
+    background: var(--surface-2);
+  }
+  .q-focus:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .q-review:hover { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .q-icon {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    flex: none;
+  }
+  .q-focus .q-icon {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent);
+  }
+  .q-review .q-icon {
+    background: color-mix(in srgb, var(--ok) 18%, transparent);
+    color: var(--ok);
+  }
+  .q-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .q-body b {
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--fg-bright);
+  }
+  .q-body .mono {
+    font-size: 10.5px;
+    color: var(--fg-muted);
+  }
+  .q-card em {
+    font-style: normal;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-bright);
+    flex: none;
+  }
+
+  /* ── Tools / Workspace grid (Reviva-inspired) ── */
+  .tools { margin: 4px 0 22px; }
+  .tools-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 0 10px;
+  }
+  .tools-head h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--fg-bright);
+  }
+  .tools-sub {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .tools-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 9px;
+  }
+  .tool {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-mono);
+    transition: transform var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease);
+    animation: tool-in 320ms var(--ease) both;
+  }
+  .tool:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-2);
+    transform: translateY(-1px);
+  }
+  .tool:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .tool-icon {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--fg-bright);
+    flex: none;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  }
+  .tool-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tool-name {
+    font-family: var(--font-display);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--fg-bright);
+  }
+  .tool-desc {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tool-go {
+    color: var(--fg-faint);
+    flex: none;
+    transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  }
+  .tool:hover .tool-go { color: var(--accent); transform: translateX(2px); }
+
+  /* Per-tone accent on the icon chip. The hover border picks the same tone. */
+  .tool.tone-accent:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .tool.tone-accent:hover .tool-icon {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent);
+  }
+  .tool.tone-ok:hover { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .tool.tone-ok:hover .tool-icon {
+    background: color-mix(in srgb, var(--ok) 20%, transparent);
+    color: var(--ok);
+  }
+  .tool.tone-warn:hover { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  .tool.tone-warn:hover .tool-icon {
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+  }
+  .tool.tone-info:hover { border-color: color-mix(in srgb, var(--info) 55%, transparent); }
+  .tool.tone-info:hover .tool-icon {
+    background: color-mix(in srgb, var(--info) 18%, transparent);
+    color: var(--info);
+  }
+  .tool.tone-err:hover .tool-icon {
+    background: color-mix(in srgb, var(--err) 18%, transparent);
+    color: var(--err);
+  }
+
+
+  @keyframes tool-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
 </style>

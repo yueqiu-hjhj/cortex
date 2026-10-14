@@ -2444,6 +2444,38 @@ pub fn srs_stats(conn: &Connection, subject_id: &str, kind: &str) -> Result<SrsS
     Ok(SrsStats { due, total })
 }
 
+/// The cross-subject "review today" queue: every FSRS-scheduled card that is
+/// due (due_at <= now) across all non-archived subjects, both kinds, oldest-due
+/// first. `limit` caps the payload; the caller surfaces the real due count from
+/// the returned rows (Anki-style, the queue IS the count).
+pub fn review_today(conn: &Connection, limit: i64) -> Result<Vec<ReviewTodayCard>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.subject_id, s.name, c.kind, c.material_id, c.item_index, c.item_key,
+                c.due_at, c.reps, c.interval_d, c.stability, c.difficulty
+         FROM srs_cards c
+         JOIN subjects s ON s.id = c.subject_id
+         WHERE c.due_at <= ?1 AND s.archived = 0
+         ORDER BY c.due_at ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![now_ms(), limit.clamp(1, 1000)], |r| {
+        Ok(ReviewTodayCard {
+            subject_id: r.get(0)?,
+            subject_name: r.get(1)?,
+            kind: r.get(2)?,
+            material_id: r.get(3)?,
+            item_index: r.get(4)?,
+            item_key: r.get(5)?,
+            due_at: r.get(6)?,
+            reps: r.get(7)?,
+            interval_d: r.get(8)?,
+            stability: r.get(9)?,
+            difficulty: r.get(10)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 // ---- citations (per-subject bibliography) -----------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -2572,6 +2604,36 @@ pub fn insert_pomodoro_session(
         params![id, subject_id, kind, started_ms, ended_ms, now_ms()],
     )?;
     Ok(id)
+}
+
+/// Finished focus/break segments in `[since_ms, until_ms)` with the subject
+/// name resolved — the raw spans the Pomodoro time-block timeline draws.
+/// `since_ms`/`until_ms` default to [local midnight, now).
+pub fn pomodoro_segments(
+    conn: &Connection,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+) -> Result<Vec<PomodoroSegment>> {
+    let since = since_ms.unwrap_or_else(|| day_floor_ms(now_ms()));
+    let until = until_ms.unwrap_or_else(now_ms);
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.subject_id, s.name, p.kind, p.started_ms, p.ended_ms
+         FROM pomodoro_sessions p
+         LEFT JOIN subjects s ON s.id = p.subject_id
+         WHERE p.started_ms >= ?1 AND p.started_ms < ?2 AND p.kind IN ('work','break')
+         ORDER BY p.started_ms ASC",
+    )?;
+    let rows = stmt.query_map(params![since, until], |r| {
+        Ok(PomodoroSegment {
+            id: r.get(0)?,
+            subject_id: r.get(1)?,
+            subject_name: r.get(2)?,
+            kind: r.get(3)?,
+            started_ms: r.get(4)?,
+            ended_ms: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Build the whole Study Analytics dashboard in one pass.
@@ -3099,11 +3161,15 @@ const YEAR_DAYS: i64 = 366;
 fn day_floor_ms(ms: i64) -> i64 {
     // Fallback to a crude UTC floor only if the (always-available) datetime
     // functions somehow fail; correctness here just affects bucket alignment.
+    // Two-step conversion: date(...,'localtime') yields the LOCAL calendar date
+    // as a bare string, which SQLite would parse back as UTC — the trailing
+    // 'utc' modifier re-interprets that string as LOCAL time, so %s is the true
+    // local-midnight epoch (e.g. 16:00Z of the previous day for UTC+8).
     LOCAL_MIDNIGHT
         .with(|c| {
             let conn = c.borrow();
             conn.query_row(
-                "SELECT CAST(strftime('%s', date(?1/1000, 'unixepoch', 'localtime')) AS INTEGER) * 1000",
+                "SELECT CAST(strftime('%s', date(?1/1000, 'unixepoch', 'localtime'), 'utc') AS INTEGER) * 1000",
                 params![ms],
                 |r| r.get::<_, i64>(0),
             )
@@ -3449,6 +3515,61 @@ mod tests {
 
         // The legacy "wrong items" set picks up the lapse (latest attempt wrong).
         assert_eq!(wrong_items(&c, &sid, "flashcard").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn review_today_spans_subjects_and_skips_archived() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let s1 = insert_subject(&c, "Math", None, None, None).unwrap();
+        let s2 = insert_subject(&c, "Physics", None, None, None).unwrap();
+        srs_grade(&c, &s1, None, "flashcard", 0, "2+2?", 4).unwrap();
+        srs_grade(&c, &s2, None, "flashcard", 1, "F=ma", 4).unwrap();
+
+        // Both schedules landed days out — nothing due right now.
+        assert!(review_today(&c, 200).unwrap().is_empty());
+
+        // Force every card due in the past, then archive Physics: only Math's
+        // card survives the archived=0 join.
+        c.execute("UPDATE srs_cards SET due_at=?1", params![1]).unwrap();
+        set_subject_archived(&c, &s2, true).unwrap();
+        let due = review_today(&c, 200).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].subject_id, s1);
+        assert_eq!(due[0].subject_name, "Math");
+        assert_eq!(due[0].kind, "flashcard");
+    }
+
+    #[test]
+    fn pomodoro_segments_returns_spans_with_subject_names() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "History", None, None, None).unwrap();
+        let now = now_ms();
+        insert_pomodoro_session(&c, Some(&sid), "work", now - 3_600_000, now - 1_800_000).unwrap();
+        insert_pomodoro_session(&c, None, "break", now - 1_700_000, now - 1_400_000).unwrap();
+        // Passive "app" time is analytics-only — never a timeline block.
+        insert_pomodoro_session(&c, None, "app", now - 900_000, now - 600_000).unwrap();
+
+        let segs = pomodoro_segments(&c, Some(0), None).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].kind, "work");
+        assert_eq!(segs[0].subject_name.as_deref(), Some("History"));
+        assert_eq!(segs[1].kind, "break");
+        assert!(segs[1].subject_name.is_none());
+
+        // Range filter cuts the older work block (explicit window, so the
+        // assertion holds no matter where local midnight falls). The cut
+        // sits between work.started (now-3.6M) and break.started (now-1.7M).
+        let recent = pomodoro_segments(&c, Some(now - 2_600_000), Some(now)).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].kind, "break");
+
+        // Default window is [local midnight, now). Wall-clock independent:
+        // the floor must be the start of `now`'s local day even minutes
+        // after midnight (when now-1h already belongs to yesterday).
+        let floor = day_floor_ms(now);
+        assert!(floor <= now && now - floor < DAY_MS, "floor={floor} now={now}");
     }
 
     #[test]

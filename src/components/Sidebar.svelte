@@ -100,7 +100,7 @@
   }
 </script>
 
-<div class="sidebar">
+<div class="sidebar" class:rail={app.sidebarCollapsed}>
   <!-- Brand row -->
   <div class="sb-brand">
     <img class="glyph" src={logo} alt="Cortex" />
@@ -118,7 +118,7 @@
         <span class="sb-bell-badge">{app.unreadCount > 99 ? "99+" : app.unreadCount}</span>
       {/if}
     </button>
-    <button class="b-cmd" type="button" title="Minimize sidebar (b)" style="background:none;border:none;padding:0;cursor:pointer;color:inherit;display:inline-flex;align-items:center;transform:rotate(180deg)" onclick={() => app.toggleSidebar()}>
+    <button class="b-cmd" type="button" title={app.sidebarCollapsed ? "Expand sidebar (b)" : "Collapse sidebar (b)"} style="background:none;border:none;padding:0;cursor:pointer;color:inherit;display:inline-flex;align-items:center;transform:rotate(180deg)" onclick={() => app.toggleSidebar()}>
       <Icon name="chevron" size={15} />
     </button>
   </div>
@@ -126,58 +126,87 @@
   <div class="sb-scroll">
     <!-- Nav items -->
     <div
-      class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="Dashboard (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("dashboard")}
     >
-      <Icon name="home" size={14} /> Dashboard <span class="nav-k">␣ g</span>
+      <Icon name="home" size={14} /><span class="lbl"> Dashboard</span><span class="nav-k">␣ g</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'recorder' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'recorder' ? ' on' : ''}" title="Record lecture (Space r)"
       onclick={() => app.setView("recorder")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("recorder")}
     >
-      <Icon name="record" size={13} /> Record lecture <span class="nav-k">␣ r</span>
+      <Icon name="record" size={13} /><span class="lbl"> Record lecture</span><span class="nav-k">␣ r</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'add-source' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'add-source' ? ' on' : ''}" title="Add source (Space s)"
       onclick={() => app.setView("add-source")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("add-source")}
     >
-      <Icon name="plus" size={14} /> Add source <span class="nav-k">␣ s</span>
+      <Icon name="plus" size={14} /><span class="lbl"> Add source</span><span class="nav-k">␣ s</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'notes' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'notes' ? ' on' : ''}" title="Notes (Space o)"
       onclick={() => app.setView("notes")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("notes")}
     >
-      <Icon name="reader" size={14} /> Notes <span class="nav-k">␣ o</span>
+      <Icon name="reader" size={14} /><span class="lbl"> Notes</span><span class="nav-k">␣ o</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'calendar' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'calendar' ? ' on' : ''}" title="Calendar (Space a)"
       onclick={() => app.setView("calendar")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("calendar")}
     >
-      <Icon name="calendar" size={14} /> Calendar <span class="nav-k">␣ a</span>
+      <Icon name="calendar" size={14} /><span class="lbl"> Calendar</span><span class="nav-k">␣ a</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'analytics' ? ' on' : ''}"
+      class="sb-nav-item{app.view === 'analytics' ? ' on' : ''}" title="Insights (Space i)"
       onclick={() => app.setView("analytics")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("analytics")}
     >
-      <Icon name="chart" size={14} /> Insights <span class="nav-k">␣ i</span>
+      <Icon name="chart" size={14} /><span class="lbl"> Insights</span><span class="nav-k">␣ i</span>
+    </div>
+    <div
+      class="sb-nav-item{app.view === 'neural-graph' ? ' on' : ''}" title="Neural Graph (Space n)"
+      onclick={() => app.setView("neural-graph")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("neural-graph")}
+    >
+      <Icon name="graph" size={14} /><span class="lbl"> Neural Graph</span><span class="nav-k">␣ n</span>
+    </div>
+    <div
+      class="sb-nav-item{app.view === 'pomodoro' ? ' on' : ''}"
+      onclick={() => app.setView("pomodoro")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("pomodoro")}
+      title="Pomodoro (Space p)"
+    >
+      <Icon name="bolt" size={14} /><span class="lbl"> Pomodoro</span><span class="nav-k">␣ p</span>
+    </div>
+    <div
+      class="sb-nav-item{app.view === 'review' ? ' on' : ''}"
+      onclick={() => app.setView("review")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("review")}
+      title="Review today — FSRS 到期队列"
+    >
+      <Icon name="cards" size={14} /><span class="lbl"> Review</span><span class="nav-k">FSRS</span>
     </div>
 
     <!-- Subjects section header -->
@@ -375,6 +404,37 @@
     <Icon name="settings" size={14} /> Settings
   </button>
 
+  <!-- Pomodoro quick row — one tap starts / pauses the timer without leaving
+       the current view; clicking the row opens the focus timeline. -->
+  <div
+    class="sb-music sb-pomo{app.pomo.running ? ' running' : ''}"
+    role="button"
+    tabindex="0"
+    title={app.pomo.running ? `${app.pomo.phaseLabel} — ${app.pomo.mmss}` : "Pomodoro (Space p)"}
+    onclick={() => app.setView("pomodoro")}
+    onkeydown={(e) => e.key === "Enter" && app.setView("pomodoro")}
+  >
+    <div class="m-art">
+      {#if app.pomo.running}
+        <span class="eq"><i></i><i></i><i></i></span>
+      {:else}
+        <Icon name="bolt" size={14} color="var(--accent-fg)" />
+      {/if}
+    </div>
+    <div style:flex="1" style:min-width="0">
+      <div class="m-name">{app.pomo.running ? app.pomo.phaseLabel : "Pomodoro"}</div>
+      <div class="m-sub">{app.pomo.running ? app.pomo.mmss : "空闲 · 一键开始"}</div>
+    </div>
+    <button
+      class="m-play"
+      type="button"
+      title={app.pomo.running ? "Pause" : "Start"}
+      onclick={(e) => { e.stopPropagation(); app.pomo.pomoToggle(); }}
+    >
+      <Icon name={app.pomo.running ? "pause" : "play"} size={14} />
+    </button>
+  </div>
+
   <!-- Music mini row — opens the study-sound panel -->
   <div
     class="sb-music"
@@ -416,6 +476,14 @@
 </div>
 
 <style>
+  /* Pomodoro quick row — mirrors the music row; running state glows accent */
+  .sb-pomo .m-sub { font-family: var(--font-mono); }
+  .sb-pomo.running {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .sb-pomo.running .m-name { color: var(--accent); }
+
   /* Notification bell + unread badge in the brand row */
   .sb-bell {
     position: relative; display: inline-flex; align-items: center; justify-content: center;

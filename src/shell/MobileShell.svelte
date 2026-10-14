@@ -42,6 +42,9 @@
   let AnalyticsViewC = $state<any>(null);
   let ExamViewC = $state<any>(null);
   let RecorderViewC = $state<any>(null);
+  let NeuralGraphC = $state<any>(null);
+  let PomodoroTimelineC = $state<any>(null);
+  let ReviewTodayC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("../views/Settings.svelte").then((m) => (SettingsView = m.default));
   const loadCalendar = () =>
@@ -52,12 +55,21 @@
     ExamViewC ?? import("../views/ExamView.svelte").then((m) => (ExamViewC = m.default));
   const loadRecorder = () =>
     RecorderViewC ?? import("../views/Recorder.svelte").then((m) => (RecorderViewC = m.default));
+  const loadNeuralGraph = () =>
+    NeuralGraphC ?? import("../views/NeuralGraph.svelte").then((m) => (NeuralGraphC = m.default));
+  const loadPomodoro = () =>
+    PomodoroTimelineC ?? import("../views/PomodoroTimeline.svelte").then((m) => (PomodoroTimelineC = m.default));
+  const loadReviewToday = () =>
+    ReviewTodayC ?? import("../views/ReviewToday.svelte").then((m) => (ReviewTodayC = m.default));
   $effect(() => {
     if (app.view === "settings") void loadSettings();
     else if (app.view === "calendar") void loadCalendar();
     else if (app.view === "analytics") void loadAnalytics();
     else if (app.view === "exam") void loadExam();
     else if (app.view === "recorder") void loadRecorder();
+    else if (app.view === "neural-graph") void loadNeuralGraph();
+    else if (app.view === "pomodoro") void loadPomodoro();
+    else if (app.view === "review") void loadReviewToday();
   });
 
   // If we land on the subject view with nothing active (fresh install), show Home.
@@ -159,6 +171,9 @@
     { id: "recorder",    icon: "record",   label: "Record lecture" },
     { id: "calendar",    icon: "calendar", label: "Calendar" },
     { id: "notes",       icon: "reader",   label: "Notes" },
+    { id: "neural-graph",icon: "graph",    label: "Neural Graph" },
+    { id: "pomodoro",    icon: "bolt",     label: "Pomodoro" },
+    { id: "review",      icon: "cards",    label: "Review today" },
     { id: "analytics",   icon: "chart",    label: "Insights" },
     { id: "add-subject", icon: "plus",     label: "New subject" },
     { id: "settings",    icon: "settings", label: "Settings" },
@@ -212,6 +227,12 @@
       {#if SettingsView}{@const C = SettingsView}<C />{/if}
     {:else if app.view === "recorder"}
       {#if RecorderViewC}{@const C = RecorderViewC}<C />{/if}
+    {:else if app.view === "neural-graph"}
+      {#if NeuralGraphC}{@const C = NeuralGraphC}<C />{/if}
+    {:else if app.view === "pomodoro"}
+      {#if PomodoroTimelineC}{@const C = PomodoroTimelineC}<C />{/if}
+    {:else if app.view === "review"}
+      {#if ReviewTodayC}{@const C = ReviewTodayC}<C />{/if}
     {:else}
       <!-- Safety net: any view the shell doesn't render falls back to Home. -->
       <Dashboard />

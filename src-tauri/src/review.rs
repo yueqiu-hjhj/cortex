@@ -92,3 +92,11 @@ pub fn srs_stats(state: State<AppState>, subject_id: String, kind: String) -> Re
     let c = state.db.lock().unwrap();
     repo::srs_stats(&c, &subject_id, &kind)
 }
+
+/// The cross-subject "review today" queue (`limit` default 200): every card
+/// due right now across all subjects, oldest-due first.
+#[tauri::command]
+pub fn review_today(state: State<AppState>, limit: Option<i64>) -> Result<Vec<ReviewTodayCard>> {
+    let c = state.db.lock().unwrap();
+    repo::review_today(&c, limit.unwrap_or(200))
+}

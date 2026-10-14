@@ -4,6 +4,7 @@
   import type { Source } from "../lib/api";
   import Icon from "../components/Icon.svelte";
   import Cheatsheet from "./Cheatsheet.svelte";
+  import SubjectOverview from "./SubjectOverview.svelte";
   import Materials from "./Materials.svelte";
   import Citations from "./Citations.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
@@ -12,6 +13,7 @@
   import { jobs } from "../lib/jobs.svelte";
 
   const TABS = [
+    { id: "overview", label: "Overview", icon: "graph" },
     { id: "cheatsheet", label: "Cheatsheet", icon: "book" },
     { id: "sources", label: "Sources", icon: "doc" },
     { id: "chats", label: "Chats", icon: "chat" },
@@ -276,7 +278,10 @@
 
     <!-- Tab body -->
     <div class="subj-body">
-      {#if app.subjectTab === "cheatsheet"}
+      {#if app.subjectTab === "overview"}
+        <SubjectOverview />
+
+      {:else if app.subjectTab === "cheatsheet"}
         <Cheatsheet />
 
       {:else if app.subjectTab === "sources"}

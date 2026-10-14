@@ -19,6 +19,9 @@ export type View =
   | "notes"
   | "calendar"
   | "analytics"
+  | "neural-graph"
+  | "pomodoro"
+  | "review"
   | "exam"
   | "settings";
 export type Mode = "NOR" | "INS" | "SEL";

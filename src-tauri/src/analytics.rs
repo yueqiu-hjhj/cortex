@@ -23,6 +23,18 @@ pub fn log_pomodoro_session(
     Ok(())
 }
 
+/// Finished focus/break segments for the Pomodoro time-block timeline.
+/// Defaults to [local midnight, now).
+#[tauri::command]
+pub fn pomodoro_segments(
+    state: State<AppState>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+) -> Result<Vec<crate::models::PomodoroSegment>> {
+    let c = state.db.lock().unwrap();
+    repo::pomodoro_segments(&c, since_ms, until_ms)
+}
+
 /// The whole Study Analytics dashboard in one struct, computed under a single
 /// lock. `days` (default 30) bounds the per-day charts and per-subject roll-up.
 #[tauri::command]

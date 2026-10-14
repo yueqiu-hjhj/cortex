@@ -46,6 +46,9 @@
   let CalendarViewC = $state<any>(null);
   let AnalyticsViewC = $state<any>(null);
   let ExamViewC = $state<any>(null);
+  let NeuralGraphC = $state<any>(null);
+  let PomodoroTimelineC = $state<any>(null);
+  let ReviewTodayC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("./views/Settings.svelte").then((m) => (SettingsView = m.default));
   const loadRecorder = () =>
@@ -56,12 +59,22 @@
     AnalyticsViewC ?? import("./views/AnalyticsView.svelte").then((m) => (AnalyticsViewC = m.default));
   const loadExam = () =>
     ExamViewC ?? import("./views/ExamView.svelte").then((m) => (ExamViewC = m.default));
+  const loadNeuralGraph = () =>
+    NeuralGraphC ?? import("./views/NeuralGraph.svelte").then((m) => (NeuralGraphC = m.default));
+  const loadPomodoro = () =>
+    PomodoroTimelineC ?? import("./views/PomodoroTimeline.svelte").then((m) => (PomodoroTimelineC = m.default));
+  const loadReviewToday = () =>
+    ReviewTodayC ?? import("./views/ReviewToday.svelte").then((m) => (ReviewTodayC = m.default));
   $effect(() => {
     if (app.view === "settings") void loadSettings();
     else if (app.view === "recorder") void loadRecorder();
     else if (app.view === "calendar") void loadCalendar();
     else if (app.view === "analytics") void loadAnalytics();
     else if (app.view === "exam") void loadExam();
+
+    else if (app.view === "neural-graph") void loadNeuralGraph();
+    else if (app.view === "pomodoro") void loadPomodoro();
+    else if (app.view === "review") void loadReviewToday();
   });
 
   // Custom title bar is only for macOS and Windows — on Linux (especially
@@ -316,7 +329,7 @@
     class:drawer
     class:compact
     class:nav-open={navOpen}
-    style:--sb-w={app.sidebarCollapsed ? "0px" : app.sidebarWidth + "px"}
+    style:--sb-w={app.sidebarCollapsed ? "52px" : app.sidebarWidth + "px"}
     style:--chat-w={app.chatWidth + "px"}
     style:--tb-h={showTitlebar ? "30px" : "0px"}
   >
@@ -330,12 +343,13 @@
       </button>
       <Sidebar />
       <button class="nav-backdrop" aria-label="Close menu" onclick={() => (navOpen = false)}></button>
-    {:else if !app.sidebarCollapsed}
-      <Sidebar />
     {:else}
-      <button class="sb-expand" onclick={() => app.toggleSidebar()} title="Show sidebar (b)">
-        <Icon name="chevron" size={14} />
-      </button>
+      <Sidebar />
+      {#if app.sidebarCollapsed}
+        <button class="sb-expand" onclick={() => app.toggleSidebar()} title="Show subjects tree (b)">
+          <Icon name="chevron" size={14} />
+        </button>
+      {/if}
     {/if}
 
     <div class="app-main">
@@ -362,6 +376,12 @@
           {#if AnalyticsViewC}{@const AnalyticsView = AnalyticsViewC}<AnalyticsView />{/if}
         {:else if app.view === "exam"}
           {#if ExamViewC}{@const ExamView = ExamViewC}<ExamView />{/if}
+        {:else if app.view === "neural-graph"}
+          {#if NeuralGraphC}{@const NeuralGraph = NeuralGraphC}<NeuralGraph />{/if}
+        {:else if app.view === "pomodoro"}
+          {#if PomodoroTimelineC}{@const PomodoroTimeline = PomodoroTimelineC}<PomodoroTimeline />{/if}
+        {:else if app.view === "review"}
+          {#if ReviewTodayC}{@const ReviewToday = ReviewTodayC}<ReviewToday />{/if}
         {:else if app.view === "settings"}
           {#if SettingsView}{@const Settings = SettingsView}<Settings />{/if}
         {/if}
