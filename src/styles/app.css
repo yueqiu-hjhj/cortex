@@ -35,12 +35,37 @@
 .sb-section-l .add { color: var(--fg-faint); cursor: pointer; display: grid; place-items: center; }
 .sb-section-l .add:hover { color: var(--accent); }
 
-.sb-nav-item { display: flex; align-items: center; gap: 9px; height: 28px; padding: 0 10px; border-radius: var(--rad-2); color: var(--fg-muted); cursor: pointer; font-size: var(--t-sm); }
+.sb-nav-item { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px; border-radius: var(--rad-3); color: var(--fg-muted); cursor: pointer; font-size: var(--t-sm); }
 .sb-nav-item:hover { background: var(--surface-2); color: var(--fg-bright); }
 .sb-nav-item.on { background: var(--surface-3); color: var(--fg-bright); }
 .sb-nav-item .nav-k { margin-left: auto; color: var(--fg-faint); font-size: var(--t-2xs); }
 
 .sb-subj { margin-top: 2px; }
+
+/* Icon-rail mode: hide labels, keep icons only. Brand row collapses; the
+   subjects tree is hidden (use Expand to come back to the full tree). */
+.sidebar.rail { width: 52px; min-width: 52px; }
+.sidebar.rail .sb-brand { padding: 0; justify-content: center; gap: 0; }
+.sidebar.rail .sb-brand .b-name,
+.sidebar.rail .sb-brand .b-spacer,
+.sidebar.rail .sb-brand .b-cmd { display: none; }
+.sidebar.rail .sb-scroll { padding: 10px 4px; }
+.sidebar.rail .sb-nav-item { padding: 0; justify-content: center; height: 34px; border-radius: 8px; }
+.sidebar.rail .sb-nav-item .lbl,
+.sidebar.rail .sb-nav-item .nav-k { display: none; }
+.sidebar.rail .sb-section-l .label,
+.sidebar.rail .sb-section-l .add { display: none; }
+.sidebar.rail .sb-bell-badge { display: none; }
+.sidebar.rail .sb-bell { margin: 0 auto; }
+.sidebar.rail .sb-tree,
+.sidebar.rail .sb-subj-list,
+.sidebar.rail .sb-foot { display: none; }
+
+/* The expand button in rail mode: small chevron at the right edge of the rail. */
+.sb-expand { position: relative; width: 22px; height: 28px; align-self: flex-start; margin: 8px 0 0 4px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--fg-faint); cursor: pointer; display: grid; place-items: center; }
+.sb-expand:hover { color: var(--fg-bright); border-color: var(--border-strong); background: var(--surface-2); }
+.sb-expand .icon-chevron { transform: rotate(180deg); }
+
 .sb-subj-row { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px; border-radius: var(--rad-2); cursor: pointer; color: var(--fg-muted); position: relative; }
 .sb-subj-row:hover { background: var(--surface-2); color: var(--fg-bright); }
 .sb-subj-row.on { background: var(--surface-3); color: var(--fg-bright); }
@@ -174,10 +199,10 @@
 .dash { max-width: 1120px; margin: 0 auto; padding: var(--sp-8) var(--sp-8) var(--sp-9); }
 .dash-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: var(--sp-7); }
 .subj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--sp-4); }
-.subj-card { text-align: left; display: flex; flex-direction: column; padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--rad-4); cursor: pointer; transition: border-color var(--dur), background var(--dur), transform var(--dur); }
+.subj-card { text-align: left; display: flex; flex-direction: column; padding: var(--sp-5); background: var(--surface); border: 1px solid var(--border); border-radius: var(--rad-4); cursor: pointer; transition: border-color var(--dur), background var(--dur), transform var(--dur); }
 .subj-card:hover { border-color: var(--border-strong); background: var(--surface-2); transform: translateY(-1px); }
 .subj-card.kb-focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 14%, transparent); }
-.sc-top { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.sc-top { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .subj-glyph { width: 26px; height: 26px; border-radius: var(--rad-2); background: var(--surface-3); border: 1px solid var(--border-strong); display: grid; place-items: center; flex: none; }
 .subj-glyph.sm { width: 24px; height: 24px; }
 .subj-code { font-size: var(--t-2xs); color: var(--fg-faint); letter-spacing: 0.06em; }

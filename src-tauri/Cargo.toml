@@ -65,7 +65,7 @@ tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # (that's emitted by tauri-build for CODE, not known to Cargo at resolve time), so
 # we enumerate the desktop OSes here; the matching code is gated `#[cfg(desktop)]`.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 

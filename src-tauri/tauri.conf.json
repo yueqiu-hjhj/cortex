@@ -19,20 +19,29 @@
         "minHeight": 560,
         "decorations": false,
         "theme": "Dark",
-        "visible": false
+        "visible": false,
+        "x": 80,
+        "y": 60,
+        "additionalBrowserArgs": "--disable-gpu --disable-features=msSmartScreenProtection"
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https: http:; media-src 'self' asset: http://asset.localhost blob: https: http:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost https: http: ws: wss:; frame-src 'self'; object-src 'none'; base-uri 'self'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**"]
+        "scope": [
+          "$APPDATA/**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/yt-dlp",
@@ -47,8 +56,18 @@
       "icons/icon.ico"
     ],
     "linux": {
-      "deb": { "depends": ["poppler-utils", "ffmpeg"] },
-      "rpm": { "depends": ["poppler-utils", "ffmpeg"] }
+      "deb": {
+        "depends": [
+          "poppler-utils",
+          "ffmpeg"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "poppler-utils",
+          "ffmpeg"
+        ]
+      }
     }
   },
   "plugins": {

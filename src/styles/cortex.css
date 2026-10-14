@@ -346,20 +346,21 @@
    NON-THEMED TOKENS (constant across palettes)
    ============================================================ */
 :root {
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  /* Reading font defaults to JetBrains Mono; the Settings → Appearance toggle
-     can switch it to Serif or Sans (see the [data-read] overrides below). */
+  --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --font-read: var(--font-mono);
-  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
-  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Newsreader', 'Source Serif Pro', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Sora', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-cn: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-display: 'Sora', 'Noto Sans SC', system-ui, sans-serif;
+  --font-geist: 'Geist', 'Sora', system-ui, sans-serif;
   --read-size: 16.5px;
 
   /* type scale (mono chrome) */
-  --t-2xs: 10.5px;
-  --t-xs:  11.5px;
-  --t-sm:  12.5px;
-  --t-md:  13.5px;
-  --t-lg:  15px;
+  --t-2xs: 12px;
+  --t-xs:  13px;
+  --t-sm:  14px;
+  --t-md:  15px;
+  --t-lg:  16px;
   --t-xl:  18px;
   --t-2xl: 22px;
 
@@ -376,17 +377,45 @@
   --sp-9: 48px; --sp-10: 64px;
 
   /* radii — tight, terminal-grade */
-  --rad-1: 2px; --rad-2: 4px; --rad-3: 6px; --rad-4: 8px; --rad-pill: 999px;
+  --rad-1: 3px; --rad-2: 6px; --rad-3: 8px; --rad-4: 10px; --rad-pill: 999px;
 
   /* elevation — restrained; borders do most of the work */
-  --shadow-1: 0 1px 2px rgba(0,0,0,0.30);
-  --shadow-2: 0 4px 14px rgba(0,0,0,0.38);
-  --shadow-pop: 0 18px 48px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.22);
+  --shadow-2: 0 6px 20px rgba(0,0,0,0.28);
+  --shadow-pop: 0 20px 56px rgba(0,0,0,0.42), 0 2px 8px rgba(0,0,0,0.32);
 
   --dur-fast: 90ms;
   --dur: 160ms;
   --dur-slow: 240ms;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* multi-color accents (4 辅色，mint 主色保留为 --accent) */
+  --tone-lavender: #b39ddb;
+  --tone-lavender-bg: rgba(179, 157, 219, 0.14);
+  --tone-peach:    #f4a78a;
+  --tone-peach-bg: rgba(244, 167, 138, 0.13);
+  --tone-sky:      #7fb8d4;
+  --tone-sky-bg: rgba(127, 184, 212, 0.13);
+  --tone-amber:    #e5b35e;
+  --tone-amber-bg: rgba(229, 179, 94, 0.13);
+
+  /* gradients (hero + accent fills) */
+  --grad-hero: linear-gradient(135deg, color-mix(in oklab, var(--accent) 18%, transparent) 0%, color-mix(in oklab, var(--tone-lavender) 10%, transparent) 100%);
+  --grad-warm: linear-gradient(135deg, var(--tone-peach-bg) 0%, var(--tone-lavender-bg) 100%);
+  --grad-cool: linear-gradient(135deg, var(--tone-sky-bg) 0%, var(--tone-amber-bg) 100%);
+  --grad-conic: conic-gradient(from 210deg at 30% 20%, color-mix(in oklab, var(--accent) 38%, transparent), color-mix(in oklab, var(--tone-lavender) 24%, transparent) 30%, color-mix(in oklab, var(--tone-peach) 22%, transparent) 60%, color-mix(in oklab, var(--tone-sky) 24%, transparent) 90%);
+
+  /* mascot sizes (P0 character) */
+  --mascot-sm: 36px;
+  --mascot-md: 56px;
+  --mascot-lg: 88px;
+
+  /* micro-interaction tokens (P0 foundation) */
+  --lift-sm: translateY(-1px);
+  --lift-md: translateY(-2px);
+  --press-sm: translateY(1px);
 }
 
 /* ============================================================
