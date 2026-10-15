@@ -829,6 +829,41 @@ mod tests {
         }
     }
 
+    // Live diagnostic (ignored by default): the REAL Settings→OCR extraction
+    // path (from_spec → extract_cards) against a vision model. Set a key and a
+    // screenshot, then:
+    //   OPENROUTER_KEY=sk-or-... OCR_TEST_IMAGE=D:\cortex-base\tools\ocr-test-shot.png `
+    //     cargo test --lib live_vision_extract -- --ignored --nocapture
+    // GEMINI_KEY works too (default spec switches to gemini:gemini-2.5-flash).
+    #[test]
+    #[ignore]
+    fn live_vision_extract() {
+        let keys = Keys {
+            openrouter: std::env::var("OPENROUTER_KEY").ok(),
+            gemini: std::env::var("GEMINI_KEY").ok(),
+            ..Default::default()
+        };
+        let default_spec = if keys.openrouter.is_some() {
+            "openrouter:google/gemini-2.5-flash"
+        } else {
+            "gemini:gemini-2.5-flash"
+        };
+        let spec = std::env::var("OCR_TEST_SPEC").unwrap_or_else(|_| default_spec.into());
+        let img = std::env::var("OCR_TEST_IMAGE").unwrap_or_else(|_| "ocr-test-shot.png".into());
+        let bytes = std::fs::read(&img).unwrap_or_else(|e| panic!("read {img}: {e}"));
+        let llm = from_spec(&spec, &keys).unwrap_or_else(|| panic!("no API key for {spec}"));
+        match llm.extract_cards(&[("image/png".into(), b64_encode(&bytes))]) {
+            Ok(cards) => {
+                println!("extracted {} cards:", cards.len());
+                for c in &cards {
+                    println!("  Q: {} || A: {}", truncate(&c.front, 90), truncate(&c.back, 90));
+                }
+                assert!(!cards.is_empty(), "model returned no usable flashcards");
+            }
+            Err(e) => panic!("LIVE extract failed: {e}"),
+        }
+    }
+
     #[test]
     fn extract_json_repairs_unescaped_interior_quotes() {
         // Rich cheatsheet content where the model forgot to escape interior
