@@ -4,15 +4,17 @@
   "version": "1.0.35",
   "identifier": "study.cortex.app",
   "build": {
-    "beforeDevCommand": "bun run sidecars && bun run dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run sidecars && bun run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "title": "Cortex",
+        "x": 80,
+        "y": 60,
         "width": 1400,
         "height": 900,
         "minWidth": 720,
@@ -20,8 +22,6 @@
         "decorations": false,
         "theme": "Dark",
         "visible": false,
-        "x": 80,
-        "y": 60,
         "additionalBrowserArgs": "--disable-gpu --disable-features=msSmartScreenProtection"
       }
     ],
@@ -43,11 +43,7 @@
       "appimage"
     ],
     "createUpdaterArtifacts": true,
-    "externalBin": [
-      "binaries/yt-dlp",
-      "binaries/age",
-      "binaries/rclone"
-    ],
+    "externalBin": [],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
