@@ -1,0 +1,2 @@
+# Vendored third-party source. Cargo regenerates these files on every build with the host OS line endings; use text eol=lf to canonicalise on LF in both directions.
+* text eol=lf
