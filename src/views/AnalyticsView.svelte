@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
+  import Icon from "../components/Icon.svelte";
 
   // The whole dashboard arrives in ONE call (see repo::analytics_summary) so a
   // single DB lock backs every chart below. Reloaded when the view mounts and
@@ -510,6 +511,9 @@
           <span class="an-card-sub mono">
             {forecast.reduce((a, d) => a + d.due, 0)} scheduled
           </span>
+          <button class="btn btn--sm btn--ghost" onclick={() => app.setView("review")} title="进入今日复习队列">
+            <Icon name="bolt" size={12} /> 去复习
+          </button>
         </div>
         <div class="an-forecast">
           {#each forecast as d, i (d.day)}
@@ -565,7 +569,16 @@
           </div>
           <div class="an-weak">
             {#each weakTopics as t (t.topic_id)}
-              <div class="an-weak-row">
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="an-weak-row"
+                role="button"
+                tabindex="0"
+                title="打开这个主题"
+                onclick={() => app.openTopicSheet(t.subject_id, t.topic_id)}
+                onkeydown={(e) => e.key === "Enter" && app.openTopicSheet(t.subject_id, t.topic_id)}
+              >
                 <span class="an-dot" style:background={subjectColor(t.subject_id)}></span>
                 <div class="an-weak-main">
                   <div class="an-weak-name read">
@@ -990,6 +1003,14 @@
     gap: 10px;
     padding: 11px 4px;
     border-top: 1px solid var(--border);
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .an-weak-row:hover {
+    background: var(--surface);
+  }
+  .an-weak-row:focus-visible {
+    outline: 1px solid var(--accent);
   }
   .an-weak-row:first-child {
     border-top: none;

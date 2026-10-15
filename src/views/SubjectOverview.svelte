@@ -7,6 +7,8 @@
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
+  import MindMapView from "../components/MindMapView.svelte";
+  import { loadGlossary } from "../lib/glossary";
 
   type Band = "solid" | "steady" | "shaky" | "cold";
   interface NextItem {
@@ -101,8 +103,46 @@
     if (!s) return;
     app.openTopicSheet(s, id);
   }
+
+  // ── 知识脑图 ──
+  // 从本科目的库结构（主题→来源）+ 本地术语表拼一棵只读树，复用 AI 材料
+  // 的 MindMapView 渲染器。零模型调用；与 NeuralGraph 不重叠——那张是
+  // 跨科目的掌握度星图，这张是单科目的内容清单。
+  interface MapNode { label: string; children?: MapNode[] }
+  let showMap = $state(false);
+  let mapData = $state<{ central: string; branches: MapNode[] } | null>(null);
+  const MAP_MAX_KIDS = 12;
+  function kidsOf(labels: string[]): MapNode[] {
+    const out = labels.slice(0, MAP_MAX_KIDS).map((l) => ({ label: l }));
+    if (labels.length > MAP_MAX_KIDS) out.push({ label: `…还有 ${labels.length - MAP_MAX_KIDS} 个` });
+    return out;
+  }
+  async function openMap() {
+    const s = subj;
+    if (!s) return;
+    const branches: MapNode[] = (s.topics ?? []).map((t) => ({
+      label: `${t.glyph ?? "•"} ${t.name}`.trim(),
+      children: kidsOf((t.sources ?? []).map((x) => x.name)),
+    }));
+    try {
+      const loose = ((await api.listSources(s.id)) ?? [])
+        .filter((x) => !x.topic_id)
+        .map((x) => x.name);
+      if (loose.length) branches.push({ label: `未归类来源 · ${loose.length}`, children: kidsOf(loose) });
+    } catch { /* 库树已足够渲染，未归类来源拿不到就跳过 */ }
+    const terms = loadGlossary(s.id);
+    if (terms.length) {
+      const known = terms.filter((t) => t.status === "known").length;
+      branches.push({ label: `术语表 · ${terms.length}（已知 ${known}）`, children: kidsOf(terms.map((t) => t.term)) });
+    }
+    mapData = { central: `${s.glyph} ${s.name}`.trim(), branches };
+    showMap = true;
+  }
 </script>
 
+{#if showMap && mapData}
+  <MindMapView data={mapData} onExit={() => (showMap = false)} />
+{:else}
 <div class="ov">
   {#if !subj}
     <div class="ov-empty">
@@ -125,6 +165,9 @@
         {#if loaded}
           <span class="ov-head-pill">过去 90 天</span>
         {/if}
+        <button class="btn btn--sm" onclick={openMap} title="把主题、来源、术语表整理成一张知识脑图">
+          <Icon name="link" size={13} /> 知识脑图
+        </button>
       </div>
     </header>
 
@@ -211,6 +254,7 @@
     </section>
   {/if}
 </div>
+{/if}
 
 <style>
   .ov {

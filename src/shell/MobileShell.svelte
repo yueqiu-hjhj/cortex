@@ -234,7 +234,7 @@
     {:else if app.view === "recorder"}
       {#if RecorderViewC}{@const C = RecorderViewC}<C />{/if}
     {:else if app.view === "neural-graph"}
-      {#if NeuralGraphC}{@const C = NeuralGraphC}<C />{/if}
+      {#if NeuralGraphC}{@const C = NeuralGraphC}<C />{:else}<div class="mono faint" style="flex:1;min-height:180px;display:flex;align-items:center;justify-content:center;font-size:12px">正在加载图引擎…</div>{/if}
     {:else if app.view === "pomodoro"}
       {#if PomodoroTimelineC}{@const C = PomodoroTimelineC}<C />{/if}
     {:else if app.view === "review"}

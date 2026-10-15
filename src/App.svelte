@@ -382,7 +382,7 @@
         {:else if app.view === "exam"}
           {#if ExamViewC}{@const ExamView = ExamViewC}<ExamView />{/if}
         {:else if app.view === "neural-graph"}
-          {#if NeuralGraphC}{@const NeuralGraph = NeuralGraphC}<NeuralGraph />{/if}
+          {#if NeuralGraphC}{@const NeuralGraph = NeuralGraphC}<NeuralGraph />{:else}<div class="mono faint" style="flex:1;min-height:180px;display:flex;align-items:center;justify-content:center;font-size:12px">正在加载图引擎…</div>{/if}
         {:else if app.view === "pomodoro"}
           {#if PomodoroTimelineC}{@const PomodoroTimeline = PomodoroTimelineC}<PomodoroTimeline />{/if}
         {:else if app.view === "review"}
