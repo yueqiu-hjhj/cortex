@@ -24,6 +24,7 @@ export type View =
   | "pomodoro"
   | "review"
   | "glossary"
+  | "mindmap"
   | "exam"
   | "settings";
 export type Mode = "NOR" | "INS" | "SEL";

@@ -2712,32 +2712,46 @@ pub fn analytics_summary(conn: &Connection, days: i64) -> Result<AnalyticsSummar
         reviews_per_day.push(DayReviews { day, reviews, correct, accuracy });
     }
 
-    // ── current streak: consecutive days ending today with ANY activity ──
+    //  ── current + longest streak: consecutive days with ANY activity ──
+    // Walk the year backward from today. Today is allowed to be empty without
+    // breaking the run, same as the previous behaviour.
     let today = local_day_str(now_ms());
-    let mut streak = 0i64;
+    let year_floor = day_floor_ms(year_since_ms);
+    let mut streak: i64 = 0;
+    let mut longest: i64 = 0;
+    let mut run: i64 = 0;
     let mut cursor = day_floor_ms(now_ms());
     loop {
         let day = local_day_str(cursor);
         let had_work = *minutes_by_day.get(&day).unwrap_or(&0) > 0;
         let had_review = reviews_by_day.get(&day).map(|(n, _)| *n > 0).unwrap_or(false);
-        if had_work || had_review {
-            streak += 1;
-            cursor -= DAY_MS;
+        let active = had_work || had_review;
+        if active {
+            run += 1;
+            if run > longest { longest = run; }
+        } else if day == today {
+            // empty today is fine; the prefix is still the current streak
+            if run > longest { longest = run; }
         } else {
-            // Today with no activity yet doesn't break a streak earned yesterday:
-            // skip today once, then require unbroken activity backward.
-            if day == today {
-                cursor -= DAY_MS;
-                continue;
+            // broken run before today — current streak is whatever run was
+            if run > longest { longest = run; }
+            run = 0;
+            streak = 0; // any earlier run is not the current streak
+        }
+        // Update current streak from the prefix when walking the trailing run.
+        if active && run > 0 {
+            // Only treat as current streak while we have not yet seen a break.
+            if streak >= 0 {
+                streak = run;
             }
+        } else if !active && day != today {
+            // a real break; stop walking
             break;
         }
-        // Stop once we walk past the full-year window (no data beyond it). The
-        // year of study-minute data is loaded above, so a long streak counts.
-        if cursor < year_since_ms {
-            break;
-        }
+        cursor -= DAY_MS;
+        if cursor < year_floor { break; }
     }
+    if run > longest { longest = run; }
 
     // ── per-subject roll-up (minutes + reviews + accuracy) over the window ──
     // Two grouped queries merged by subject id; avoids a cross-join double count.
@@ -2864,6 +2878,7 @@ pub fn analytics_summary(conn: &Connection, days: i64) -> Result<AnalyticsSummar
         weak_topics,
         fsrs,
         streak,
+        longest_streak: longest,
         minutes_week,
         reviews_week,
         accuracy_week,

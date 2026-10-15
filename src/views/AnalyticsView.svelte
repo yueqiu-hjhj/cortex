@@ -121,6 +121,9 @@
 
   // ── headline figures ──
   const streak = $derived(data?.streak ?? 0);
+  const longestStreak = $derived(data?.longest_streak ?? 0);
+  // Today last cell: any study minutes today means streak is safe.
+  const studiedToday = $derived(((data?.year_minutes ?? []).slice(-1)[0]?.minutes ?? 0) > 0);
   const minutesWeek = $derived(data?.minutes_week ?? 0);
   const reviewsWeek = $derived(data?.reviews_week ?? 0);
   const accuracyWeek = $derived(data?.accuracy_week ?? 0);
@@ -289,8 +292,19 @@
       <!-- ── headline stat cards ── -->
       <div class="an-stats">
         <div class="an-stat">
-          <div class="an-stat-k mono">Current streak</div>
-          <div class="an-stat-v">{streak}<span class="an-stat-u"> day{streak === 1 ? "" : "s"}</span></div>
+          <div class="an-stat-k mono">Streak</div>
+          <div class="an-stat-v">
+            {streak}<span class="an-stat-u"> day{streak === 1 ? "" : "s"}</span>
+          </div>
+          <div class="an-stat-sub mono">
+            {#if streak > 0 && !studiedToday}
+              <span class="an-stat-warn">at risk · study today</span>
+            {:else if longestStreak > streak}
+              best {longestStreak}
+            {:else}
+              <span class="faint">best {longestStreak}</span>
+            {/if}
+          </div>
         </div>
         <div class="an-stat">
           <div class="an-stat-k mono">Focus this week</div>
@@ -565,6 +579,33 @@
         <section class="an-card">
           <div class="an-card-h">
             <h3 class="an-card-t mono">Topics needing work</h3>
+          <div class="an-podium">
+            {#each weakTopics.slice(0, 3) as t, i (t.topic_id)}
+              {@const w = Math.max(0.05, (t.reviews > 0 ? 1 - t.accuracy : 0) + (t.lapses > 0 ? t.lapses / (t.lapses + 3) : 0))}
+              {@const pctTxt = t.reviews > 0 ? Math.round(t.accuracy * 100) + "%" : "—"}
+              <button
+                type="button"
+                class={"an-podium-card rank-" + (i + 1)}
+                onclick={() => app.openTopicSheet(t.subject_id, t.topic_id)}
+                onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); app.openTopicSheet(t.subject_id, t.topic_id); } }}
+                aria-label={"Open topic: " + t.topic_name}
+                style:--subj-c={subjectColor(t.subject_id)}
+                style:--w={w}
+              >
+                <div class="an-podium-rank mono">#{i + 1}</div>
+                <div class="an-podium-name read">{t.topic_name}</div>
+                <div class="an-podium-subj mono faint">{subjectName(t.subject_id)}</div>
+                <div class="an-podium-bar"><div class="an-podium-bar-fill"></div></div>
+                <div class="an-podium-stats mono">
+                  <span>{pctTxt} acc</span>
+                  {#if t.lapses > 0}<span>· {t.lapses} lapse{t.lapses === 1 ? "" : "s"}</span>{/if}
+                </div>
+              </button>
+            {/each}
+            {#if weakTopics.length > 3}
+              <div class="an-podium-more mono faint">+{weakTopics.length - 3} more below</div>
+            {/if}
+          </div>
             <span class="an-card-sub mono">weakest first</span>
           </div>
           <div class="an-weak">
@@ -705,6 +746,14 @@
     font-weight: 400;
     color: var(--fg-faint);
   }
+  .an-stat-sub {
+    font-size: var(--t-xs);
+    color: var(--fg-muted);
+    margin-top: 4px;
+    line-height: 1.2;
+  }
+  .an-stat-warn { color: var(--warn); font-weight: 600; }
+  .an-stat .faint { color: var(--fg-faint); }
 
   /* ── card frame shared by chart / forecast / table / fsrs ── */
   .an-card {
@@ -1108,4 +1157,68 @@
   .an-radar-dot { stroke: var(--surface); stroke-width: 1.5; transition: r 0.12s; }
   .an-radar-dot:hover { r: 5; }
   .an-radar-note { font-size: var(--t-2xs); color: var(--fg-faint); margin-top: 8px; text-align: center; }
+  /* ── weakness podium (top 3) ── */
+  .an-podium {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 10px 0 4px;
+  }
+  @media (max-width: 720px) {
+    .an-podium { grid-template-columns: 1fr; }
+  }
+  .an-podium-card {
+    appearance: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: left;
+    cursor: pointer;
+    color: var(--fg);
+    font: inherit;
+    transition: border-color 120ms ease, transform 120ms ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .an-podium-card:hover {
+    border-color: var(--subj-c, var(--accent));
+    transform: translateY(-1px);
+  }
+  .an-podium-card.rank-1 { border-color: var(--subj-c, var(--accent)); }
+  .an-podium-rank {
+    font-size: var(--t-xs);
+    color: var(--fg-faint);
+    margin-bottom: 4px;
+  }
+  .an-podium-card.rank-1 .an-podium-rank { color: var(--subj-c, var(--accent)); font-weight: 700; }
+  .an-podium-name {
+    font-size: var(--t-md);
+    color: var(--fg-bright);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .an-podium-subj { font-size: var(--t-xs); margin-top: 2px; }
+  .an-podium-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    margin: 8px 0 6px;
+    overflow: hidden;
+  }
+  .an-podium-bar-fill {
+    height: 100%;
+    width: calc(var(--w) * 100%);
+    background: var(--subj-c, var(--accent));
+    border-radius: 2px;
+  }
+  .an-podium-stats {
+    font-size: var(--t-xs);
+    color: var(--fg-muted);
+    display: flex;
+    gap: 6px;
+  }
+  .an-podium-more { margin-top: 6px; font-size: var(--t-xs); }
+
 </style>

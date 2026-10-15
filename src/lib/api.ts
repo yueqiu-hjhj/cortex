@@ -241,6 +241,14 @@ export const moodleAutolink = () => invoke<number>("moodle_autolink");
 export interface CardDraft { front: string; back: string }
 export const extractFlashcards = (mime: string, base64: string) =>
   invoke<CardDraft[]>("extract_flashcards_from_image", { mime, base64 });
+/**
+ * Ask the configured text LLM to pull term/definition pairs from a free-form
+ * chunk (a snippet pasted in, or a single sources extracted text). The dialog
+ * shows the candidates and lets the user cherry-pick which to add.
+ */
+export const aiSuggestGlossary = (text: string, maxTerms?: number) =>
+  invoke<[string, string][]>("ai_suggest_glossary", { text, maxTerms });
+
 export const saveFlashcards = (subjectId: string, topicId: string | null, cards: CardDraft[], title: string) =>
   invoke<number>("save_flashcards_to_subject", { subjectId, topicId, cards, title });
 
@@ -930,6 +938,8 @@ export interface AnalyticsSummary {
   weak_topics: WeakTopic[];
   fsrs: FsrsTotals;
   streak: number;
+  /** Longest run of consecutive days with activity, anywhere in the year. */
+  longest_streak: number;
   pomodoro: PomodoroStats;
   minutes_week: number;
   reviews_week: number;

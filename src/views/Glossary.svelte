@@ -11,6 +11,7 @@
   import { app } from "../lib/store.svelte";
   import Icon from "../components/Icon.svelte";
   import * as gl from "../lib/glossary";
+  import * as api from "../lib/api";
   import type { GlossaryTerm } from "../lib/glossary";
   import { isMobile } from "../lib/platform";
 
@@ -41,6 +42,41 @@
     fuzzy: terms.filter((t) => t.status === "fuzzy").length,
     new: terms.filter((t) => t.status === "new").length,
   });
+
+  // AI suggest dialog state.
+  let aiOpen = $state(false);
+  let aiText = $state("");
+  let aiCandidates = $state<[string, string][]>([]);
+  let aiSelected = $state<Record<number, boolean>>({});
+  let aiBusy = $state(false);
+  let aiErr = $state<string | null>(null);
+  function openAi() { aiText = ""; aiCandidates = []; aiSelected = {}; aiErr = null; aiOpen = true; }
+  function closeAi() { aiOpen = false; }
+  async function runSuggest() {
+    if (aiBusy) return;
+    aiBusy = true; aiErr = null; aiCandidates = []; aiSelected = {};
+    try {
+      const out = await api.aiSuggestGlossary(aiText, 20);
+      aiCandidates = out ?? [];
+      aiSelected = Object.fromEntries(aiCandidates.map((_, i) => [i, true]));
+      if (aiCandidates.length === 0) aiErr = "AI 没抽到术语";
+    } catch (e) { aiErr = String(e); }
+    finally { aiBusy = false; }
+  }
+  function acceptAi() {
+    if (!sid) return;
+    let added = 0;
+    aiCandidates.forEach(([t, d], i) => {
+      if (!aiSelected[i]) return;
+      gl.addTerm(sid, t, d);
+      added++;
+    });
+    if (added) {
+      app.pushToast({ kind: "success", title: `已加 ${added} 个术语`, body: "可在 All 里翻看" });
+      reload();
+    }
+    closeAi();
+  }
 
   // Add form.
   let newTerm = $state("");
@@ -96,6 +132,9 @@
       </div>
     </div>
     <div class="gl-head-actions">
+      <button class="btn btn--sm" type="button" onclick={openAi} title="粘贴文本或来源内容，让 AI 抽出候选术语">
+        <Icon name="bolt" size={12} /> AI Suggest
+      </button>
       <div class="seg" role="tablist" aria-label="Filter">
         <button
           class="seg-btn{filter === "all" ? " on" : ""}"
@@ -215,6 +254,53 @@
   {/if}
 </div>
 
+{#if aiOpen}
+  <div class="gl-ai-backdrop" onclick={closeAi} role="presentation"></div>
+  <div class="gl-ai-dialog" role="dialog" aria-modal="true" aria-label="AI Suggest terms">
+    <header class="gl-ai-head">
+      <h2>AI Suggest · 术语候选</h2>
+      <button class="btn btn--icon btn--sm btn--ghost" type="button" onclick={closeAi} aria-label="Close">
+        <Icon name="x" size={14} />
+      </button>
+    </header>
+    <div class="gl-ai-body">
+      <label class="mono faint" for="gl-ai-text">粘贴一段文本（笔记 / 教材 / 来源内容）</label>
+      <textarea id="gl-ai-text" class="input" rows="6" bind:value={aiText} disabled={aiBusy} placeholder="把要抽术语的段落粘在这里…"></textarea>
+      <div class="gl-ai-actions">
+        <button class="btn btn--primary btn--sm" type="button" onclick={runSuggest} disabled={aiBusy || !aiText.trim()}>
+          {aiBusy ? "正在抽…" : "提取候选"}
+        </button>
+        {#if aiCandidates.length > 0}
+          <span class="mono faint">{aiCandidates.length} 候选 · 已选 {Object.values(aiSelected).filter(Boolean).length}</span>
+        {/if}
+      </div>
+      {#if aiErr}
+        <div class="gl-ai-err mono">{aiErr}</div>
+      {/if}
+      {#if aiCandidates.length > 0}
+        <ul class="gl-ai-list">
+          {#each aiCandidates as c, i (i)}
+            <li class="gl-ai-item">
+              <label>
+                <input type="checkbox" bind:checked={aiSelected[i]} />
+                <span class="gl-ai-term read">{c[0]}</span>
+                <span class="gl-ai-def mono faint">{c[1]}</span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+    <footer class="gl-ai-foot">
+      <button class="btn btn--ghost btn--sm" type="button" onclick={closeAi}>取消</button>
+      <button class="btn btn--primary btn--sm" type="button" onclick={acceptAi} disabled={aiBusy || Object.values(aiSelected).filter(Boolean).length === 0}>
+        入 {Object.values(aiSelected).filter(Boolean).length} 个术语
+      </button>
+    </footer>
+  </div>
+{/if}
+
+
 <style>
   .glossary {
     padding: 18px 22px 32px;
@@ -327,4 +413,49 @@
   .btn--ok:hover    { background: color-mix(in srgb, var(--ok) 30%, transparent); }
   .btn--fuzzy { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
   .btn--fuzzy:hover { background: color-mix(in srgb, var(--warn) 30%, transparent); }
+
+  /* ── AI Suggest dialog ── */
+  .gl-ai-backdrop {
+    position: fixed; inset: 0; z-index: 80;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .gl-ai-dialog {
+    position: fixed; z-index: 81;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(640px, calc(100vw - 32px));
+    max-height: calc(100vh - 64px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 16px 60px color-mix(in srgb, black 40%, transparent);
+    display: flex; flex-direction: column;
+  }
+  .gl-ai-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .gl-ai-head h2 { font-size: var(--t-md); font-weight: 600; color: var(--fg-bright); margin: 0; }
+  .gl-ai-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+  .gl-ai-body .input { width: 100%; resize: vertical; min-height: 96px; }
+  .gl-ai-actions { display: flex; align-items: center; gap: 12px; }
+  .gl-ai-err { color: var(--err); font-size: var(--t-xs); }
+  .gl-ai-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }
+  .gl-ai-item label {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    column-gap: 8px;
+    row-gap: 2px;
+    align-items: start;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--surface);
+  }
+  .gl-ai-item label:hover { border-color: var(--accent); }
+  .gl-ai-item input[type="checkbox"] { margin-top: 3px; }
+  .gl-ai-term { grid-column: 2; font-size: var(--t-sm); color: var(--fg-bright); font-weight: 600; }
+  .gl-ai-def  { grid-column: 2; font-size: var(--t-xs); color: var(--fg-muted); line-height: 1.5; }
+  .gl-ai-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
 </style>

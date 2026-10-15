@@ -31,6 +31,10 @@ const DEFAULT_CHAT_MODEL: &str = "openrouter:deepseek/deepseek-v4-flash";
 /// falls back to whichever keyed provider is available, all of whose fallbacks are
 /// multimodal (gpt-4o-mini / gemini-2.5-flash / claude-3.5-sonnet).
 const DEFAULT_VISION_MODEL: &str = "openrouter:google/gemini-2.5-flash";
+/// Default fallback for `model_default` (text generation tasks: cheatsheet /
+/// glossary extraction / topic summary). Historically defaulted to the same
+/// fast chat model since most callers just need non-reasoning JSON output.
+const DEFAULT_MODEL: &str = DEFAULT_CHAT_MODEL;
 
 /// Default faster-whisper model id sent to the remote (speaches) transcription
 /// endpoint when the user hasn't picked one. speaches REQUIRES the `model` form
@@ -778,6 +782,60 @@ fn save_card_drafts(c: &Connection, subject_id: &str, topic_id: Option<&str>, ca
     let meta = format!("{count} cards · OCR");
     repo::save_material(c, subject_id, topic_id, "flashcards", &title, &meta, &serde_json::Value::Array(clean))?;
     Ok(count)
+}
+
+/// Suggest glossary terms from a free-form text snippet using the configured LLM.
+/// Returns up to `max_terms` `(term, definition)` pairs; the frontend lets the
+/// user cherry-pick which to add. No DB writes — the dialog calls the existing
+/// `gl.addTerm` per-term so each one keeps its own localStorage id.
+#[tauri::command]
+pub async fn ai_suggest_glossary(state: State<'_, AppState>, text: String, max_terms: Option<usize>) -> Result<Vec<(String, String)>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() { return Err(Error::Other("粘贴一些文本再抽术语".into())); }
+    if trimmed.len() > 30_000 { return Err(Error::Other("文本太长（>30k 字），先分段".into())); }
+    let cap = max_terms.unwrap_or(20).clamp(1, 50);
+    let (spec, keys) = {
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) { return Err(Error::Other("离线模式下无法使用 AI 抽取".into())); }
+        (repo::get_setting(&c, "model_default")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.into()), read_keys(&c)?)
+    };
+    let mut model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+    let prompt = format!(
+        "从下面的学习材料中抽出最重要的 {cap} 个术语（term）和一句话定义（definition）。\n\n要求：\n- 用材料原语言\n- 跳过停用词、人名、临时上下文\n- 优先定义名词、概念、原理、专有名词\n- definition 1-2 句，可独立理解\n- 严格只输出 JSON：{{\"terms\":[{{\"term\":\"...\",\"definition\":\"...\"}}]}}，不要任何额外文字或 markdown 围栏\n\n材料：\n{trimmed}"
+    );
+    let system = "你是一个学习助手，输出必须是严格 JSON。";
+    let raw = tauri::async_runtime::spawn_blocking(move || model.complete(system, &prompt))
+        .await.map_err(|e| Error::Other(e.to_string()))??;
+    parse_glossary_terms(&raw, cap)
+}
+
+/// Tolerant JSON parser for the AI glossary prompt. Accepts the canonical
+/// `{terms: [{term, definition}]}` and falls back to array-only if the model
+/// drops the wrapper. Strips markdown fences, rejects empty pairs.
+fn parse_glossary_terms(raw: &str, cap: usize) -> Result<Vec<(String, String)>> {
+    let mut s = raw.trim().to_string();
+    if s.starts_with("```") {
+        if let Some(end) = s.rfind("```") { if end > 3 { s = s[3..end].to_string(); } }
+        // Drop optional language tag after the opening fence.
+        if let Some(nl) = s.find('\n') { s = s[nl + 1..].to_string(); }
+        s = s.trim().to_string();
+    }
+    let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| Error::Other(format!("AI 返回的不是合法 JSON：{e}")))?;
+    let arr = v.get("terms").and_then(|x| x.as_array()).cloned()
+        .or_else(|| v.as_array().cloned())
+        .ok_or_else(|| Error::Other("AI 返回的 JSON 没有 terms 数组".into()))?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for item in arr {
+        let Some(obj) = item.as_object() else { continue };
+        let term = obj.get("term").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let def  = obj.get("definition").or_else(|| obj.get("def")).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        if term.is_empty() || def.is_empty() { continue; }
+        if term.len() > 120 || def.len() > 500 { continue; }
+        out.push((term, def));
+        if out.len() >= cap { break; }
+    }
+    if out.is_empty() { return Err(Error::Other("AI 没抽出可用的术语".into())); }
+    Ok(out)
 }
 
 /// Offload parsing to the configured homelab Tika service; None means no service configured.

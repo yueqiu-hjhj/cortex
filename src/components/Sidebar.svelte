@@ -189,6 +189,15 @@
       <Icon name="graph" size={14} /><span class="lbl"> Neural Graph</span><span class="nav-k">␣ n</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'mindmap' ? ' on' : ''}" title="Mind Map (Space m)"
+      onclick={() => app.setView("mindmap")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("mindmap")}
+    >
+      <Icon name="link" size={14} /><span class="lbl"> Mind Map</span><span class="nav-k">␣ m</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'pomodoro' ? ' on' : ''}"
       onclick={() => app.setView("pomodoro")}
       role="button"

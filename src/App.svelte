@@ -27,6 +27,7 @@
   import RecordingActivity from "./components/RecordingActivity.svelte";
   import { keybinds } from "./lib/keybinds.svelte";
   import { isMobile } from "./lib/platform";
+  import MindMapView from "./components/MindMapView.svelte";
   import MobileShell from "./shell/MobileShell.svelte";
 
   import Dashboard from "./views/Dashboard.svelte";
@@ -124,6 +125,27 @@
   // mobile: < 1080px → chat dock becomes an overlay (compact); < 760px → the
   // sidebar becomes a slide-in drawer behind a hamburger (tight).
   let vw = $state(typeof window !== "undefined" ? window.innerWidth : 1280);
+  // Global mind map data: subjects → topics → sources. Built client-side;
+  // no backend call needed (subjects/topics are already in app state).
+  const globalMap = $derived.by(() => {
+    if (app.view !== "mindmap") return null;
+    const branches: { label: string; children?: { label: string }[] }[] = [];
+    for (const s of app.subjects) {
+      const sub: typeof branches[number] = { label: (s.glyph + " " + s.name).trim() };
+      const kids: { label: string }[] = [];
+      for (const t of s.topics ?? []) {
+        kids.push({ label: ((t.glyph ?? "•") + " " + t.name).trim() });
+      }
+      kids.push({ label: s.sourceCount + " 个来源" });
+      sub.children = kids;
+      branches.push(sub);
+    }
+    return { central: "Cortex · 知识脑图", branches };
+  });
+
+    // Mobile/desktop branch is reactive: a WebView resized below 640px
+  // switches to MobileShell even on Windows (where isMobile() stays false).
+  const mobileNow = $derived(isMobile || vw < 640);
   $effect(() => {
     const onResize = () => (vw = window.innerWidth);
     window.addEventListener("resize", onResize);
@@ -323,7 +345,7 @@
   <div class="boot">Cortex — loading…</div>
 {:else if app.onboarding}
   <Onboarding onFinish={() => (app.onboarding = false)} />
-{:else if isMobile}
+{:else if mobileNow}
   <!-- Phone/tablet: touch shell (bottom tabs + sheets). Renders only when isMobile,
        so the desktop shell below is completely unaffected. See docs/MOBILE_PORT.md. -->
   <MobileShell />
@@ -389,6 +411,16 @@
           {#if ReviewTodayC}{@const ReviewToday = ReviewTodayC}<ReviewToday />{/if}
         {:else if app.view === "glossary"}
           {#if GlossaryViewC}{@const GlossaryView = GlossaryViewC}<GlossaryView />{/if}
+        {:else if app.view === "mindmap"}
+          <div class="workspace-scroll" style="padding: 24px;">
+            <header style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+              <h1 class="read" style="font-size:var(--t-lg);font-weight:600;color:var(--fg-bright);margin:0;">知识脑图 · 全局</h1>
+              <span class="mono faint" style="font-size:var(--t-xs);">{app.subjects.length} 个科目</span>
+            </header>
+            {#if globalMap}
+              <MindMapView data={globalMap} />
+            {/if}
+          </div>
         {:else if app.view === "settings"}
           {#if SettingsView}{@const Settings = SettingsView}<Settings />{/if}
         {/if}

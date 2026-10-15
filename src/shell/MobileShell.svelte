@@ -177,6 +177,7 @@
     { id: "calendar",    icon: "calendar", label: "Calendar" },
     { id: "notes",       icon: "reader",   label: "Notes" },
     { id: "neural-graph",icon: "graph",    label: "Neural Graph" },
+    { id: "mindmap",      icon: "link",     label: "Mind Map" },
     { id: "pomodoro",    icon: "bolt",     label: "Pomodoro" },
     { id: "review",      icon: "cards",    label: "Review today" },
     { id: "glossary",    icon: "book",     label: "Glossary" },

@@ -624,6 +624,9 @@ pub struct AnalyticsSummary {
     pub fsrs: FsrsTotals,
     /// Consecutive days ending today with ≥1 review attempt OR work session.
     pub streak: i64,
+    /// Longest run of consecutive days with activity, anywhere in the year
+    /// (independent of where the current streak sits). 0 if the year is empty.
+    pub longest_streak: i64,
     /// Study minutes over the last 7 calendar days (rolling).
     pub minutes_week: i64,
     /// Reviews answered over the last 7 calendar days.
