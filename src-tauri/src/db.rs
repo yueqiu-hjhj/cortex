@@ -41,6 +41,10 @@ const MIGRATIONS: &[&str] = &[
 /// lock contention is acceptable for a single-user desktop app.
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// The directory the DB lives in; used by sidecar fetchers (yt-dlp, age,
+    /// rclone) to know where to drop downloaded binaries. None only in tests
+    /// that use in_memory() (no on-disk layout).
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 /// Register the statically-linked `sqlite-vec` extension as an auto-extension so
@@ -66,6 +70,7 @@ impl AppState {
         run_migrations(&conn)?;
         Ok(Self {
             db: Mutex::new(conn),
+            data_dir: None,
         })
     }
 
@@ -78,6 +83,7 @@ impl AppState {
         run_migrations(&conn)?;
         Ok(Self {
             db: Mutex::new(conn),
+            data_dir: db_path.parent().map(std::path::Path::to_path_buf),
         })
     }
 }

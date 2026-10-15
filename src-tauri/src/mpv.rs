@@ -79,43 +79,17 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
     crate::ingest::which(bin).map(PathBuf::from)
 }
 
-/// Ensure a usable `yt-dlp` exists, returning its path. Prefers an existing
-/// install (downloaded copy, then PATH); otherwise downloads the standalone
-/// Linux binary into `<data>/bin/yt-dlp`. Idempotent.
+/// Ensure a usable `yt-dlp` exists, returning its path. Lookup order:
+/// 1. Bundled Tauri sidecar (legacy bundle.externalBin path).
+/// 2. Runtime-fetched copy in `<data>/bin/yt-dlp` (sidecars::ensure_ytdlp,
+///    downloads on first miss; cross-platform).
+/// 3. A copy already on `$PATH`.
+/// Idempotent.
 fn ensure_ytdlp(dir: &Path) -> Result<PathBuf> {
-    // Bundled sidecar (shipped with the app) takes priority — no download.
-    if let Some(p) = crate::ingest::bundled("yt-dlp") {
+    if let Some(p) = crate::ingest::tool_in("yt-dlp", Some(dir)) {
         return Ok(PathBuf::from(p));
     }
-    let downloaded = dir.join("bin").join("yt-dlp");
-    if downloaded.is_file() {
-        return Ok(downloaded);
-    }
-    if let Some(p) = find_on_path("yt-dlp") {
-        return Ok(p);
-    }
-    // Download the self-contained build (no system Python needed).
-    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
-    std::fs::create_dir_all(downloaded.parent().unwrap())?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(180))
-        .build()?;
-    let bytes = client
-        .get(url)
-        .send()
-        .map_err(|e| Error::Other(format!("yt-dlp download failed: {e}")))?
-        .error_for_status()
-        .map_err(|e| Error::Other(format!("yt-dlp download failed: {e}")))?
-        .bytes()?;
-    std::fs::write(&downloaded, &bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&downloaded)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&downloaded, perms)?;
-    }
-    Ok(downloaded)
+    crate::sidecars::ensure_ytdlp(dir)
 }
 
 /// Start mpv (idle, no video) if it isn't already running, listening on the IPC
@@ -212,7 +186,7 @@ pub fn media_tools_status(app: AppHandle) -> Result<MediaTools> {
     Ok(MediaTools {
         mpv: find_on_path("mpv").is_some(),
         ffmpeg: find_on_path("ffmpeg").is_some(),
-        ytdlp: crate::ingest::bundled("yt-dlp").is_some() || downloaded.is_file() || find_on_path("yt-dlp").is_some(),
+        ytdlp: crate::ingest::tool_in("yt-dlp", Some(dir.as_path())).is_some(),
         ytdlp_path: downloaded.display().to_string(),
     })
 }

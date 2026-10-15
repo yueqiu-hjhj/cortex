@@ -966,10 +966,43 @@ pub fn bundled(name: &str) -> Option<String> {
     }
 }
 
-/// A tool's path: the bundled sidecar if present, else found on PATH.
-pub fn tool(name: &str) -> Option<String> {
-    bundled(name).or_else(|| which(name))
+/// A tool's path lookup, in priority order:
+///   1. Bundled Tauri sidecar (bundle.externalBin legacy path)
+///   2. Runtime-fetched copy in <app_data_dir>/bin/<name> (sidecars::ensure)
+///   3. The user's $PATH and standard install dirs
+///
+/// `data_dir` is Some(<app_data_dir>) when the caller has it (mpv, backup);
+/// passing None skips the runtime-fetched bin dir - e.g. for ingest code
+/// paths that don't know the data dir, or on mobile where no sidecar is
+/// possible.
+pub fn tool_in(name: &str, data_dir: Option<&std::path::Path>) -> Option<String> {
+    bundled(name)
+        .or_else(|| runtime_fetched(name, data_dir))
+        .or_else(|| which(name))
 }
+
+/// Legacy single-arg lookup; equivalent to tool_in(name, None). Kept for
+/// the many existing callers that don't have the data dir in scope. New
+/// call sites that do should prefer tool_in.
+pub fn tool(name: &str) -> Option<String> {
+    tool_in(name, None)
+}
+
+fn runtime_fetched(name: &str, data_dir: Option<&std::path::Path>) -> Option<String> {
+    let dir = data_dir?;
+    let fname = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    let p = dir.join("bin").join(fname);
+    if p.is_file() {
+        Some(p.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
 
 /// Split text into bounded, overlapping chunks on word boundaries.
 pub fn chunk_text(text: &str, target: usize, overlap: usize) -> Vec<String> {

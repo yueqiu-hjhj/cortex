@@ -24,6 +24,7 @@ mod notes;
 mod recorder;
 mod repo;
 mod review;
+mod sidecars;
 mod sync;
 mod vector;
 

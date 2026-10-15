@@ -33,14 +33,25 @@ pub struct BackupStatus {
 }
 
 /// True if `bin --version` (or `--help` for rclone) spawns successfully.
-fn tool_exists(bin: &str) -> bool {
-    crate::ingest::tool(bin).is_some()
+fn tool_exists(bin: &str, data_dir: &std::path::Path) -> bool {
+    crate::ingest::tool_in(bin, Some(data_dir)).is_some()
 }
 
 /// Resolve a tool's invocation path: bundled sidecar, then PATH, else the bare
 /// name (so the error message still mentions the tool).
-fn bin(name: &str) -> String {
-    crate::ingest::tool(name).unwrap_or_else(|| name.to_string())
+fn bin(name: &str, data_dir: &std::path::Path) -> String {
+    if let Some(p) = crate::ingest::tool_in(name, Some(data_dir)) {
+        return p;
+    }
+    let fetched = match name {
+        "age" => crate::sidecars::ensure_age(data_dir),
+        "rclone" => crate::sidecars::ensure_rclone(data_dir),
+        _ => Err(crate::error::Error::Other(format!("no runtime fetcher for `{name}`"))),
+    };
+    match fetched {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => name.to_string(),
+    }
 }
 
 #[tauri::command]
@@ -51,8 +62,9 @@ pub fn backup_status(state: tauri::State<AppState>) -> Result<BackupStatus> {
     let last_at = repo::get_setting(&c, KEY_LAST_AT)?.and_then(|s| s.parse::<i64>().ok());
     let last_dest = repo::get_setting(&c, KEY_LAST_DEST)?;
     Ok(BackupStatus {
-        age_found: tool_exists("age"),
-        rclone_found: tool_exists("rclone"),
+        age_found: tool_exists("age", state.data_dir.as_deref().unwrap_or(std::path::Path::new(""))),
+        rclone_found: tool_exists("rclone", state.data_dir.as_deref().unwrap_or(std::path::Path::new(""))),
+
         recipient_set: !recipient.trim().is_empty(),
         remote_set: !remote.trim().is_empty(),
         last_at,
@@ -73,6 +85,11 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
             let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
             (recipient, remote, db_file_path(&app)?)
         };
+        // The db sits at <data_dir>/cortex.db; the bin/ sibling is where
+        // runtime-fetched sidecars live, so pass the parent as data_dir.
+        let data_dir = db_path.parent()
+            .ok_or_else(|| Error::Other("db path has no parent".into()))?
+            .to_path_buf();
 
         let recipient = recipient.trim();
         let remote = remote.trim().trim_end_matches('/');
@@ -86,12 +103,12 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
                 "No rclone remote set. Enter a remote like \"homelab:cortex\" in Settings → Backups.".into(),
             ));
         }
-        if !tool_exists("age") {
+        if !tool_exists("age", &data_dir) {
             return Err(Error::Other(
                 "`age` is not installed — it encrypts the backup. Install it (https://github.com/FiloSottile/age) and retry.".into(),
             ));
         }
-        if !tool_exists("rclone") {
+        if !tool_exists("rclone", &data_dir) {
             return Err(Error::Other(
                 "`rclone` is not installed — it uploads the backup. Install it (https://rclone.org) and retry.".into(),
             ));
@@ -108,7 +125,7 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
 
         // Encrypt: age -r <recipient> -o <enc> <db>
         run(
-            Command::new(bin("age"))
+            Command::new(bin("age", &data_dir))
                 .arg("-r")
                 .arg(recipient)
                 .arg("-o")
@@ -120,7 +137,7 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
         // Upload: rclone copyto <enc> <remote>/cortex-<stamp>.db.age
         let dest = format!("{remote}/cortex-{stamp}.db.age");
         run(
-            Command::new(bin("rclone")).arg("copyto").arg(&tmp_enc).arg(&dest),
+            Command::new(bin("rclone", &data_dir)).arg("copyto").arg(&tmp_enc).arg(&dest),
             "rclone",
         )?;
 
