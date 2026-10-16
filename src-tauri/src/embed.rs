@@ -216,6 +216,7 @@ pub fn from_settings(
     provider: &str,
     gemini_key: Option<&str>,
     ollama_url: Option<&str>,
+    data_dir: Option<&std::path::Path>,
 ) -> Box<dyn Embedder> {
     match provider {
         "gemini" => match gemini_key {
@@ -228,6 +229,10 @@ pub fn from_settings(
             base_url: ollama_url.unwrap_or("http://localhost:11434").to_string(),
             model: "nomic-embed-text".to_string(),
         }),
+        "onnx" => match data_dir {
+            Some(d) => Box::new(crate::embed_onnx::OnnxEmbedder::new(d.to_path_buf())),
+            None => Box::new(StubEmbedder),
+        },
         _ => Box::new(StubEmbedder),
     }
 }

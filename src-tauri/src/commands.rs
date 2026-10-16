@@ -958,7 +958,7 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
                 crate::homelab::resolved_setting(&c, "ollama_url"),
             )
         };
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref());
+        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
         emit_progress(&app, &id, "embedding", &format!("{} chunks", chunks.len()), 70);
         let vectors = ingest::embed_chunks(embedder.as_ref(), &chunks)
             .or_else(|_| ingest::embed_chunks(&embed::StubEmbedder, &chunks))?;
@@ -1239,7 +1239,7 @@ pub async fn add_source(
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
-    let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref());
+    let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
     emit_progress(
         &app,
         &source_id,
@@ -1342,8 +1342,9 @@ pub async fn search_chunks(
     };
     // Embed off the event-loop thread — embed() is a blocking network call, and a
     // sync command runs on the GTK thread (it would freeze the UI for the round-trip).
+    let data_dir = state.data_dir.clone();
     let qvec = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref());
+        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), data_dir.as_deref());
         embedder.embed(&[query]).map(|mut v| v.pop().unwrap_or_default())
     })
     .await
@@ -1383,8 +1384,9 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     // a sync command would freeze the UI for the round-trip. Skipped on the stub
     // embedder — its hash vectors rank essentially at random.
     let q = query.clone();
+    let data_dir = state.data_dir.clone();
     let qvec: Option<Vec<f32>> = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref());
+        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), data_dir.as_deref());
         if embedder.name() == "stub" {
             return None;
         }
@@ -1592,7 +1594,7 @@ pub async fn chat_answer(
 
     let mut hits: Vec<ChunkHit> = if embeddings_reliable {
         let embedder =
-            embed::from_settings(&embed_provider, keys.gemini.as_deref(), ollama_url.as_deref());
+            embed::from_settings(&embed_provider, keys.gemini.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
         let qvec = embedder.embed(&[query.clone()])?.pop().unwrap_or_default();
         let c = state.db.lock().unwrap();
         let mut vec_hits = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
@@ -4530,7 +4532,7 @@ pub(crate) fn run_transcription_job(app: &AppHandle, source_id: &str) {
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
-    let embedder = embed::from_settings(&embed_provider, gemini_key.as_deref(), ollama_url.as_deref());
+    let embedder = embed::from_settings(&embed_provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
     emit_progress(app, source_id, "embedding", &format!("{} chunks", chunks.len()), 75);
     let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
         Ok(v) => v,
@@ -5036,5 +5038,57 @@ mod ocr_tests {
             assert_eq!(decks[0].payload[0]["q"], "Question");
         }
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+
+// ---- ONNX embeddings (zero-config local model) ----------------------------
+
+#[tauri::command]
+pub fn onnx_status(state: State<AppState>) -> Result<crate::embed_onnx::Status> {
+    let Some(dir) = state.data_dir.as_ref() else {
+        return Ok(crate::embed_onnx::Status::NotPresent);
+    };
+    Ok(crate::embed_onnx::status(dir))
+}
+
+/// Kick off the ONNX model download (idempotent — returns immediately if the
+/// model is already on disk). Reports progress via the `onnx-progress` Tauri
+/// event so the Settings UI can show a live bar. Returns the final Status when
+/// done; the caller can also poll `onnx_status` afterwards. The download runs
+/// on a blocking thread because reqwest::blocking is in use elsewhere.
+#[tauri::command]
+pub async fn onnx_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::embed_onnx::Status> {
+    let dir = state
+        .data_dir
+        .clone()
+        .ok_or_else(|| Error::Other("no data_dir on AppState".into()))?;
+    let app_for_event = app.clone();
+    let dir_for_thread = dir.clone();
+    let res = std::thread::spawn(move || {
+        crate::embed_onnx::ensure_model(&dir_for_thread, move |downloaded, total| {
+            let _ = app_for_event.emit(
+                "onnx-progress",
+                serde_json::json!({ "downloaded": downloaded, "total": total }),
+            );
+        })
+    })
+    .join()
+    .map_err(|_| Error::Other("onnx download thread panicked".into()))?;
+    match res {
+        Ok(_) => {
+            let _ = app.emit("onnx-done", serde_json::json!({ "ok": true }));
+            Ok(crate::embed_onnx::status(&dir))
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "onnx-done",
+                serde_json::json!({ "ok": false, "error": e.to_string() }),
+            );
+            Ok(crate::embed_onnx::Status::Failed { reason: e.to_string() })
+        }
     }
 }

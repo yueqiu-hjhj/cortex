@@ -10,6 +10,7 @@ mod calendar;
 mod commands;
 mod db;
 mod embed;
+mod embed_onnx;
 mod error;
 mod exam;
 mod google;
@@ -359,7 +360,11 @@ pub fn run() {
             commands::synthesize_overview,
             commands::list_materials,
             commands::delete_material,
+            commands::onnx_status,
+            commands::onnx_download,
             commands::delete_material,
+            commands::onnx_status,
+            commands::onnx_download,
             commands::sync_knowledge_graph,
             commands::list_knowledge_nodes,
             commands::get_knowledge_graph,

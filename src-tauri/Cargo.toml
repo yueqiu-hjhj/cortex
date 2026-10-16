@@ -58,6 +58,14 @@ flate2 = "1"
 # CLI isn't present (iOS/Android, or a desktop without poppler). Handles text-layer
 # PDFs entirely in-process; scanned PDFs still need OCR (homelab ingest service).
 pdf-extract = "0.10"
+# Local zero-config embeddings: ONNX model + HF tokenizer.
+# ort provides the ONNX Runtime bindings (statically links the native runtime);
+# tokenizers handles the HuggingFace 	okenizer.json that ships alongside the
+# model. Both are gated to non-iOS targets because iOS build artifacts don't ship
+# the ONNX runtime dylib and we already disable voice+vector on iOS via cfg.
+ort = { version = "2.0.0-rc.14", default-features = false, features = ["std"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+
 # Live sync: blocking WebSocket client for the homelab syncd push channel.
 # webpki roots (no system cert store needed) so wss:// works identically on
 # desktop and iOS; ring already builds everywhere here (reqwest uses rustls).

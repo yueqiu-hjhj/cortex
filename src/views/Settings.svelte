@@ -12,6 +12,7 @@
   import { stations } from "../lib/mock";
   import { keybinds, ACTION_LABELS, ACTION_ORDER, LEADER_ACTIONS } from "../lib/keybinds.svelte";
   import type { Action } from "../lib/keybinds.svelte";
+  import { onMount } from "svelte";
   import type { Snippet } from "svelte";
 
   // Shape for the reusable homelab endpoint-service snippet (Integrations tab).
@@ -143,6 +144,7 @@
     { id: "custom", label: "Custom endpoint", models: [] },
   ];
   const EMBED_PROVIDERS: { id: string; label: string; models: Model[] }[] = [
+    { id: "onnx",   label: "Local ONNX (zero-config)", models: [{ id: "multilingual-e5-small", label: "multilingual-e5-small — 384d, on-device" }] },
     { id: "gemini",  label: "Gemini",        models: [{ id: "text-embedding-004", label: "text-embedding-004" }] },
     { id: "openai",  label: "OpenAI",        models: [{ id: "text-embedding-3-small", label: "text-embedding-3-small — cheap" }, { id: "text-embedding-3-large", label: "text-embedding-3-large — best" }] },
     { id: "ollama",  label: "Ollama (local)", models: [{ id: "nomic-embed-text", label: "nomic-embed-text — local" }, { id: "mxbai-embed-large", label: "mxbai-embed-large — local" }] },
@@ -1161,7 +1163,16 @@
       // models if any task uses Ollama (so the picker reflects reality immediately).
       verifyAllKeys();
       if (Object.values(assign).some((x) => x.provider === "ollama")) void ensureOllamaModels();
+      void refreshOnnxStatus();
     })();
+    // Live progress while the ONNX model downloads.
+    onMount(() => {
+      let unlisten: (() => void) | null = null;
+      api.onOnnxProgress((p) => {
+        onnxStat = { kind: "downloading", downloaded: p.downloaded, total: p.total };
+      }).then((u) => { unlisten = u; });
+      return () => { unlisten?.(); };
+    });
   });
 
   // ---- helpers ----
@@ -1240,6 +1251,25 @@
   // Changing the Ollama/homelab URL just INVALIDATES the cached list — it's re-probed
   // lazily next time the picker opens, so we don't fire a network call per keystroke.
   function invalidateOllamaModels() { ollamaLoaded = false; ollamaInstalled = []; }
+
+    // ---- local ONNX embeddings (zero-config) ----
+    // The desktop app can run embeddings entirely on-device after a one-time
+    // download of the int8 multilingual-e5-small ONNX model (~118 MB). Once
+    // Ready, chunks are embedded without any external service. iOS never
+    // shows the "Ready" state (the ONNX crate is gated out for iOS).
+    let onnxStat = $state<api.OnnxStatus | null>(null);
+    let onnxDownloading = $state(false);
+    async function refreshOnnxStatus() {
+      try { onnxStat = await api.onnxStatus(); } catch { onnxStat = null; }
+    }
+    async function startOnnxDownload() {
+      if (onnxDownloading) return;
+      onnxDownloading = true;
+      onnxStat = { kind: "downloading", downloaded: 0, total: 118_000_000 };
+      try { onnxStat = await api.onnxDownload(); }
+      catch (e) { onnxStat = { kind: "failed", reason: String(e) }; }
+      finally { onnxDownloading = false; }
+    }
 
   // Is local-model (Ollama) usage available here? On desktop, always (localhost). On
   // mobile there is no localhost Ollama, so it needs a homelab base (or an explicit
@@ -1660,6 +1690,57 @@ Notes: {about}</pre>
           </div>
         </section>
         {/if}
+
+        <!-- Local ONNX embeddings — keyless, on-device multilingual model. ~118 MB
+             one-time download from HuggingFace; once Ready the app embeds without
+             any external service. -->
+        <section class="set-group">
+          <div class="set-group-h"><h3 class="set-group-t">Local ONNX embeddings</h3></div>
+          <div class="set-card">
+            <div class="set-row stacked">
+              <div class="set-row-l">
+                <div class="set-row-t">
+                  <span class="row-keytitle">
+                    Status
+                    {#if onnxStat?.kind === "ready"}
+                      <span class="key-status ok">ready</span>
+                    {:else if onnxStat?.kind === "downloading"}
+                      <span class="key-status checking">downloading</span>
+                    {:else if onnxStat?.kind === "failed"}
+                      <span class="key-status bad">failed</span>
+                    {:else}
+                      <span class="key-status off">not present</span>
+                    {/if}
+                  </span>
+                </div>
+                <div class="set-row-d">
+                  {#if onnxStat?.kind === "ready"}
+                    On-device <span class="mono">multilingual-e5-small</span> ready — chunks embed locally with no network. ({Math.round(((onnxStat as any).bytes_on_disk) / 1_048_576)} MB on disk)
+                  {:else if onnxStat?.kind === "downloading"}
+                    Downloading the int8 ONNX model from HuggingFace…
+                    {Math.round(((onnxStat as any).downloaded) / 1_048_576)} / {Math.round((((onnxStat as any).total) || 118_000_000) / 1_048_576)} MB
+                  {:else if onnxStat?.kind === "failed"}
+                    Download failed: {(onnxStat as any).reason}. Check your network and retry.
+                  {:else}
+                    Zero-config local embeddings. One-time ~118 MB download from HuggingFace
+                    (<span class="mono">Xenova/multilingual-e5-small</span>, int8 quantized, 384 dims).
+                    After this the app runs embeddings offline with no API key.
+                  {/if}
+                </div>
+              </div>
+              <div class="set-row-r">
+                {#if onnxStat?.kind === "downloading"}
+                  <div class="onnx-bar"><div class="onnx-bar-f" style="width: {Math.min(100, Math.round((((onnxStat as any).downloaded) / Math.max(1, (onnxStat as any).total)) * 100))}%"></div></div>
+                {:else}
+                  <button class="btn btn--sm" type="button" disabled={onnxDownloading} onclick={startOnnxDownload}>
+                    <Icon name="download" size={12} />
+                    {onnxStat?.kind === "failed" ? "Retry download" : (onnxStat?.kind === "ready" ? "Re-download" : "Download (~118 MB)")}
+                  </button>
+                {/if}
+              </div>
+            </div>
+          </div>
+        </section>
 
         <div class="set-foot-actions">
           <button class="btn btn--primary" onclick={() => { saveKeys(); verifyAllKeys(); }}>

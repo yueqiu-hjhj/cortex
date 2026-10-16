@@ -103,7 +103,7 @@ pub async fn note_to_source(app: AppHandle, id: String) -> Result<IngestResult> 
             )
         };
         let embedder =
-            embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref());
+            embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
         let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
             Ok(v) => v,
             Err(_) => {

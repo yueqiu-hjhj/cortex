@@ -314,6 +314,20 @@ export const setSetting = (key: string, value: string) =>
 export const seedDemo = () => invoke<Subject[]>("seed_demo");
 export const envProbe = () => invoke<Record<string, boolean>>("env_probe");
 
+  // ---- local ONNX embeddings (zero-config) ----
+  /** Coarse status of the local ONNX model on disk. */
+  export type OnnxStatus =
+    | { kind: "not_present" }
+    | { kind: "downloading"; downloaded: number; total: number }
+    | { kind: "ready"; bytes_on_disk: number }
+    | { kind: "failed"; reason: string };
+  export const onnxStatus = () => invoke<OnnxStatus>("onnx_status");
+  /** Kick off a download (idempotent). Returns the final status. */
+  export const onnxDownload = () => invoke<OnnxStatus>("onnx_download");
+  /** Live download progress for the local ONNX model. Payload: { downloaded, total } bytes. */
+  export const onOnnxProgress = (cb: (p: { downloaded: number; total: number }) => void): Promise<UnlistenFn> =>
+    listen<{ downloaded: number; total: number }>("onnx-progress", (e) => cb(e.payload));
+
 // ---- AI ----
 export const chatAnswer = (
   subjectId: string,
