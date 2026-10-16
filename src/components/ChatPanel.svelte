@@ -18,7 +18,12 @@
   // ── scope state ──────────────────────────────────────────────────────────
   type Level = "subject" | "topic" | "source" | "sources";
 
-  interface ChatMessage { role: "system" | "user" | "assistant"; text: string; images?: api.WebImage[] }
+  interface ChatMessage {
+    role: "system" | "user" | "assistant";
+    text: string;
+    citations?: api.Citation[];
+    images?: api.WebImage[];
+  }
 
   // Web mode: let the AI pull live web snippets + images (diagrams/examples).
   let webOn = $state(false);
@@ -102,7 +107,11 @@
     api.listChatMessages(sid)
       .then((ms) => {
         if (app.activeSubjectId === sid)
-          messages = ms.map((m) => ({ role: m.role as ChatMessage["role"], text: m.text }));
+          messages = ms.map((m) => ({
+            role: m.role as ChatMessage["role"],
+            text: m.text,
+            citations: m.citations ?? [],
+          }));
       })
       .catch(() => {});
   });
@@ -121,7 +130,11 @@
     api.listChatMessages(sid)
       .then((ms) => {
         if (app.activeSubjectId !== sid) return;
-        const next = ms.map((m) => ({ role: m.role as ChatMessage["role"], text: m.text })) as ChatMessage[];
+        const next = ms.map((m) => ({
+          role: m.role as ChatMessage["role"],
+          text: m.text,
+          citations: m.citations ?? [],
+        })) as ChatMessage[];
         const imgs = app.chatLastImages;
         if (imgs.length && next.length && next[next.length - 1].role === "assistant") {
           next[next.length - 1] = { ...next[next.length - 1], images: imgs };
@@ -167,6 +180,13 @@
   // Short display name for the source segment
   function shortName(name: string) {
     return name.replace(/\.[^.]+$/, "").replace(/^lecture-0?/, "lec-");
+  }
+
+  function openEvidence(citation: api.Citation) {
+    const src = topicSources.find((s) => s.id === citation.source_id);
+    if (!src) return;
+    app.openSource(src, citation.loc);
+    onClose?.();
   }
 
   // Effective level: downgrade gracefully when the chosen scope has no target
@@ -581,6 +601,31 @@
         {:else}
           <div class="bubble assistant">
             <RichText text={m.text} />
+            {#if m.citations && m.citations.length}
+              <div class="evidence">
+                <div class="evidence-head">
+                  <span class="mono">Evidence</span>
+                  {#if !m.citations.some((c) => c.cited)}
+                    <span class="evidence-warning">No inline citation detected</span>
+                  {/if}
+                </div>
+                <div class="evidence-list">
+                  {#each m.citations as c (c.chunk_id)}
+                    <button
+                      type="button"
+                      class="evidence-chip"
+                      class:is-cited={c.cited}
+                      title={`${c.source_name}${c.loc ? " · " + c.loc : ""}\n${c.snippet}`}
+                      onclick={() => openEvidence(c)}
+                    >
+                      <Icon name="book" size={11} />
+                      <span class="ec-source">{c.source_name}</span>
+                      {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
             {#if m.images && m.images.length}
               <div class="chat-images">
                 {#each m.images as img (img.img)}
@@ -784,6 +829,23 @@
 <style>
   /* web image gallery under an assistant answer */
   .chat-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .evidence { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+  .evidence-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-faint);
+  }
+  .evidence-warning { color: var(--warn); letter-spacing: 0; text-transform: none; }
+  .evidence-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .evidence-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface-2); color: var(--fg-muted); font: inherit; font-size: 11px;
+    cursor: pointer;
+  }
+  .evidence-chip:hover { border-color: var(--border-strong); color: var(--fg-bright); }
+  .evidence-chip.is-cited { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
+  .ec-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ec-loc { flex: none; color: var(--fg-faint); font-family: var(--font-mono); font-size: 10px; }
   .chat-img {
     display: block; width: 116px; height: 86px; border-radius: var(--rad-2);
     overflow: hidden; border: 1px solid var(--border); background: var(--surface-2);

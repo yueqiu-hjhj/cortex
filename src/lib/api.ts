@@ -90,9 +90,13 @@ export interface IngestProgress {
 }
 
 export interface Citation {
+  source_id: string;
+  chunk_id: string;
   source_name: string;
   loc: string | null;
   snippet: string;
+  score: number;
+  cited: boolean;
 }
 export interface WebImage {
   img: string;
@@ -105,6 +109,7 @@ export interface ChatAnswer {
   citations: Citation[];
   model: string;
   images?: WebImage[];
+  uncited?: boolean;
 }
 export interface CsItem { t: string; d: string }
 export interface CsSection { id: string; title: string; state: string; items: CsItem[]; image?: string | null }
@@ -508,11 +513,20 @@ export const setSettings = (values: Record<string, string>) =>
   invoke<void>("set_settings", { values });
 
 // ---- chat history (persisted per subject) ----
-export interface ChatMsg { role: string; text: string; created_at: number }
+export interface ChatMsg {
+  role: string;
+  text: string;
+  citations?: Citation[];
+  created_at: number;
+}
 export const listChatMessages = (subjectId: string) =>
   invoke<ChatMsg[]>("list_chat_messages", { subjectId });
-export const addChatMessage = (subjectId: string, role: string, text: string) =>
-  invoke<void>("add_chat_message", { subjectId, role, text });
+export const addChatMessage = (
+  subjectId: string,
+  role: string,
+  text: string,
+  citations?: Citation[]
+) => invoke<void>("add_chat_message", { subjectId, role, text, citations });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
 
 // chat sessions (history)
@@ -1030,3 +1044,103 @@ export async function onNotificationTap(cb: (id: number) => void): Promise<void>
     }
   );
 }
+
+// ---- knowledge framework + calibration + undo journal -----------------------
+
+export interface KnowledgeNode {
+  id: string;
+  subject_id: string;
+  topic_id?: string | null;
+  source_id?: string | null;
+  parent_id?: string | null;
+  node_key: string;
+  kind: string;          // subject | topic | source | concept
+  title: string;
+  summary?: string | null;
+  position: number;
+  coverage: number;      // 0..1
+  mastery: number;       // 0..1
+  importance: number;    // 0..1
+  confidence: number;    // 0..1
+  observations: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface KnowledgeEdge {
+  id: string;
+  subject_id: string;
+  from_id: string;
+  to_id: string;
+  kind: string;          // contains | related | backlink
+  weight: number;
+  created_at: number;
+}
+
+export interface KnowledgeGraph {
+  subject_id: string;
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+}
+
+export interface CalibrationBucket {
+  /** confidence bracket lower bound (0.0, 0.2, 0.4, 0.6, 0.8) */
+  lower: number;
+  upper: number;
+  count: number;
+  accuracy: number;      // 0..1
+  mean_confidence: number; // 0..1
+  gap: number;           // mean_confidence - accuracy
+}
+
+export interface CalibrationSummary {
+  subject_id: string;
+  total_observations: number;
+  brier: number;
+  buckets: CalibrationBucket[];
+}
+
+export interface UndoEntry {
+  id: string;
+  action: string;           // delete_subject | delete_topic | delete_source | ...
+  entity_table: string;     // subject | topic | source | note | material
+  entity_id: string;
+  label: string;
+  payload: Record<string, unknown>;
+  created_at: number;
+  expires_at: number;
+  undone_at?: number | null;
+}
+
+export const syncKnowledgeGraph = (subjectId: string) =>
+  invoke<number>("sync_knowledge_graph", { subjectId });
+
+export const listKnowledgeNodes = (subjectId: string) =>
+  invoke<KnowledgeNode[]>("list_knowledge_nodes", { subjectId });
+
+export const getKnowledgeGraph = (subjectId: string) =>
+  invoke<KnowledgeGraph>("get_knowledge_graph", { subjectId });
+
+export const applyObservation = (
+  nodeId: string,
+  correct: boolean,
+  confidence: number,
+  signal?: string,
+  note?: string,
+) =>
+  invoke<number>("apply_observation", {
+    nodeId,
+    correct,
+    confidence,
+    signal: signal ?? null,
+    note: note ?? null,
+  });
+
+export const calibrationSummary = (subjectId: string) =>
+  invoke<CalibrationSummary>("calibration_summary", { subjectId });
+
+export const listUndoEntries = (limit = 50) =>
+  invoke<UndoEntry[]>("list_undo_entries", { limit });
+
+export const restoreUndo = (id: string) =>
+  invoke<string>("restore_undo", { id });

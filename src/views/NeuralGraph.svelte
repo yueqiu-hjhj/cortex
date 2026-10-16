@@ -507,6 +507,68 @@
     const filled = acc == null ? 0 : Math.max(1, Math.round(a * 4));
     return filled;
   }
+
+  // ── knowledge framework (BKT + calibration) ──────────────────────────────
+  let knNodes = $state<api.KnowledgeNode[]>([]);
+  let knCalib = $state<api.CalibrationSummary | null>(null);
+  let knLoading = $state(false);
+  let knErr = $state<string | null>(null);
+
+  async function loadKnowledge(subjectId: string) {
+    knLoading = true;
+    knErr = null;
+    try {
+      // Make sure the framework exists for this subject, then read it back.
+      await api.syncKnowledgeGraph(subjectId);
+      const [nodes, calib] = await Promise.all([
+        api.listKnowledgeNodes(subjectId),
+        api.calibrationSummary(subjectId),
+      ]);
+      knNodes = nodes;
+      knCalib = calib;
+    } catch (e: any) {
+      knErr = String(e?.message ?? e);
+      knNodes = [];
+      knCalib = null;
+    } finally {
+      knLoading = false;
+    }
+  }
+
+  // Reload the framework data when the user picks a different subject node.
+  $effect(() => {
+    if (selected?.kind === "subject" && selected.subjectId) {
+      void loadKnowledge(selected.subjectId);
+    } else if (selected && selected.kind !== "subject") {
+      knNodes = [];
+      knCalib = null;
+    }
+  });
+
+  // BKT mastery → Cortex band; mirrors the BANDS used in the legend.
+  function bktBand(m: number) {
+    if (m >= 0.85) return { txt: "Solid",  col: T.ok };
+    if (m >= 0.7)  return { txt: "Steady", col: T.accent };
+    if (m >= 0.45) return { txt: "Shaky",  col: T.warn };
+    return { txt: "Cold", col: T.err };
+  }
+
+  function fmtPct(n: number | null | undefined) {
+    if (n == null || Number.isNaN(n)) return "—";
+    return Math.round(n * 100) + "%";
+  }
+
+  function knAvgMastery() {
+    const concept = knNodes.filter((n) => n.kind === "concept" || n.kind === "source");
+    if (!concept.length) return null;
+    const s = concept.reduce((acc, n) => acc + n.mastery, 0);
+    return s / concept.length;
+  }
+
+  // Concepts only — subjects/topics/sources each get their own row, so showing
+  // them again here would just duplicate the detail panel.
+  let knConcepts = $derived(knNodes.filter((n) => n.kind === "concept"));
+
 </script>
 
 <div class="ng">
@@ -628,6 +690,85 @@
       {/if}
 
       <div class="ng-side-acts">
+      {#if selected.kind === "subject"}
+        <div class="ng-side-sec">
+          <span class="lbl">Knowledge framework</span>
+          {#if knLoading}
+            <div class="kn-mut">syncing nodes &amp; mastery…</div>
+          {:else if knErr}
+            <div class="kn-mut err">{knErr}</div>
+          {:else}
+            {@const avg = knAvgMastery()}
+            <div class="kn-summary">
+              <div class="kn-stat">
+                <span class="kn-stat-n">{knNodes.length}</span>
+                <span class="kn-stat-l">nodes</span>
+              </div>
+              <div class="kn-stat">
+                <span class="kn-stat-n">{knConcepts.length}</span>
+                <span class="kn-stat-l">concepts</span>
+              </div>
+              <div class="kn-stat">
+                <span class="kn-stat-n">{fmtPct(avg)}</span>
+                <span class="kn-stat-l">avg mastery</span>
+              </div>
+            </div>
+
+            {#if knCalib && knCalib.total_observations > 0}
+              <div class="kn-cal">
+                <div class="kn-cal-t">
+                  <span class="lbl">Calibration</span>
+                  <span class="kn-cal-b">Brier {knCalib.brier.toFixed(3)}</span>
+                </div>
+                {#each knCalib.buckets as b}
+                  <div class="kn-bucket">
+                    <span class="kn-bk-l">
+                      {Math.round(b.lower * 100)}–{Math.round(b.upper * 100)}%
+                    </span>
+                    <div class="kn-bk-bar">
+                      <i style:left="{Math.round(b.mean_confidence * 100)}%" class="conf"></i>
+                      <i style:left="{Math.round(b.accuracy * 100)}%" class="acc"></i>
+                    </div>
+                    <span class="kn-bk-r">
+                      <span class="mono">{b.count > 0 ? Math.round(b.accuracy * 100) + "%" : "—"}</span>
+                      {#if b.count > 0}
+                        <span class="kn-gap" class:over={b.gap > 0.05} class:under={b.gap < -0.05}>
+                          {b.gap > 0 ? "+" : ""}{Math.round(b.gap * 100)}%
+                        </span>
+                      {/if}
+                    </span>
+                  </div>
+                {/each}
+                <div class="kn-cal-legend">
+                  <span><i class="conf"></i> predicted</span>
+                  <span><i class="acc"></i> actual</span>
+                </div>
+              </div>
+            {/if}
+
+            {#if knConcepts.length}
+              <div class="kn-concepts">
+                <span class="lbl">Concepts</span>
+                {#each knConcepts.slice(0, 6) as c}
+                  {@const band = bktBand(c.mastery)}
+                  <div class="kn-concept">
+                    <span class="kn-c-t">{c.title}</span>
+                    <span class="kn-c-m" style:color={band.col}>{fmtPct(c.mastery)}</span>
+                  </div>
+                {/each}
+                {#if knConcepts.length > 6}
+                  <div class="kn-more">+{knConcepts.length - 6} more</div>
+                {/if}
+              </div>
+            {/if}
+
+            <button class="kn-refresh" onclick={() => selected?.subjectId && loadKnowledge(selected.subjectId)}>
+              <Icon name="refresh" size={11} /> Refresh
+            </button>
+          {/if}
+        </div>
+      {/if}
+
         {#if sel.kind === "subject"}
           <button class="pri" onclick={() => openNode(sel.id)}><Icon name="arrowR" size={13} /> Open subject</button>
         {:else if sel.kind === "topic"}
@@ -996,4 +1137,159 @@
     opacity: 0.45;
     cursor: default;
   }
+  /* Knowledge framework + calibration panel inside the side detail card. */
+  .kn-mut {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+    padding: 6px 0;
+  }
+  .kn-mut.err { color: var(--err); }
+
+  .kn-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin: 7px 0 4px;
+  }
+  .kn-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 7px 4px;
+    background: color-mix(in srgb, var(--surface-2) 65%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+  }
+  .kn-stat-n {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-bright);
+  }
+  .kn-stat-l {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 2px;
+  }
+
+  .kn-cal {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
+  .kn-cal-t {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .kn-cal-b {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-muted);
+  }
+  .kn-bucket {
+    display: grid;
+    grid-template-columns: 56px 1fr 64px;
+    align-items: center;
+    gap: 7px;
+    margin: 5px 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+  }
+  .kn-bk-l { font-size: 10px; color: var(--fg-faint); }
+  .kn-bk-bar {
+    position: relative;
+    height: 8px;
+    background: color-mix(in srgb, var(--surface) 75%, var(--bg) 25%);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .kn-bk-bar i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+  }
+  .kn-bk-bar i.conf { background: var(--accent); opacity: 0.85; }
+  .kn-bk-bar i.acc { background: var(--fg-bright); }
+  .kn-bk-r {
+    display: flex;
+    gap: 5px;
+    justify-content: flex-end;
+    align-items: baseline;
+  }
+  .kn-bk-r .mono { color: var(--fg); font-size: 11px; }
+  .kn-gap { font-size: 9.5px; padding: 1px 5px; border-radius: 4px; }
+  .kn-gap.over { background: color-mix(in srgb, var(--err) 22%, transparent); color: var(--err); }
+  .kn-gap.under { background: color-mix(in srgb, var(--info) 22%, transparent); color: var(--info); }
+  .kn-cal-legend {
+    display: flex;
+    gap: 12px;
+    margin-top: 7px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-faint);
+  }
+  .kn-cal-legend i {
+    display: inline-block;
+    width: 8px;
+    height: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .kn-cal-legend i.conf { background: var(--accent); }
+  .kn-cal-legend i.acc { background: var(--fg-bright); }
+
+  .kn-concepts {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
+  .kn-concept {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    font-size: 11.5px;
+    color: var(--fg);
+  }
+  .kn-c-t {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 170px;
+  }
+  .kn-c-m { font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; }
+  .kn-more {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    margin-top: 3px;
+  }
+
+  .kn-refresh {
+    margin-top: 10px;
+    width: 100%;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    gap: 5px;
+    padding: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .kn-refresh:hover { color: var(--accent); border-color: var(--accent); }
+
 </style>

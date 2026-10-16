@@ -931,6 +931,69 @@
     await Promise.all([loadArchived(), loadStats()]);
   }
 
+  // ---- undo / recycle bin ----
+  // Subjects/topics/sources/notes/materials that were deleted recently are
+  // journaled by the Rust backend (delete_*_with_undo); each entry holds a JSON
+  // snapshot so `restore_undo` can put the rows (and their chunks/tags) back.
+  // Entries auto-expire after UNDO_TTL_MS (7 days, set on the Rust side).
+  let undoEntries   = $state<api.UndoEntry[]>([]);
+  let undoLoading   = $state(false);
+  let undoBusy      = $state<string | null>(null);
+  let undoError     = $state<string | null>(null);
+
+  async function loadUndo() {
+    undoLoading = true;
+    undoError   = null;
+    try {
+      undoEntries = await api.listUndoEntries(50);
+    } catch (e: any) {
+      undoError = String(e?.message ?? e);
+      undoEntries = [];
+    } finally {
+      undoLoading = false;
+    }
+  }
+  async function runRestore(id: string) {
+    undoBusy = id;
+    undoError = null;
+    try {
+      const label = await api.restoreUndo(id);
+      app.pushToast({
+        kind: "success",
+        title: "Restored",
+        body: `Restored "${label}".`,
+      });
+      await Promise.all([loadUndo(), loadArchived(), loadStats()]);
+    } catch (e: any) {
+      undoError = String(e?.message ?? e);
+      app.pushToast({
+        kind: "warning",
+        title: "Couldn't restore",
+        body: undoError ?? "Unknown error",
+      });
+    } finally {
+      undoBusy = null;
+    }
+  }
+  function undoAge(ms: number): string {
+    const ageMs = Date.now() - ms;
+    if (ageMs < 60_000) return "just now";
+    const m = Math.floor(ageMs / 60_000);
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const d = Math.floor(h / 24);
+    return d + "d ago";
+  }
+  function undoExpiry(ms: number): string {
+    const left = ms - Date.now();
+    if (left <= 0) return "expired";
+    const d = Math.floor(left / 86_400_000);
+    if (d >= 1) return d + "d left";
+    const h = Math.floor(left / 3_600_000);
+    return h + "h left";
+  }
+
   function fmtBytes(n: number): string {
     if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
     if (n >= 1024 * 1024)        return (n / (1024 * 1024)).toFixed(1) + " MB";
@@ -2596,6 +2659,57 @@ Notes: {about}</pre>
             </div>
           </section>
         {/if}
+
+        {#if undoEntries.length || undoLoading || undoError}
+          <section class="set-group">
+            <div class="set-group-h">
+              <h3 class="set-group-t">Recycle bin</h3>
+              <p class="set-group-d">Recently deleted subjects, topics, sources, notes and materials. Restore brings the rows (and their chunks/tags) back; entries auto-expire after 7 days.</p>
+            </div>
+            <div class="set-card">
+              {#if undoError}
+                <div class="set-row">
+                  <div class="set-row-l">
+                    <div class="set-row-t" style="color:var(--err)">Could not load undo entries</div>
+                    <div class="set-row-d">{undoError}</div>
+                  </div>
+                  <div class="set-row-r">
+                    <button class="btn" onclick={loadUndo}>Retry</button>
+                  </div>
+                </div>
+              {/if}
+              {#if undoLoading && !undoEntries.length}
+                <div class="set-row">
+                  <div class="set-row-l">
+                    <div class="set-row-d mono faint">Loading…</div>
+                  </div>
+                </div>
+              {/if}
+              {#each undoEntries as e (e.id)}
+                <div class="set-row">
+                  <div class="set-row-l">
+                    <div class="set-row-t">
+                      <span class="mono faint">{e.action.replace("delete_", "")}</span>
+                      &nbsp;{e.label}
+                    </div>
+                    <div class="set-row-d mono faint">
+                      {undoAge(e.created_at)} · {undoExpiry(e.expires_at)}
+                      {#if e.undone_at}
+                        · <span style="color:var(--fg-muted)">already restored</span>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="set-row-r">
+                    <button class="btn" onclick={() => runRestore(e.id)} disabled={undoBusy === e.id || !!e.undone_at}>
+                      {undoBusy === e.id ? "Restoring…" : "Restore"}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
 
         <section class="set-group">
           <div class="set-group-h"><h3 class="set-group-t">Manage</h3></div>

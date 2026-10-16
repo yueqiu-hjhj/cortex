@@ -539,10 +539,16 @@ class AppStore {
     return { body: full.slice(0, m.index).trimEnd(), sugg };
   }
 
-  #finishAssistant(subjectId: string, text: string, images: api.WebImage[], sugg: string[]) {
+  #finishAssistant(
+    subjectId: string,
+    text: string,
+    images: api.WebImage[],
+    sugg: string[],
+    citations: api.Citation[]
+  ) {
     this.chatLastImages = images;
     this.chatSuggestions = sugg;
-    api.addChatMessage(subjectId, "assistant", text).catch(() => {}); // persist
+    api.addChatMessage(subjectId, "assistant", text, citations).catch(() => {}); // persist
     this.chatMsgNonce++;
   }
 
@@ -566,13 +572,14 @@ class AppStore {
       const result = await api.chatAnswer(subjectId, level, query, sourceId, sourceIds, web);
       if (this.#chatCancelled) return;
       const imgs = result.images ?? [];
+      const citations = result.citations ?? [];
       const { body, sugg } = this.#splitChatSuggestions(result.text);
       await new Promise<void>((resolve) => {
         let i = 0;
         this.#chatTypeIv = setInterval(() => {
           if (this.#chatCancelled) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg);
+            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations);
             resolve();
             return;
           }
@@ -580,7 +587,7 @@ class AppStore {
           this.chatStreaming = body.slice(0, i);
           if (i >= body.length) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body, imgs, sugg);
+            this.#finishAssistant(subjectId, body, imgs, sugg, citations);
             resolve();
           }
           // ~30fps (6 chars/33ms) reveals at the same speed as 3 chars/16ms but
@@ -608,7 +615,7 @@ class AppStore {
     // If we're still waiting on the network (no partial yet), nothing to keep —
     // the awaited result will hit the `#chatCancelled` guard and clean up.
     if (this.chatStreaming && this.chatGenSubject && !this.#chatTypeIv) {
-      this.#finishAssistant(this.chatGenSubject, this.chatStreaming, [], []);
+      this.#finishAssistant(this.chatGenSubject, this.chatStreaming, [], [], []);
       this.chatStreaming = null;
       this.chatBusy = false;
     }
