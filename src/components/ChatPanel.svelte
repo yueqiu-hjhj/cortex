@@ -35,6 +35,10 @@
   let picked = $state<Record<string, boolean>>({});
   const pickedIds = $derived(Object.keys(picked).filter((k) => picked[k]));
   let messages = $state<ChatMessage[]>([]);
+  // Per-message evidence-panel expansion. Default collapsed so the chat stays
+  // scannable; clicking the Evidence header opens the snippets.
+  let evidenceOpen = $state<Record<number, boolean>>({});
+  function toggleEvidence(i: number) { evidenceOpen = { ...evidenceOpen, [i]: !evidenceOpen[i] }; }
   let draft = $state("");
   // Streaming + suggestions now live in the store (app.sendChat) so a reply keeps
   // going even if this panel unmounts. We only surface the live text when it's for
@@ -599,31 +603,55 @@
         {:else if m.role === "user"}
           <div class="bubble user">{m.text}</div>
         {:else}
-          <div class="bubble assistant">
+          {@const cites = m.citations ?? []}
+          {@const citedCount = cites.filter((c) => c.cited).length}
+          {@const isUncited = cites.length > 0 && citedCount === 0}
+          <div class="bubble assistant" class:is-uncited={isUncited}>
             <RichText text={m.text} />
-            {#if m.citations && m.citations.length}
+            {#if cites.length}
               <div class="evidence">
-                <div class="evidence-head">
+                <button
+                  type="button"
+                  class="evidence-head"
+                  class:is-uncited={isUncited}
+                  onclick={() => toggleEvidence(i)}
+                  aria-expanded={!!evidenceOpen[i]}
+                >
+                  <Icon name={evidenceOpen[i] ? "x" : "book"} size={11} />
                   <span class="mono">Evidence</span>
-                  {#if !m.citations.some((c) => c.cited)}
-                    <span class="evidence-warning">No inline citation detected</span>
+                  <span class="evidence-count mono">{citedCount}/{cites.length} cited</span>
+                  {#if isUncited}
+                    <span class="evidence-warning">No inline citation</span>
                   {/if}
-                </div>
-                <div class="evidence-list">
-                  {#each m.citations as c (c.chunk_id)}
-                    <button
-                      type="button"
-                      class="evidence-chip"
-                      class:is-cited={c.cited}
-                      title={`${c.source_name}${c.loc ? " · " + c.loc : ""}\n${c.snippet}`}
-                      onclick={() => openEvidence(c)}
-                    >
-                      <Icon name="book" size={11} />
-                      <span class="ec-source">{c.source_name}</span>
-                      {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
-                    </button>
-                  {/each}
-                </div>
+                  <span class="evidence-caret">{evidenceOpen[i] ? "▾" : "▸"}</span>
+                </button>
+                {#if evidenceOpen[i]}
+                  <div class="evidence-body">
+                    <div class="evidence-list">
+                      {#each cites as c (c.chunk_id)}
+                        <button
+                          type="button"
+                          class="evidence-chip"
+                          class:is-cited={c.cited}
+                          class:is-uncited-chip={!c.cited}
+                          title={`${c.source_name}${c.loc ? " · " + c.loc : ""}\n${c.snippet}`}
+                          onclick={() => openEvidence(c)}
+                        >
+                          <Icon name={c.cited ? "book" : "warn"} size={11} />
+                          <span class="ec-source">{c.source_name}</span>
+                          {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
+                          {#if c.score != null}<span class="ec-score mono">{Math.round(c.score * 100)}%</span>{/if}
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="evidence-trace mono">
+                      retrieved {cites.length} chunk{cites.length === 1 ? "" : "s"}
+                      from {new Set(cites.map((c) => c.source_id)).size} source{new Set(cites.map((c) => c.source_id)).size === 1 ? "" : "s"}
+                      · {citedCount} cited inline
+                      {#if isUncited}· <span class="trace-warn">no source linked in answer</span>{/if}
+                    </div>
+                  </div>
+                {/if}
               </div>
             {/if}
             {#if m.images && m.images.length}
@@ -829,13 +857,31 @@
 <style>
   /* web image gallery under an assistant answer */
   .chat-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  /* Uncited answer: red border around the whole bubble so it cannot be missed. */
+  .bubble.assistant.is-uncited { border-color: var(--warn); box-shadow: 0 0 0 1px color-mix(in oklab, var(--warn) 35%, transparent); }
+
   .evidence { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
   .evidence-head {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
     font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-faint);
+    background: transparent; border: 0; padding: 0; margin: 0 0 6px;
+    cursor: pointer; font: inherit;
+    width: 100%; text-align: left;
   }
-  .evidence-warning { color: var(--warn); letter-spacing: 0; text-transform: none; }
+  .evidence-head:hover { color: var(--fg-muted); }
+  .evidence-head.is-uncited { color: var(--warn); }
+  .evidence-count { margin-left: 4px; color: var(--fg-faint); text-transform: none; letter-spacing: 0; }
+  .evidence-caret { margin-left: auto; color: var(--fg-faint); }
+  .evidence-warning { color: var(--warn); letter-spacing: 0; text-transform: none; margin-left: 4px; }
+  .evidence-body { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
   .evidence-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .evidence-trace {
+    font-size: 10.5px; color: var(--fg-faint);
+    padding: 4px 6px; border-top: 1px dashed var(--border);
+  }
+  .trace-warn { color: var(--warn); }
+  .ec-score { color: var(--fg-faint); margin-left: 2px; }
+  .evidence-chip.is-uncited-chip { opacity: 0.65; border-style: dashed; }
   .evidence-chip {
     display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
     padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px;
