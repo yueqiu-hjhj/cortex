@@ -714,24 +714,24 @@
               </div>
             </div>
 
-            {#if knCalib && knCalib.total_observations > 0}
+            {#if knCalib && knCalib.observations > 0}
               <div class="kn-cal">
                 <div class="kn-cal-t">
                   <span class="lbl">Calibration</span>
-                  <span class="kn-cal-b">Brier {knCalib.brier.toFixed(3)}</span>
+                  <span class="kn-cal-b">Brier {knCalib.brier_score.toFixed(3)}</span>
                 </div>
                 {#each knCalib.buckets as b}
                   <div class="kn-bucket">
                     <span class="kn-bk-l">
-                      {Math.round(b.lower * 100)}–{Math.round(b.upper * 100)}%
+                      {b.label}
                     </span>
                     <div class="kn-bk-bar">
                       <i style:left="{Math.round(b.mean_confidence * 100)}%" class="conf"></i>
                       <i style:left="{Math.round(b.accuracy * 100)}%" class="acc"></i>
                     </div>
                     <span class="kn-bk-r">
-                      <span class="mono">{b.count > 0 ? Math.round(b.accuracy * 100) + "%" : "—"}</span>
-                      {#if b.count > 0}
+                      <span class="mono">{b.observations > 0 ? Math.round(b.accuracy * 100) + "%" : "—"}</span>
+                      {#if b.observations > 0}
                         <span class="kn-gap" class:over={b.gap > 0.05} class:under={b.gap < -0.05}>
                           {b.gap > 0 ? "+" : ""}{Math.round(b.gap * 100)}%
                         </span>

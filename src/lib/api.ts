@@ -1098,19 +1098,21 @@ export interface KnowledgeGraph {
 }
 
 export interface CalibrationBucket {
-  /** confidence bracket lower bound (0.0, 0.2, 0.4, 0.6, 0.8) */
-  lower: number;
-  upper: number;
-  count: number;
-  accuracy: number;      // 0..1
-  mean_confidence: number; // 0..1
-  gap: number;           // mean_confidence - accuracy
+  label: string;             // "0–20%" | "20–40%" | ...
+  observations: number;
+  correct: number;
+  mean_confidence: number;   // 0..1
+  accuracy: number;          // 0..1
+  /** accuracy - mean_confidence; positive => underconfident, negative => overconfident. */
+  gap: number;
 }
 
 export interface CalibrationSummary {
-  subject_id: string;
-  total_observations: number;
-  brier: number;
+  observations: number;
+  correct: number;
+  mean_confidence: number;
+  accuracy: number;
+  brier_score: number;
   buckets: CalibrationBucket[];
 }
 

@@ -217,6 +217,33 @@
     }
     function toggleNode(id: string) { knExpanded = { ...knExpanded, [id]: !knExpanded[id] }; }
 
+    // ── calibration panel (BKT confidence vs actual accuracy) ──
+    // KnowOrigin-style: per-bucket predicted vs actual, with Brier score for
+    // an at-a-glance calibration quality. The backend already bins observations
+    // into 0.2-wide confidence brackets and computes the (accuracy - mean_conf)
+    // gap per bucket. This panel reads that summary and renders the gap bars.
+    let knCalib = $state<api.CalibrationSummary | null>(null);
+    let knCalibLoading = $state(false);
+    $effect(() => {
+      const id = subj?.id;
+      if (!id) { knCalib = null; knCalibLoading = false; return; }
+      let cancelled = false;
+      knCalibLoading = true;
+      api.calibrationSummary(id)
+        .then((c) => { if (!cancelled) knCalib = c ?? null; })
+        .catch(() => { if (!cancelled) knCalib = null; })
+        .finally(() => { if (!cancelled) knCalibLoading = false; });
+      return () => { cancelled = true; };
+    });
+    // Brier ← 0 is well-calibrated; >0.25 is meaningfully off. We surface a
+    // 3-bucket label (well / fair / off) so the headline stays scannable.
+    function calibLabel(brier: number, n: number): { txt: string; col: string } {
+      if (n === 0) return { txt: "no data", col: "var(--fg-faint)" };
+      if (brier < 0.1) return { txt: "well-calibrated", col: "var(--ok)" };
+      if (brier < 0.25) return { txt: "fair", col: "var(--accent)" };
+      return { txt: "off", col: "var(--warn)" };
+    }
+
   // ── 知识脑图 ──
   // 从本科目的库结构（主题→来源）+ 本地术语表拼一棵只读树，复用 AI 材料
   // 的 MindMapView 渲染器。零模型调用；与 NeuralGraph 不重叠——那张是
@@ -388,6 +415,65 @@
             {/each}
           </ul>
           {#if knSyncNote}<div class="ov-tree-foot mono">{knSyncNote}</div>{/if}
+        {/if}
+      </div>
+    </section>
+
+    <section class="ov-calib">
+      <div class="ov-calib-l">
+        <h3>掌握度校准</h3>
+        <p>
+          按 BKT 估计的掌握概率（你表示的“能记住”）分桶，
+          对比实际正确率。柱子高于 0 线：你不够自信；
+          柱子低于 0 线：你过于自信。
+        </p>
+      </div>
+      <div class="ov-calib-card">
+        {#if knCalibLoading}
+          <div class="ov-calib-mut">加载中…</div>
+        {:else if !knCalib || knCalib.observations === 0}
+          <div class="ov-calib-mut">
+            还没有记录。从抽认卡、测验或复习里报告你的自信度、
+            与实际结果，这里会出现校准图。
+          </div>
+        {:else}
+          {@const lbl = calibLabel(knCalib.brier_score, knCalib.observations)}
+          <div class="ov-calib-head">
+            <div class="ov-calib-stat">
+              <span class="ov-calib-stat-n">{knCalib.observations}</span>
+              <span class="ov-calib-stat-l">观测</span>
+            </div>
+            <div class="ov-calib-stat">
+              <span class="ov-calib-stat-n">{Math.round(knCalib.accuracy * 100)}%</span>
+              <span class="ov-calib-stat-l">实际正确率</span>
+            </div>
+            <div class="ov-calib-stat">
+              <span class="ov-calib-stat-n">{Math.round(knCalib.mean_confidence * 100)}%</span>
+              <span class="ov-calib-stat-l">平均自信</span>
+            </div>
+            <div class="ov-calib-stat">
+              <span class="ov-calib-stat-n mono" style:color={lbl.col}>{lbl.txt}</span>
+              <span class="ov-calib-stat-l">Brier {knCalib.brier_score.toFixed(3)}</span>
+            </div>
+          </div>
+          <div class="ov-calib-bars" role="img" aria-label="每个自信度桶的实际正确率与预期偏差">
+            <div class="ov-calib-zero"></div>
+            {#each knCalib.buckets as b}
+              <div class="ov-calib-col" title="{b.label}: predicted {Math.round(b.mean_confidence * 100)}%, actual {Math.round(b.accuracy * 100)}% (gap {b.gap >= 0 ? '+' : ''}{(b.gap * 100).toFixed(0)}%)">
+                <div class="ov-calib-col-pred mono">{Math.round(b.mean_confidence * 100)}%</div>
+                <div class="ov-calib-col-bar">
+                  {#if b.observations > 0}
+                    <div class="ov-calib-col-actual" style:height="{Math.max(4, Math.round(b.accuracy * 100))}%"></div>
+                    <div class="ov-calib-col-gap" style:height="{Math.max(2, Math.abs(b.gap) * 100)}%" class:up={b.gap > 0} class:down={b.gap < 0}></div>
+                  {:else}
+                    <div class="ov-calib-col-empty"></div>
+                  {/if}
+                </div>
+                <div class="ov-calib-col-lbl mono">{b.label}</div>
+                <div class="ov-calib-col-n mono">{b.observations}</div>
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
     </section>
@@ -703,5 +789,99 @@
   }
   @media (max-width: 760px) {
     .ov-tree { grid-template-columns: 1fr; }
+  }
+
+  /* ---- calibration panel ---- */
+  .ov-calib {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px 16px;
+    background: transparent;
+  }
+  .ov-calib-l h3 { margin: 0 0 4px; font-size: 13px; }
+  .ov-calib-l p { margin: 0; color: var(--fg-muted); font-size: 11.5px; line-height: 1.55; }
+  .ov-calib-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 12px 14px;
+  }
+  .ov-calib-mut {
+    color: var(--fg-faint);
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    padding: 18px 0;
+  }
+  .ov-calib-head {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .ov-calib-stat { display: flex; flex-direction: column; gap: 2px; }
+  .ov-calib-stat-n { font-family: var(--font-display); font-size: 20px; color: var(--fg-bright); }
+  .ov-calib-stat-l { font-size: 10.5px; color: var(--fg-faint); letter-spacing: 0.04em; }
+  .ov-calib-bars {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    height: 110px;
+    align-items: end;
+    padding: 16px 6px 22px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background:
+      linear-gradient(180deg,
+        transparent 0%, transparent 19%,
+        var(--border) 19%, var(--border) 20%,
+        transparent 20%, transparent 39%,
+        var(--border) 39%, var(--border) 40%,
+        transparent 40%, transparent 59%,
+        var(--border) 59%, var(--border) 60%,
+        transparent 60%, transparent 79%,
+        var(--border) 79%, var(--border) 80%,
+        transparent 80%);
+  }
+  .ov-calib-zero {
+    position: absolute;
+    left: 0; right: 0; bottom: 22px;
+    height: 1px;
+    background: var(--border-strong);
+    pointer-events: none;
+  }
+  .ov-calib-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .ov-calib-col-pred { font-size: 10px; color: var(--fg-faint); }
+  .ov-calib-col-bar {
+    position: relative;
+    width: 18px;
+    height: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .ov-calib-col-actual {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    background: var(--accent);
+    opacity: 0.65;
+  }
+  .ov-calib-col-gap {
+    position: absolute;
+    left: 0; right: 0;
+    border-radius: 1px;
+  }
+  .ov-calib-col-gap.up { bottom: 100%; background: var(--ok); }
+  .ov-calib-col-gap.down { top: 100%; background: var(--warn); }
+  .ov-calib-col-empty { position: absolute; inset: 0; background: var(--surface-2); }
+  .ov-calib-col-lbl { font-size: 10px; color: var(--fg-muted); }
+  .ov-calib-col-n { font-size: 10px; color: var(--fg-faint); }
+  @media (max-width: 760px) {
+    .ov-calib { grid-template-columns: 1fr; }
+    .ov-calib-head { grid-template-columns: repeat(2, 1fr); }
   }
 </style>
