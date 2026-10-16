@@ -421,7 +421,7 @@ pub fn update_subject(
 #[tauri::command]
 pub fn delete_subject(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::delete_subject(&c, &id)
+    repo::delete_subject_with_undo(&c, &id)
 }
 
 #[tauri::command]
@@ -509,7 +509,7 @@ pub fn reorder_topics(
 #[tauri::command]
 pub fn delete_topic(state: State<AppState>, id: String, subject_id: String) -> Result<Subject> {
     let c = state.db.lock().unwrap();
-    repo::delete_topic(&c, &id)?;
+    repo::delete_topic_with_undo(&c, &id)?;
     repo::get_subject(&c, &subject_id)
 }
 
@@ -558,7 +558,7 @@ pub fn update_source(
 #[tauri::command]
 pub fn delete_source(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::delete_source(&c, &id)
+    repo::delete_source_with_undo(&c, &id)
 }
 
 /// Re-file a source to a different subject (and optional topic). Repoints the
@@ -1601,14 +1601,9 @@ pub async fn chat_answer(
         }
         let kw_hits =
             repo::keyword_search_chunks(&c, Some(&subject_id), scoped_source, &query, 8)?;
-        // Append keyword hits not already present (vector results first).
-        for h in kw_hits {
-            if !vec_hits.iter().any(|x| x.id == h.id) {
-                vec_hits.push(h);
-            }
-        }
-        vec_hits.truncate(8);
-        vec_hits
+        // Cosine and keyword scores are not on the same scale; rank-fuse them
+        // instead of letting one channel's raw score arbitrarily dominate.
+        repo::rrf_merge(&[vec_hits, kw_hits], 12)
     } else {
         let c = state.db.lock().unwrap();
         repo::keyword_search_chunks(&c, Some(&subject_id), scoped_source, &query, 8)?
@@ -1749,21 +1744,27 @@ pub async fn chat_answer(
 
     let text = model.complete(system, &user)?;
 
-    let citations = hits
+    let citations: Vec<Citation> = hits
         .iter()
-        .take(4)
+        .take(6)
         .map(|h| Citation {
+            source_id: h.source_id.clone(),
+            chunk_id: h.id.clone(),
             source_name: h.source_name.clone(),
             loc: h.loc.clone(),
             snippet: truncate(&h.text, 160),
+            score: h.score,
+            cited: text.contains(&format!("⟦{}", h.source_name)),
         })
         .collect();
+    let uncited = !citations.is_empty() && !citations.iter().any(|c| c.cited);
 
     Ok(ChatAnswer {
         text,
         citations,
         model: model.name(),
         images,
+        uncited,
     })
     })
     .await
@@ -1956,9 +1957,16 @@ pub fn add_chat_message(
     subject_id: String,
     role: String,
     text: String,
+    citations: Option<Vec<Citation>>,
 ) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::add_chat_message(&c, &subject_id, &role, &text)
+    repo::add_chat_message_with_citations(
+        &c,
+        &subject_id,
+        &role,
+        &text,
+        &citations.unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -3139,7 +3147,7 @@ pub fn list_materials(state: State<AppState>, subject_id: String) -> Result<Vec<
 #[tauri::command]
 pub fn delete_material(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::delete_material(&c, &id)
+    repo::delete_material_with_undo(&c, &id)
 }
 
 #[tauri::command]
@@ -3147,6 +3155,68 @@ pub fn rename_material(state: State<AppState>, id: String, title: String) -> Res
     let c = state.db.lock().unwrap();
     repo::rename_material(&c, &id, &title)
 }
+// ---- knowledge framework + calibration + undo journal -----------------
+
+#[tauri::command]
+pub fn sync_knowledge_graph(state: State<AppState>, subject_id: String) -> Result<i64> {
+    let c = state.db.lock().unwrap();
+    repo::sync_knowledge_graph(&c, &subject_id)
+}
+
+#[tauri::command]
+pub fn list_knowledge_nodes(state: State<AppState>, subject_id: String) -> Result<Vec<KnowledgeNode>> {
+    let c = state.db.lock().unwrap();
+    repo::list_knowledge_nodes(&c, &subject_id)
+}
+
+#[tauri::command]
+pub fn get_knowledge_graph(state: State<AppState>, subject_id: String) -> Result<KnowledgeGraph> {
+    let c = state.db.lock().unwrap();
+    repo::get_knowledge_graph(&c, &subject_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn apply_observation(
+    state: State<AppState>,
+    node_id: String,
+    correct: bool,
+    confidence: f64,
+    signal: Option<String>,
+    note: Option<String>,
+) -> Result<f64> {
+    let c = state.db.lock().unwrap();
+    let sig = signal.as_deref().unwrap_or("review");
+    let n = note.as_deref();
+    let _ = repo::apply_observation(&c, &node_id, correct, confidence, sig, n)?;
+    // Return the post-update mastery probability; UI fetches the full node when it wants details.
+    let conn = state.db.lock().unwrap();
+    conn.query_row(
+        "SELECT mastery FROM knowledge_nodes WHERE id=?1",
+        rusqlite::params![node_id],
+        |r| r.get::<_, f64>(0),
+    ).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn calibration_summary(state: State<AppState>, subject_id: String) -> Result<CalibrationSummary> {
+    let c = state.db.lock().unwrap();
+    repo::calibration_summary(&c, &subject_id)
+}
+
+#[tauri::command]
+pub fn list_undo_entries(state: State<AppState>, limit: Option<i64>) -> Result<Vec<UndoEntry>> {
+    let c = state.db.lock().unwrap();
+    repo::list_undo_entries(&c, limit.unwrap_or(50))
+}
+
+#[tauri::command]
+pub fn restore_undo(state: State<AppState>, id: String) -> Result<String> {
+    let mut c = state.db.lock().unwrap();
+    repo::restore_undo(&mut c, &id)
+}
+
+
 
 // ---- citations (per-subject bibliography) -----------------------------
 

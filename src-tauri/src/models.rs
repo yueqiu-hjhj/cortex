@@ -117,11 +117,21 @@ pub struct SearchHit {
 
 // ---- chat (RAG) -------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Citation {
+    #[serde(default)]
+    pub source_id: String,
+    #[serde(default)]
+    pub chunk_id: String,
     pub source_name: String,
     pub loc: Option<String>,
     pub snippet: String,
+    #[serde(default)]
+    pub score: f32,
+    /// True when the generated answer actually references this source. A useful
+    /// guard against showing retrieved context as if it were evidence used.
+    #[serde(default)]
+    pub cited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +142,9 @@ pub struct ChatAnswer {
     /// Images fetched from the web when web mode is on (diagrams/examples).
     #[serde(default)]
     pub images: Vec<WebImage>,
+    /// True when no retrieved source was cited in the answer text.
+    #[serde(default)]
+    pub uncited: bool,
 }
 
 /// A persisted chat message (belongs to one conversation thread).
@@ -139,6 +152,94 @@ pub struct ChatAnswer {
 pub struct ChatMsg {
     pub role: String,
     pub text: String,
+    #[serde(default)]
+    pub citations: Vec<Citation>,
+    pub created_at: i64,
+}
+
+// ---- knowledge framework / mastery -----------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeNode {
+    pub id: String,
+    pub subject_id: String,
+    pub topic_id: Option<String>,
+    pub source_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub node_key: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub position: i64,
+    pub coverage: f64,
+    pub mastery: f64,
+    pub importance: f64,
+    pub confidence: f64,
+    pub observations: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeEdge {
+    pub id: String,
+    pub subject_id: String,
+    pub from_id: String,
+    pub to_id: String,
+    pub kind: String,
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CalibrationBucket {
+    pub label: String,
+    pub observations: i64,
+    pub correct: i64,
+    pub mean_confidence: f64,
+    pub accuracy: f64,
+    pub gap: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CalibrationSummary {
+    pub observations: i64,
+    pub correct: i64,
+    pub mean_confidence: f64,
+    pub accuracy: f64,
+    pub brier_score: f64,
+    pub buckets: Vec<CalibrationBucket>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeGraph {
+    pub subject_id: String,
+    pub nodes: Vec<KnowledgeNode>,
+    pub edges: Vec<KnowledgeEdge>,
+    pub calibration: CalibrationSummary,
+}
+
+// ---- undo / local agent registry -------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UndoEntry {
+    pub id: String,
+    pub action: String,
+    pub entity_table: String,
+    pub entity_id: String,
+    pub label: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub undone_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTool {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub schema_json: Option<String>,
     pub created_at: i64,
 }
 

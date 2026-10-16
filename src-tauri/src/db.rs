@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0027_google_event_tombstone.sql"),
     include_str!("../migrations/0028_cheatsheet_tombstone.sql"),
     include_str!("../migrations/0029_source_diarize.sql"),
+    include_str!("../migrations/0030_knowledge_mcp_undo.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.
@@ -83,7 +84,7 @@ impl AppState {
         run_migrations(&conn)?;
         Ok(Self {
             db: Mutex::new(conn),
-            data_dir: db_path.parent().map(std::path::Path::to_path_buf),
+            data_dir: None,
         })
     }
 }

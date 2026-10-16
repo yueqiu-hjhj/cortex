@@ -943,6 +943,39 @@ pub fn keyword_search_chunks(
     Ok(hits)
 }
 
+/// Reciprocal-rank fusion for independent retrieval channels. Keeping the
+/// original similarity score is less useful than a rank-based score here because
+/// cosine similarity and keyword overlap live on different scales.
+pub fn rrf_merge(rankings: &[Vec<ChunkHit>], k: usize) -> Vec<ChunkHit> {
+    const RRF_K: f64 = 60.0;
+
+    let mut merged: HashMap<String, (ChunkHit, f64)> = HashMap::new();
+    for ranking in rankings {
+        for (rank, hit) in ranking.iter().enumerate() {
+            let rank_score = 1.0 / (RRF_K + rank as f64 + 1.0);
+            merged
+                .entry(hit.id.clone())
+                .and_modify(|(_, score)| *score += rank_score)
+                .or_insert_with(|| (hit.clone(), rank_score));
+        }
+    }
+
+    let mut out: Vec<ChunkHit> = merged
+        .into_values()
+        .map(|(mut hit, score)| {
+            hit.score = score as f32;
+            hit
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out.truncate(k);
+    out
+}
+
 // ---- context gathering (for synthesis) --------------------------------
 
 /// Concatenate chunk text for a subject (optionally a topic), capped to `max_chars`.
@@ -1532,12 +1565,30 @@ pub fn add_chat_message(
     role: &str,
     text: &str,
 ) -> Result<()> {
+    add_chat_message_with_citations(conn, subject_id, role, text, &[])
+}
+
+/// Append a chat message and persist its evidence metadata as JSON. Older
+/// callers keep using `add_chat_message` above; assistant replies pass their
+/// retrieved citations here so history can explain where an answer came from.
+pub fn add_chat_message_with_citations(
+    conn: &Connection,
+    subject_id: &str,
+    role: &str,
+    text: &str,
+    citations: &[Citation],
+) -> Result<()> {
     let tid = current_thread(conn, subject_id)?;
     let ts = now_ms();
+    let citations_json = if citations.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(citations)?)
+    };
     conn.execute(
-        "INSERT INTO chat_messages (id, thread_id, role, text, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![new_id(), tid, role, text, ts],
+        "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![new_id(), tid, role, text, citations_json, ts],
     )?;
     conn.execute(
         "UPDATE chat_threads SET updated_at=?2 WHERE id=?1",
@@ -1550,14 +1601,19 @@ pub fn add_chat_message(
 pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<ChatMsg>> {
     let tid = current_thread(conn, subject_id)?;
     let mut stmt = conn.prepare(
-        "SELECT role, text, created_at FROM chat_messages
+        "SELECT role, text, citations, created_at FROM chat_messages
          WHERE thread_id=?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map(params![tid], |r| {
+        let citations_json: Option<String> = r.get(2)?;
         Ok(ChatMsg {
             role: r.get(0)?,
             text: r.get(1)?,
-            created_at: r.get(2)?,
+            citations: citations_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
+            created_at: r.get(3)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -3215,6 +3271,887 @@ thread_local! {
     // without borrowing the app connection (which the caller already holds).
     static LOCAL_MIDNIGHT: std::cell::RefCell<Connection> =
         std::cell::RefCell::new(Connection::open_in_memory().expect("scratch conn"));
+}
+
+// ---- knowledge framework / BKT / calibration ---------------------------
+//
+// The `knowledge_nodes` framework is a materialized view over the subject →
+// topic → source hierarchy plus a per-node mastery estimate. Sync is idempotent
+// (ties to `node_key`) and cheap enough to call on demand — there is no long-
+// lived background writer, so the graph can never drift permanently. Mastery is
+// updated by `apply_observation`, which runs a standard Bayesian Knowledge
+// Tracing update and records the before/after probabilities for calibration.
+
+/// Bayesian Knowledge Tracing parameters. `prior` is the probability a node is
+/// known before any observation; slip/guess are the classic BKT error rates; the
+/// learned/forgot transition follows each observation.
+const BKT_PRIOR: f64 = 0.3;
+const BKT_LEARN: f64 = 0.2;
+const BKT_SLIP: f64 = 0.1;
+const BKT_GUESS: f64 = 0.2;
+/// Observations the learner was less sure about than this are recorded (so the
+/// audit trail is complete) but excluded from the mastery/calibration estimate:
+/// a guess at 0.05 confidence is noise for both, and dropping it keeps BKT from
+/// being dragged around by "I had no idea" clicks.
+const BKT_MIN_CONFIDENCE: f64 = 0.3;
+
+fn clamp01(x: f64) -> f64 {
+    x.max(0.0).min(1.0)
+}
+
+fn bkt_update(p: f64, correct: bool) -> f64 {
+    let p = clamp01(p);
+    let (num, den) = if correct {
+        let observed = p * (1.0 - BKT_SLIP);
+        (observed, observed + (1.0 - p) * BKT_GUESS)
+    } else {
+        let observed = p * BKT_SLIP;
+        (observed, observed + (1.0 - p) * (1.0 - BKT_GUESS))
+    };
+    let posterior = if den > 1e-9 { num / den } else { p };
+    clamp01(posterior + (1.0 - posterior) * BKT_LEARN)
+}
+
+fn coverage_step(observed: i64, total: i64) -> f64 {
+    if total <= 0 {
+        return 0.0;
+    }
+    clamp01(observed as f64 / total as f64)
+}
+
+/// Upsert one framework node and return its id. Existing rows keep their mastery
+/// but have their title/summary/parent/coverage refreshed, so a sync never
+/// silently discards learning history.
+fn upsert_knowledge_node(
+    conn: &Connection,
+    subject_id: &str,
+    topic_id: Option<&str>,
+    source_id: Option<&str>,
+    parent_id: Option<&str>,
+    node_key: &str,
+    kind: &str,
+    title: &str,
+    summary: Option<&str>,
+    position: i64,
+    coverage: f64,
+) -> Result<String> {
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM knowledge_nodes WHERE subject_id=?1 AND node_key=?2",
+            params![subject_id, node_key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        conn.execute(
+            "UPDATE knowledge_nodes
+                SET title=?2, summary=?3, topic_id=?4, source_id=?5, parent_id=?6,
+                    position=?7, coverage=?8, updated_at=?9
+              WHERE id=?1",
+            params![id, title, summary, topic_id, source_id, parent_id, position, coverage, now_ms()],
+        )?;
+        return Ok(id);
+    }
+    let id = new_id();
+    let ts = now_ms();
+    conn.execute(
+        "INSERT INTO knowledge_nodes
+            (id, subject_id, topic_id, source_id, parent_id, node_key, kind, title,
+             summary, position, coverage, mastery, importance, confidence,
+             observations, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0.5,0.3,0,?13,?13)",
+        params![
+            id, subject_id, topic_id, source_id, parent_id, node_key, kind, title,
+            summary, position, coverage, BKT_PRIOR, ts
+        ],
+    )?;
+    Ok(id)
+}
+
+fn upsert_knowledge_edge(
+    conn: &Connection,
+    subject_id: &str,
+    from_id: &str,
+    to_id: &str,
+    kind: &str,
+    weight: f64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO knowledge_edges
+            (id, subject_id, from_id, to_id, kind, weight, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![new_id(), subject_id, from_id, to_id, kind, weight, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// Materialize (or refresh) one subject's knowledge framework. Returns the node
+/// count so callers can report real progress. Concept-level nodes created by
+/// earlier slices are left in place; the hierarchy is rebuilt around them.
+pub fn sync_knowledge_graph(conn: &Connection, subject_id: &str) -> Result<i64> {
+    let subject = get_subject(conn, subject_id)?;
+    let root_id = upsert_knowledge_node(
+        conn,
+        &subject.id,
+        None,
+        None,
+        None,
+        &format!("subject:{}", subject.id),
+        "subject",
+        &subject.name,
+        subject.code.as_deref(),
+        0,
+        1.0,
+    )?;
+
+    let topics = list_topics(conn, subject_id)?;
+    for (ti, topic) in topics.iter().enumerate() {
+        let topic_id = upsert_knowledge_node(
+            conn,
+            &subject.id,
+            Some(&topic.id),
+            None,
+            Some(&root_id),
+            &format!("topic:{}", topic.id),
+            "topic",
+            &topic.name,
+            None,
+            ti as i64,
+            0.0,
+        )?;
+        upsert_knowledge_edge(conn, &subject.id, &root_id, &topic_id, "contains", 1.0)?;
+    }
+
+    let sources = list_sources(conn, subject_id)?;
+    for (si, source) in sources.iter().enumerate() {
+        let chunks = count_chunks(conn, &source.id)?;
+        let done = chunks > 0 && source.status == "ready";
+        let parent_id = match source.topic_id.as_deref() {
+            Some(tid) => Some(
+                conn.query_row(
+                    "SELECT id FROM knowledge_nodes WHERE subject_id=?1 AND node_key=?2",
+                    params![subject_id, format!("topic:{tid}")],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+                .unwrap_or_else(|| root_id.clone()),
+            ),
+            None => Some(root_id.clone()),
+        };
+        let source_node = upsert_knowledge_node(
+            conn,
+            &subject.id,
+            source.topic_id.as_deref(),
+            Some(&source.id),
+            parent_id.as_deref(),
+            &format!("source:{}", source.id),
+            "source",
+            &source.name,
+            source.meta.as_deref(),
+            si as i64,
+            if done { 1.0 } else { 0.0 },
+        )?;
+        if let Some(pid) = &parent_id {
+            upsert_knowledge_edge(conn, &subject.id, pid, &source_node, "contains", 1.0)?;
+        }
+    }
+
+    // Propagate coverage upward: a topic is as covered as its weakest half of
+    // sources, a subject as covered as its average topic.
+    conn.execute(
+        "UPDATE knowledge_nodes
+            SET coverage = COALESCE((
+                SELECT AVG(child.coverage) FROM knowledge_nodes child
+                 WHERE child.parent_id = knowledge_nodes.id
+            ), coverage),
+            updated_at=?2
+          WHERE subject_id=?1 AND kind IN ('subject','topic')",
+        params![subject_id, now_ms()],
+    )?;
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM knowledge_nodes WHERE subject_id=?1",
+        params![subject_id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+fn map_knowledge_node(r: &rusqlite::Row) -> rusqlite::Result<KnowledgeNode> {
+    Ok(KnowledgeNode {
+        id: r.get(0)?,
+        subject_id: r.get(1)?,
+        topic_id: r.get(2)?,
+        source_id: r.get(3)?,
+        parent_id: r.get(4)?,
+        node_key: r.get(5)?,
+        kind: r.get(6)?,
+        title: r.get(7)?,
+        summary: r.get(8)?,
+        position: r.get(9)?,
+        coverage: r.get(10)?,
+        mastery: r.get(11)?,
+        importance: r.get(12)?,
+        confidence: r.get(13)?,
+        observations: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
+    })
+}
+
+const KNOWLEDGE_NODE_COLS: &str = "id, subject_id, topic_id, source_id, parent_id, node_key, \
+    kind, title, summary, position, coverage, mastery, importance, confidence, observations, \
+    created_at, updated_at";
+
+pub fn list_knowledge_nodes(conn: &Connection, subject_id: &str) -> Result<Vec<KnowledgeNode>> {
+    let sql =
+        format!("SELECT {KNOWLEDGE_NODE_COLS} FROM knowledge_nodes WHERE subject_id=?1 ORDER BY position");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![subject_id], map_knowledge_node)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn get_knowledge_graph(conn: &Connection, subject_id: &str) -> Result<KnowledgeGraph> {
+    sync_knowledge_graph(conn, subject_id)?;
+    let nodes = list_knowledge_nodes(conn, subject_id)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, subject_id, from_id, to_id, kind, weight
+           FROM knowledge_edges WHERE subject_id=?1",
+    )?;
+    let edges = stmt
+        .query_map(params![subject_id], |r| {
+            Ok(KnowledgeEdge {
+                id: r.get(0)?,
+                subject_id: r.get(1)?,
+                from_id: r.get(2)?,
+                to_id: r.get(3)?,
+                kind: r.get(4)?,
+                weight: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let calibration = calibration_summary(conn, subject_id)?;
+    Ok(KnowledgeGraph {
+        subject_id: subject_id.to_string(),
+        nodes,
+        edges,
+        calibration,
+    })
+}
+
+/// Record one study observation against a knowledge node and apply the BKT
+/// update. `confidence` is the learner's pre-reveal confidence (0..1); `correct`
+/// is the graded outcome. Returns the node's new probability of knowledge.
+pub fn apply_observation(
+    conn: &Connection,
+    node_id: &str,
+    correct: bool,
+    confidence: f64,
+    signal: &str,
+    note: Option<&str>,
+) -> Result<f64> {
+    let confidence = clamp01(confidence);
+    let before: f64 = conn
+        .query_row(
+            "SELECT mastery FROM knowledge_nodes WHERE id=?1",
+            params![node_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("knowledge node {node_id}")))?;
+
+    let counted = confidence >= BKT_MIN_CONFIDENCE;
+    // Low-confidence observations are logged with p_before=p_after so the audit
+    // trail is complete but the estimate is untouched.
+    let after = if counted {
+        bkt_update(before, correct)
+    } else {
+        before
+    };
+
+    conn.execute(
+        "INSERT INTO knowledge_observations
+            (id, node_id, correct, confidence, signal, note, p_before, p_after, observed_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            new_id(),
+            node_id,
+            correct as i64,
+            confidence,
+            signal,
+            note,
+            before,
+            after,
+            now_ms()
+        ],
+    )?;
+
+    if counted {
+        // Confidence in the estimate rises with evidence but saturates: 0.3 at
+        // one observation → ~0.78 at ten, asymptote ~0.9. Observations capped at
+        // 20 so a long review streak can't push confidence to certainty.
+        let new_count: i64 = conn.query_row(
+            "SELECT observations FROM knowledge_nodes WHERE id=?1",
+            params![node_id],
+            |r| r.get(0),
+        )?;
+        let n = (new_count + 1).min(20) as f64;
+        let confidence_estimate = clamp01(0.25 + (n - 1.0) / 22.0);
+        conn.execute(
+            "UPDATE knowledge_nodes
+                SET mastery=?2, observations=observations+1, confidence=?3, updated_at=?4
+              WHERE id=?1",
+            params![node_id, after, confidence_estimate, now_ms()],
+        )?;
+    }
+    Ok(after)
+}
+
+/// Find the framework node for a source (creating the whole graph on demand if
+/// the source predates migration 0030) so a review can be attributed.
+pub fn knowledge_node_for_source(conn: &Connection, source_id: &str) -> Result<Option<String>> {
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM knowledge_nodes WHERE source_id=?1 LIMIT 1",
+            params![source_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok(Some(id));
+    }
+    let subject_id: Option<String> = conn
+        .query_row(
+            "SELECT subject_id FROM sources WHERE id=?1",
+            params![source_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(sid) = subject_id {
+        sync_knowledge_graph(conn, &sid)?;
+        return Ok(conn
+            .query_row(
+                "SELECT id FROM knowledge_nodes WHERE source_id=?1 LIMIT 1",
+                params![source_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?);
+    }
+    Ok(None)
+}
+
+/// Confidence calibration over a subject's high-confidence observations. Buckets
+/// are fixed 0.2-wide probability bins so the "gap" (accuracy − mean confidence)
+/// reads directly as the classic calibration diagram.
+pub fn calibration_summary(conn: &Connection, subject_id: &str) -> Result<CalibrationSummary> {
+    let mut stmt = conn.prepare(
+        "SELECT o.correct, o.confidence
+           FROM knowledge_observations o
+           JOIN knowledge_nodes n ON n.id=o.node_id
+          WHERE n.subject_id=?1 AND o.confidence >= ?2
+          ORDER BY o.confidence",
+    )?;
+    let rows = stmt.query_map(params![subject_id, BKT_MIN_CONFIDENCE], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+    })?;
+    let obs: Vec<(i64, f64)> = rows.collect::<rusqlite::Result<_>>()?;
+
+    let mut buckets: Vec<CalibrationBucket> = Vec::with_capacity(5);
+    for i in 0..5 {
+        let label = match i {
+            0 => "0–20%",
+            1 => "20–40%",
+            2 => "40–60%",
+            3 => "60–80%",
+            _ => "80–100%",
+        };
+        buckets.push(CalibrationBucket {
+            label: label.into(),
+            observations: 0,
+            correct: 0,
+            mean_confidence: 0.0,
+            accuracy: 0.0,
+            gap: 0.0,
+        });
+    }
+    let mut n = 0i64;
+    let mut correct = 0i64;
+    let mut conf_sum = 0.0f64;
+    let mut brier = 0.0f64;
+    for (c, conf) in &obs {
+        n += 1;
+        correct += *c;
+        conf_sum += *conf;
+        brier += (conf - *c as f64).powi(2);
+        let idx = ((*conf * 5.0) as usize).min(4);
+        buckets[idx].observations += 1;
+        buckets[idx].correct += *c;
+        buckets[idx].mean_confidence += *conf;
+    }
+    for b in buckets.iter_mut() {
+        if b.observations > 0 {
+            b.mean_confidence /= b.observations as f64;
+            b.accuracy = b.correct as f64 / b.observations as f64;
+            b.gap = b.accuracy - b.mean_confidence;
+        }
+    }
+    Ok(CalibrationSummary {
+        observations: n,
+        correct,
+        mean_confidence: if n > 0 { conf_sum / n as f64 } else { 0.0 },
+        accuracy: if n > 0 { correct as f64 / n as f64 } else { 0.0 },
+        brier_score: if n > 0 { brier / n as f64 } else { 0.0 },
+        buckets,
+    })
+}
+
+// ---- undo journal / recycle bin ----------------------------------------
+//
+// Destructive commands snapshot the affected rows (as JSON) before deleting and
+// append an `undo_entries` row. The entries expire after `UNDO_TTL_MS`; a
+// restore replays the whitelisted tables inside one transaction so the source /
+// subject / topic / note / material (plus the source's chunks and tags) comes
+// back whole rather than as an orphaned row.
+
+/// How long a delete stays recoverable. 72h is long enough to catch "oops, I
+/// didn't mean to delete that" without keeping the journal growing forever.
+pub const UNDO_TTL_MS: i64 = 72 * 60 * 60 * 1000;
+
+/// `INSERT OR IGNORE` a JSON object snapshot, preserving nulls. Used by restore,
+/// which is why it duplicates the column list rather than relying on the live
+/// schema (the snapshot was taken from the same table earlier).
+fn insert_json_row(
+    conn: &Connection,
+    table: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    if obj.is_empty() {
+        return Ok(());
+    }
+    let cols: Vec<String> = obj.keys().cloned().collect();
+    let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "INSERT OR IGNORE INTO {table} ({}) VALUES ({})",
+        cols.join(", "),
+        placeholders.join(", ")
+    );
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(cols.len());
+    for c in &cols {
+        let v = obj.get(c).cloned().unwrap_or(serde_json::Value::Null);
+        values.push(match v {
+            serde_json::Value::Null => Box::new(Option::<String>::None),
+            serde_json::Value::Bool(b) => Box::new(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Box::new(i)
+                } else {
+                    Box::new(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            other => Box::new(other.to_string()),
+        });
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice())?;
+    Ok(())
+}
+
+/// Snapshot every row of `table`, optionally restricted by `where` (which must
+/// include a `?1` placeholder). Values are typed by their SQLite column type so
+/// integers stay integers and NULLs survive the round-trip.
+fn snapshot_rows(conn: &Connection, table: &str, where_sql: &str, arg: &str) -> Result<Vec<serde_json::Value>> {
+    use rusqlite::types::ValueRef;
+    struct Col {
+        name: String,
+        real: bool,
+        blob: bool,
+    }
+    let mut cols: Vec<Col> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info([{}])", table))?;
+        let rows = stmt.query_map([], |r| {
+            let name: String = r.get(1)?;
+            let ty: String = r.get(2)?;
+            Ok((name, ty))
+        })?;
+        for row in rows {
+            let (name, ty) = row?;
+            cols.push(Col {
+                name,
+                real: ty.to_uppercase().contains("REAL"),
+                blob: ty.to_uppercase().contains("BLOB"),
+            });
+        }
+    }
+    if cols.is_empty() {
+        return Err(Error::Other(format!("cannot snapshot unknown table {table}")));
+    }
+    let col_list = cols.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT {col_list} FROM {table} {where_sql}");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut out = Vec::new();
+    let mut rows = stmt.query(params![arg])?;
+    while let Some(row) = rows.next()? {
+        let mut obj = serde_json::Map::new();
+        for (i, col) in cols.iter().enumerate() {
+            let value = match row.get_ref(i)? {
+                ValueRef::Null => serde_json::Value::Null,
+                ValueRef::Integer(n) => serde_json::json!(n),
+                ValueRef::Real(f) => serde_json::json!(f),
+                ValueRef::Text(bytes) => {
+                    serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned())
+                }
+                ValueRef::Blob(bytes) => {
+                    if col.blob {
+                        serde_json::json!({ "__blob": bytes.to_vec() })
+                    } else if bytes.len() % 4 == 0 {
+                        let floats: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                            .collect();
+                        serde_json::json!({ "__blob": floats })
+                    } else {
+                        serde_json::Value::Null
+                    }
+                }
+            };
+            obj.insert(col.name.clone(), value);
+        }
+        out.push(serde_json::Value::Object(obj));
+    }
+    Ok(out)
+}
+
+/// Best-effort human label for a delete toast / recycle-bin list.
+fn row_label(v: &serde_json::Value) -> String {
+    v.get("name")
+        .or_else(|| v.get("title"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("deleted item")
+        .to_string()
+}
+
+fn record_undo_row(
+    conn: &Connection,
+    action: &str,
+    entity_table: &str,
+    entity_id: &str,
+    label: &str,
+    payload: serde_json::Value,
+) -> Result<String> {
+    let id = new_id();
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO undo_entries
+            (id, action, entity_table, entity_id, label, payload, created_at, expires_at, undone_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL)",
+        params![id, action, entity_table, entity_id, label, payload.to_string(), now, now + UNDO_TTL_MS],
+    )?;
+    Ok(id)
+}
+
+/// Snapshot + delete one source, journaling the row plus its chunks and tags so
+/// a restore also brings the extracted text/embeddings back.
+pub fn delete_source_with_undo(conn: &Connection, id: &str) -> Result<()> {
+    let sources = snapshot_rows(conn, "sources", "WHERE id=?1", id)?;
+    let first = sources.first().cloned().unwrap_or(serde_json::Value::Null);
+    if first.is_null() {
+        return Err(Error::NotFound(format!("source {id}")));
+    }
+    let chunks = snapshot_rows(conn, "chunks", "WHERE source_id=?1", id)?;
+    let tag_ids: Vec<serde_json::Value> = {
+        let mut stmt = conn.prepare("SELECT tag_id FROM source_tags WHERE source_id=?1")?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::Value::String(r?)))
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let label = row_label(&first);
+    delete_source(conn, id)?;
+    record_undo_row(
+        conn,
+        "delete_source",
+        "source",
+        id,
+        &label,
+        serde_json::json!({ "sources": sources, "chunks": chunks, "tag_ids": tag_ids }),
+    )?;
+    Ok(())
+}
+
+/// Snapshot + delete one topic. Note the schema uses `ON DELETE SET NULL` for a
+/// source's topic, so the note also re-files any source that lost its topic.
+pub fn delete_topic_with_undo(conn: &Connection, id: &str) -> Result<()> {
+    let topics = snapshot_rows(conn, "topics", "WHERE id=?1", id)?;
+    let first = topics.first().cloned().unwrap_or(serde_json::Value::Null);
+    if first.is_null() {
+        return Err(Error::NotFound(format!("topic {id}")));
+    }
+    let subject_id = first.get("subject_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let sources = snapshot_rows(conn, "sources", "WHERE topic_id=?1", id)?;
+    let label = row_label(&first);
+    delete_topic(conn, id)?;
+    record_undo_row(
+        conn,
+        "delete_topic",
+        "topic",
+        id,
+        &label,
+        serde_json::json!({ "topics": topics, "sources": sources, "subject_id": subject_id }),
+    )?;
+    Ok(())
+}
+
+pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<()> {
+    let subjects = snapshot_rows(conn, "subjects", "WHERE id=?1", id)?;
+    let first = subjects.first().cloned().unwrap_or(serde_json::Value::Null);
+    if first.is_null() {
+        return Err(Error::NotFound(format!("subject {id}")));
+    }
+    let topics = snapshot_rows(conn, "topics", "WHERE subject_id=?1", id)?;
+    let sources = snapshot_rows(conn, "sources", "WHERE subject_id=?1", id)?;
+    let chunks = snapshot_rows(conn, "chunks", "WHERE subject_id=?1", id)?;
+    let mut tag_ids: Vec<serde_json::Value> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT st.tag_id FROM source_tags st JOIN sources s ON s.id=st.source_id
+              WHERE s.subject_id=?1",
+        )?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+        for r in rows {
+            tag_ids.push(serde_json::Value::String(r?));
+        }
+    }
+    let notes = snapshot_rows(conn, "notes", "WHERE subject_id=?1", id)?;
+    let materials = snapshot_rows(conn, "materials", "WHERE subject_id=?1", id)?;
+    let label = row_label(&first);
+    delete_subject(conn, id)?;
+    record_undo_row(
+        conn,
+        "delete_subject",
+        "subject",
+        id,
+        &label,
+        serde_json::json!({
+            "subjects": subjects,
+            "topics": topics,
+            "sources": sources,
+            "chunks": chunks,
+            "tag_ids": tag_ids,
+            "notes": notes,
+            "materials": materials
+        }),
+    )?;
+    Ok(())
+}
+
+pub fn delete_note_with_undo(conn: &Connection, id: &str) -> Result<()> {
+    let notes = snapshot_rows(conn, "notes", "WHERE id=?1", id)?;
+    let first = notes.first().cloned().unwrap_or(serde_json::Value::Null);
+    if first.is_null() {
+        return Err(Error::NotFound(format!("note {id}")));
+    }
+    let label = row_label(&first);
+    delete_note(conn, id)?;
+    record_undo_row(conn, "delete_note", "note", id, &label, serde_json::json!({ "notes": notes }))?;
+    Ok(())
+}
+
+pub fn delete_material_with_undo(conn: &Connection, id: &str) -> Result<()> {
+    let materials = snapshot_rows(conn, "materials", "WHERE id=?1", id)?;
+    let first = materials.first().cloned().unwrap_or(serde_json::Value::Null);
+    if first.is_null() {
+        return Err(Error::NotFound(format!("material {id}")));
+    }
+    let label = row_label(&first);
+    delete_material(conn, id)?;
+    record_undo_row(
+        conn,
+        "delete_material",
+        "material",
+        id,
+        &label,
+        serde_json::json!({ "materials": materials }),
+    )?;
+    Ok(())
+}
+
+pub fn list_undo_entries(conn: &Connection, limit: i64) -> Result<Vec<UndoEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, action, entity_table, entity_id, label, created_at, expires_at, undone_at
+           FROM undo_entries
+          WHERE undone_at IS NULL AND expires_at > ?1
+          ORDER BY created_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![now_ms(), limit], |r| {
+        Ok(UndoEntry {
+            id: r.get(0)?,
+            action: r.get(1)?,
+            entity_table: r.get(2)?,
+            entity_id: r.get(3)?,
+            label: r.get(4)?,
+            created_at: r.get(5)?,
+            expires_at: r.get(6)?,
+            undone_at: r.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn restore_rows(conn: &Connection, table: &str, rows: &serde_json::Value) -> Result<usize> {
+    let mut n = 0;
+    if let Some(arr) = rows.get(table).and_then(|v| v.as_array()) {
+        for row in arr {
+            if let Some(obj) = row.as_object() {
+                insert_json_row(conn, table, obj)?;
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Like `restore_rows`, but drops one column. Used for `chunks.embedding`, which
+/// is stored as a tagged JSON object and must be patched back as a BLOB after
+/// the row exists (a stringified object in a BLOB column would be silently
+/// wrong).
+fn restore_rows_without(
+    conn: &Connection,
+    table: &str,
+    rows: &serde_json::Value,
+    skip: &str,
+) -> Result<usize> {
+    let mut n = 0;
+    if let Some(arr) = rows.get(table).and_then(|v| v.as_array()) {
+        for row in arr {
+            if let Some(obj) = row.as_object() {
+                let mut copy = obj.clone();
+                copy.remove(skip);
+                insert_json_row(conn, table, &copy)?;
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
+}
+
+fn restore_blob_columns(conn: &Connection, table: &str, rows: &serde_json::Value) -> Result<usize> {
+    let mut n = 0;
+    if let Some(arr) = rows.get(table).and_then(|v| v.as_array()) {
+        for row in arr {
+            let Some(obj) = row.as_object() else { continue };
+            let Some(id) = obj.get("id").and_then(|v| v.as_str()) else { continue };
+            if let Some(blob) = obj.get("embedding").and_then(|v| v.get("__blob")) {
+                if let Some(bytes) = blob.as_array() {
+                    let raw: Vec<u8> = if bytes.iter().all(|x| x.is_u64()) {
+                        bytes.iter().filter_map(|x| x.as_u64().map(|b| b as u8)).collect()
+                    } else {
+                        let floats: Vec<f32> =
+                            bytes.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
+                        crate::vector::f32s_to_blob(&floats)
+                    };
+                    conn.execute(
+                        &format!("UPDATE {table} SET embedding=?2 WHERE id=?1"),
+                        params![id, raw],
+                    )?;
+                    n += 1;
+                }
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Restore the entity captured by an undo entry inside a single transaction.
+/// Whitelisted by `entity_table` — an undo entry can never replay arbitrary SQL
+/// or touch a table the snapshot code doesn't own.
+pub fn restore_undo(conn: &mut Connection, id: &str) -> Result<String> {
+    let (table, payload): (String, String) = conn
+        .query_row(
+            "SELECT entity_table, payload FROM undo_entries
+              WHERE id=?1 AND undone_at IS NULL AND expires_at > ?2",
+            params![id, now_ms()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("undo entry {id}")))?;
+    let payload: serde_json::Value = serde_json::from_str(&payload)?;
+    let tx = conn.transaction()?;
+
+    let link_tags = |tx: &rusqlite::Transaction, source_id: &str| -> Result<()> {
+        for tag_id in payload
+            .get("tag_ids")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+        {
+            // The `tags` row usually survived the delete (it has no cascade), so
+            // this is a no-op; the `INSERT OR IGNORE` only matters if it didn't.
+            tx.execute("INSERT OR IGNORE INTO tags (id, name) VALUES (?1, ?1)", params![tag_id])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO source_tags (source_id, tag_id) VALUES (?1, ?2)",
+                params![source_id, tag_id],
+            )?;
+        }
+        Ok(())
+    };
+
+    let _restored = match table.as_str() {
+        "subject" | "source" => {
+            let n = restore_rows(&tx, "subjects", &payload)?;
+            restore_rows(&tx, "topics", &payload)?;
+            restore_rows(&tx, "sources", &payload)?;
+            restore_rows_without(&tx, "chunks", &payload, "embedding")?;
+            restore_blob_columns(&tx, "chunks", &payload)?;
+            for source in payload
+                .get("sources")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+            {
+                link_tags(&tx, source)?;
+            }
+            restore_rows(&tx, "notes", &payload)?;
+            restore_rows(&tx, "materials", &payload)?;
+            n
+        }
+        "topic" => {
+            let n = restore_rows(&tx, "topics", &payload)?;
+            // Deleting the topic NULLs `sources.topic_id`; point those rows back.
+            for row in payload
+                .get("sources")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let (Some(sid), Some(tid)) = (
+                    row.get("id").and_then(|v| v.as_str()),
+                    row.get("topic_id").and_then(|v| v.as_str()),
+                ) {
+                    tx.execute(
+                        "UPDATE sources SET topic_id=?2 WHERE id=?1",
+                        params![sid, tid],
+                    )?;
+                }
+            }
+            n
+        }
+        "note" => restore_rows(&tx, "notes", &payload)?,
+        "material" => restore_rows(&tx, "materials", &payload)?,
+        other => {
+            return Err(Error::Other(format!(
+                "refusing to restore unsupported entity table {other}"
+            )))
+        }
+    };
+
+    tx.execute(
+        "UPDATE undo_entries SET undone_at=?2 WHERE id=?1",
+        params![id, now_ms()],
+    )?;
+    tx.commit()?;
+    Ok(table)
 }
 
 /// Populate a FRESH database with a broad, realistic dataset for screenshots /
