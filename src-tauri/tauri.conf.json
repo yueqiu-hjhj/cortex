@@ -70,7 +70,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBNUMwMkRCRThCNDBBMDkKUldRSkNyVG8yd0pjcXFoSUlTcUNGdk1IMlFMdElZZXRrQnp5cndpSWtVYy9RZlpuS1lBTUpOOUEK",
       "endpoints": [
-        "https://github.com/PndaMan/cortex/releases/latest/download/latest.json"
+        "https://github.com/yueqiu-hjhj/cortex/releases/latest/download/latest.json"
       ]
     }
   }
