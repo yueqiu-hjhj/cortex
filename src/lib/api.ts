@@ -161,7 +161,7 @@ export const updateSubject = (
   glyph?: string,
   color?: string
 ) => invoke<Subject>("update_subject", { id, name, code, glyph, color });
-export const deleteSubject = (id: string) => invoke<void>("delete_subject", { id });
+export const deleteSubject = (id: string) => invoke<string>("delete_subject", { id });
 export const archiveSubject = (id: string, archived: boolean) =>
   invoke<void>("archive_subject", { id, archived });
 export const listArchivedSubjects = () =>
@@ -189,7 +189,7 @@ export const updateSource = (
   topicId?: string | null,
   tags?: string[]
 ) => invoke<Source>("update_source", { id, name, topicId, tags });
-export const deleteSource = (id: string) => invoke<void>("delete_source", { id });
+export const deleteSource = (id: string) => invoke<string>("delete_source", { id });
 /** Re-run ingestion (re-OCR/re-chunk/re-embed) for an existing source in place. */
 export const reingestSource = (id: string) => invoke<IngestResult>("reingest_source", { id });
 /** Sources that failed to ingest (error / draft-with-error), across all subjects. */
@@ -408,7 +408,7 @@ export const synthesizeOverview = (
 ) => invoke<string>("synthesize_overview", { materialId, segments, force });
 export const listMaterials = (subjectId: string) =>
   invoke<MaterialRec[]>("list_materials", { subjectId });
-export const deleteMaterial = (id: string) => invoke<void>("delete_material", { id });
+export const deleteMaterial = (id: string) => invoke<string>("delete_material", { id });
 export const renameMaterial = (id: string, title: string) =>
   invoke<void>("rename_material", { id, title });
 

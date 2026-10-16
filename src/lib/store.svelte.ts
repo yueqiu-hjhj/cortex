@@ -72,7 +72,7 @@ export type Music = { current: string; playing: boolean; volume: number };
 export type PomoPhase = "work" | "break" | "long";
 
 export type DialogSpec = {
-  kind: "confirm" | "prompt";
+  kind: "confirm" | "prompt" | "destructive";
   title: string;
   body?: string;
   label?: string;
@@ -80,6 +80,15 @@ export type DialogSpec = {
   placeholder?: string;
   danger?: boolean;
   okLabel?: string;
+  // Destructive-only: bullet-list of items the user is about to remove. The
+  // dialog renders them so the user can sanity-check the blast radius. The
+  // list is capped (the helper truncates with a "+N more" line) so a 500-item
+  // purge does not produce a wall of text.
+  preview?: string[];
+  // Destructive-only: when set, the OK button stays disabled until the user
+  // types the exact string (typically the action verb). Used for the truly
+  // irreversible actions (delete-all-data, factory reset, etc.).
+  typeToConfirm?: string;
 };
 
 // Rich edit-modal targets — carry the current field values to seed the form.
@@ -1317,8 +1326,21 @@ class AppStore {
 
   // ---- subject / source / topic CRUD ----
   async deleteSubject(id: string) {
+    const subject = this.subjects.find((s) => s.id === id);
+    const name = subject?.name ?? "this subject";
+    const ok = await this.destructiveConfirm({
+      title: `Delete "${name}"?`,
+      body: "All topics, sources, notes, materials and cheatsheets for this subject will be removed. You can undo this for 7 days.",
+      preview: [
+        name,
+        `${subject?.topics?.length ?? 0} topic(s)`,
+        `${subject?.sourceCount ?? 0} source(s)`,
+      ],
+      okLabel: "Delete subject",
+    });
+    if (!ok) return;
     try {
-      await api.deleteSubject(id);
+      const undoId = await api.deleteSubject(id);
       const wasActive = this.activeSubjectId === id;
       this.subjects = await api.listSubjects();
       if (wasActive) {
@@ -1326,7 +1348,7 @@ class AppStore {
         this.activeSource = null;
         this.view = this.subjects.length ? "subject" : "dashboard";
       }
-      this.pushToast({ kind: "success", title: "Subject deleted" });
+      this.destructiveDone({ title: "Subject deleted", body: name, undoId });
     } catch (e) {
       this.pushToast({ kind: "error", title: "Delete failed", body: String(e) });
     }
@@ -1432,14 +1454,24 @@ class AppStore {
   }
 
   async deleteSource(id: string) {
+    const subj = this.subjects.find((s) => s.id === this.activeSubjectId);
+    const source = subj?.topics.flatMap((t) => t.sources ?? []).find((s) => s.id === id);
+    const name = source?.name ?? "this source";
+    const ok = await this.destructiveConfirm({
+      title: `Delete "${name}"?`,
+      body: "The source and all its chunks/embeddings will be removed. You can undo this for 7 days.",
+      preview: [name],
+      okLabel: "Delete source",
+    });
+    if (!ok) return;
     try {
-      await api.deleteSource(id);
+      const undoId = await api.deleteSource(id);
       if (this.activeSource?.id === id) {
         this.activeSource = null;
         this.view = "subject";
       }
       await this.refresh();
-      this.pushToast({ kind: "success", title: "Source deleted" });
+      this.destructiveDone({ title: "Source deleted", body: name, undoId });
     } catch (e) {
       this.pushToast({ kind: "error", title: "Delete failed", body: String(e) });
     }
@@ -1702,6 +1734,62 @@ class AppStore {
       this.dialog = { kind: "confirm", okLabel: "Confirm", ...opts };
     });
   }
+
+    // ---- write safety: destructive confirm + undo toast ----
+    // destructiveConfirm() shows a richer version of confirm() that lists the
+    // items the user is about to remove, and (optionally) requires the user to
+    // type a confirmation string before the OK button enables. The preview is
+    // capped to PREVIEW_MAX rows so a 500-row purge stays scannable.
+    private static readonly PREVIEW_MAX = 8;
+    destructiveConfirm(opts: {
+      title: string;
+      body?: string;
+      preview?: string[];
+      typeToConfirm?: string;
+      okLabel?: string;
+    }): Promise<boolean> {
+      return new Promise((resolve) => {
+        this.#dialogResolve = resolve;
+        this.dialog = {
+          kind: "destructive",
+          danger: true,
+          okLabel: opts.okLabel ?? "Delete",
+          title: opts.title,
+          body: opts.body,
+          preview: opts.preview,
+          typeToConfirm: opts.typeToConfirm,
+        };
+      });
+    }
+
+    // destructiveDone() pushes a toast that has an Undo button. The backend
+    // appends an `undo_entries` row inside the destructive transaction, so the
+    // id we get back can be handed to api.restoreUndo() to roll the action back.
+    destructiveDone(opts: {
+      title: string;
+      body?: string;
+      undoId: string;
+      undoLabel?: string;
+    }) {
+      const label = opts.undoLabel ?? "Undo";
+      this.pushToast({
+        kind: "success",
+        title: opts.title,
+        body: opts.body,
+        action: {
+          label,
+          run: async () => {
+            try {
+              await api.restoreUndo(opts.undoId);
+              this.pushToast({ kind: "info", title: "Restored" });
+              await this.refresh();
+            } catch (e) {
+              this.pushToast({ kind: "error", title: "Undo failed", body: String(e) });
+            }
+          },
+        },
+      });
+    }
   /** Themed replacement for window.prompt. Resolves the trimmed string, or null if cancelled. */
   prompt(opts: { title: string; body?: string; label?: string; value?: string; placeholder?: string; okLabel?: string }): Promise<string | null> {
     return new Promise((resolve) => {

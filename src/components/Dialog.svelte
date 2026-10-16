@@ -27,9 +27,23 @@
     if (app.dialog?.kind === "prompt") {
       const v = draft.trim();
       app.resolveDialog(v.length ? v : null);
+    } else if (app.dialog?.kind === "destructive" && app.dialog.typeToConfirm) {
+      // Type-to-confirm gate: the OK button is already disabled until the user
+      // types the expected string; the click is a no-op otherwise.
+      if (draft.trim() !== app.dialog.typeToConfirm) return;
+      app.resolveDialog(true);
     } else {
       app.resolveDialog(true);
     }
+  }
+  // Destructive dialogs may require typing a phrase to enable OK.
+  function canOk() {
+    const d = app.dialog;
+    if (!d) return false;
+    if (d.kind === "destructive" && d.typeToConfirm) {
+      return draft.trim() === d.typeToConfirm;
+    }
+    return true;
   }
   function onKey(e: KeyboardEvent) {
     if (!app.dialog) return;
@@ -59,6 +73,28 @@
           class="input dlg-input"
           placeholder={app.dialog.placeholder ?? ""}
         />
+      {:else if app.dialog.kind === "destructive"}
+        {#if app.dialog.preview && app.dialog.preview.length}
+          <ul class="dlg-preview">
+            {#each app.dialog.preview.slice(0, 8) as item (item)}
+              <li><span class="dlg-preview-bul"></span>{item}</li>
+            {/each}
+            {#if app.dialog.preview.length > 8}
+              <li class="dlg-preview-more mono">+ {app.dialog.preview.length - 8} more…</li>
+            {/if}
+          </ul>
+        {/if}
+        {#if app.dialog.typeToConfirm}
+          <div class="dlg-label">Type <code class="dlg-type-code">{app.dialog.typeToConfirm}</code> to confirm</div>
+          <input
+            bind:this={inputEl}
+            bind:value={draft}
+            class="input dlg-input"
+            placeholder={app.dialog.typeToConfirm}
+            autocomplete="off"
+            spellcheck="false"
+          />
+        {/if}
       {/if}
       <div class="dlg-actions">
         <button class="btn btn--ghost btn--sm" type="button" onclick={cancel}>Cancel</button>
@@ -66,6 +102,7 @@
           class={"btn btn--sm " + (app.dialog.danger ? "btn--danger" : "btn--primary")}
           type="button"
           onclick={ok}
+          disabled={!canOk()}
         >
           {app.dialog.okLabel}
         </button>
@@ -123,6 +160,38 @@
   .dlg-input {
     margin-top: 12px;
     width: 100%;
+  }
+  .dlg-preview {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+  }
+  .dlg-preview li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .dlg-preview-bul {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--warn); flex: none;
+  }
+  .dlg-preview-more { color: var(--fg-faint); font-style: italic; }
+  .dlg-type-code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--warn);
   }
   .dlg-actions {
     margin-top: 18px;

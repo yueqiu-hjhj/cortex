@@ -3852,7 +3852,7 @@ fn record_undo_row(
 
 /// Snapshot + delete one source, journaling the row plus its chunks and tags so
 /// a restore also brings the extracted text/embeddings back.
-pub fn delete_source_with_undo(conn: &Connection, id: &str) -> Result<()> {
+pub fn delete_source_with_undo(conn: &Connection, id: &str) -> Result<String> {
     let sources = snapshot_rows(conn, "sources", "WHERE id=?1", id)?;
     let first = sources.first().cloned().unwrap_or(serde_json::Value::Null);
     if first.is_null() {
@@ -3867,7 +3867,7 @@ pub fn delete_source_with_undo(conn: &Connection, id: &str) -> Result<()> {
     };
     let label = row_label(&first);
     delete_source(conn, id)?;
-    record_undo_row(
+    let undo_id = record_undo_row(
         conn,
         "delete_source",
         "source",
@@ -3875,12 +3875,12 @@ pub fn delete_source_with_undo(conn: &Connection, id: &str) -> Result<()> {
         &label,
         serde_json::json!({ "sources": sources, "chunks": chunks, "tag_ids": tag_ids }),
     )?;
-    Ok(())
+    Ok(undo_id)
 }
 
 /// Snapshot + delete one topic. Note the schema uses `ON DELETE SET NULL` for a
 /// source's topic, so the note also re-files any source that lost its topic.
-pub fn delete_topic_with_undo(conn: &Connection, id: &str) -> Result<()> {
+pub fn delete_topic_with_undo(conn: &Connection, id: &str) -> Result<String> {
     let topics = snapshot_rows(conn, "topics", "WHERE id=?1", id)?;
     let first = topics.first().cloned().unwrap_or(serde_json::Value::Null);
     if first.is_null() {
@@ -3890,7 +3890,7 @@ pub fn delete_topic_with_undo(conn: &Connection, id: &str) -> Result<()> {
     let sources = snapshot_rows(conn, "sources", "WHERE topic_id=?1", id)?;
     let label = row_label(&first);
     delete_topic(conn, id)?;
-    record_undo_row(
+    let undo_id = record_undo_row(
         conn,
         "delete_topic",
         "topic",
@@ -3898,10 +3898,10 @@ pub fn delete_topic_with_undo(conn: &Connection, id: &str) -> Result<()> {
         &label,
         serde_json::json!({ "topics": topics, "sources": sources, "subject_id": subject_id }),
     )?;
-    Ok(())
+    Ok(undo_id)
 }
 
-pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<()> {
+pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<String> {
     let subjects = snapshot_rows(conn, "subjects", "WHERE id=?1", id)?;
     let first = subjects.first().cloned().unwrap_or(serde_json::Value::Null);
     if first.is_null() {
@@ -3925,7 +3925,7 @@ pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<()> {
     let materials = snapshot_rows(conn, "materials", "WHERE subject_id=?1", id)?;
     let label = row_label(&first);
     delete_subject(conn, id)?;
-    record_undo_row(
+    let undo_id = record_undo_row(
         conn,
         "delete_subject",
         "subject",
@@ -3941,10 +3941,10 @@ pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<()> {
             "materials": materials
         }),
     )?;
-    Ok(())
+    Ok(undo_id)
 }
 
-pub fn delete_note_with_undo(conn: &Connection, id: &str) -> Result<()> {
+pub fn delete_note_with_undo(conn: &Connection, id: &str) -> Result<String> {
     let notes = snapshot_rows(conn, "notes", "WHERE id=?1", id)?;
     let first = notes.first().cloned().unwrap_or(serde_json::Value::Null);
     if first.is_null() {
@@ -3952,11 +3952,11 @@ pub fn delete_note_with_undo(conn: &Connection, id: &str) -> Result<()> {
     }
     let label = row_label(&first);
     delete_note(conn, id)?;
-    record_undo_row(conn, "delete_note", "note", id, &label, serde_json::json!({ "notes": notes }))?;
-    Ok(())
+    let undo_id = record_undo_row(conn, "delete_note", "note", id, &label, serde_json::json!({ "notes": notes }))?;
+    Ok(undo_id)
 }
 
-pub fn delete_material_with_undo(conn: &Connection, id: &str) -> Result<()> {
+pub fn delete_material_with_undo(conn: &Connection, id: &str) -> Result<String> {
     let materials = snapshot_rows(conn, "materials", "WHERE id=?1", id)?;
     let first = materials.first().cloned().unwrap_or(serde_json::Value::Null);
     if first.is_null() {
@@ -3964,7 +3964,7 @@ pub fn delete_material_with_undo(conn: &Connection, id: &str) -> Result<()> {
     }
     let label = row_label(&first);
     delete_material(conn, id)?;
-    record_undo_row(
+    let undo_id = record_undo_row(
         conn,
         "delete_material",
         "material",
@@ -3972,7 +3972,7 @@ pub fn delete_material_with_undo(conn: &Connection, id: &str) -> Result<()> {
         &label,
         serde_json::json!({ "materials": materials }),
     )?;
-    Ok(())
+    Ok(undo_id)
 }
 
 pub fn list_undo_entries(conn: &Connection, limit: i64) -> Result<Vec<UndoEntry>> {

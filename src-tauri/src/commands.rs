@@ -419,7 +419,7 @@ pub fn update_subject(
 }
 
 #[tauri::command]
-pub fn delete_subject(state: State<AppState>, id: String) -> Result<()> {
+pub fn delete_subject(state: State<AppState>, id: String) -> Result<String> {
     let c = state.db.lock().unwrap();
     repo::delete_subject_with_undo(&c, &id)
 }
@@ -509,7 +509,7 @@ pub fn reorder_topics(
 #[tauri::command]
 pub fn delete_topic(state: State<AppState>, id: String, subject_id: String) -> Result<Subject> {
     let c = state.db.lock().unwrap();
-    repo::delete_topic_with_undo(&c, &id)?;
+    let _undo_id = repo::delete_topic_with_undo(&c, &id)?;
     repo::get_subject(&c, &subject_id)
 }
 
@@ -556,7 +556,7 @@ pub fn update_source(
 }
 
 #[tauri::command]
-pub fn delete_source(state: State<AppState>, id: String) -> Result<()> {
+pub fn delete_source(state: State<AppState>, id: String) -> Result<String> {
     let c = state.db.lock().unwrap();
     repo::delete_source_with_undo(&c, &id)
 }
@@ -3147,7 +3147,7 @@ pub fn list_materials(state: State<AppState>, subject_id: String) -> Result<Vec<
 }
 
 #[tauri::command]
-pub fn delete_material(state: State<AppState>, id: String) -> Result<()> {
+pub fn delete_material(state: State<AppState>, id: String) -> Result<String> {
     let c = state.db.lock().unwrap();
     repo::delete_material_with_undo(&c, &id)
 }
