@@ -104,6 +104,119 @@
     app.openTopicSheet(s, id);
   }
 
+    // ── 知识框架树（KnowOrigin-style：foldable tree + node-level BKT mastery）──
+    // sync_knowledge_graph rebuilds the subject > topic > source hierarchy from
+    // the live library. Coverage rolls up from sources; mastery is the BKT
+    // estimate at the topic level, falling back to 90-day review accuracy when
+    // no observations have been recorded yet (cold start).
+    interface TreeNode {
+      node: api.KnowledgeNode;
+      children: TreeNode[];
+      depth: number;
+    }
+    let knTree = $state<TreeNode[]>([]);
+    let knLoading = $state(false);
+    let knErr = $state<string | null>(null);
+    let knExpanded = $state<Record<string, boolean>>({}); // node id -> open?
+    let knSyncNote = $state<string | null>(null);
+    const knTopicAccuracy = $derived.by(() => {
+      const m: Record<string, number | null> = {};
+      for (const s of stats) m[s.topic_id] = s.accuracy ?? null;
+      return m;
+    });
+    $effect(() => {
+      const id = subj?.id;
+      if (!id) { knTree = []; knErr = null; knLoading = false; return; }
+      let cancelled = false;
+      knLoading = true;
+      knErr = null;
+      (async () => {
+        try {
+          const n = await api.syncKnowledgeGraph(id);
+          const nodes = await api.listKnowledgeNodes(id);
+          if (cancelled) return;
+          knTree = buildTree(nodes);
+          // Auto-expand the subject root + topics with sources, collapse the rest.
+          const exp: Record<string, boolean> = {};
+          for (const t of knTree) {
+            exp[t.node.id] = true;
+            for (const c of t.children) exp[c.node.id] = (c.children.length > 0);
+          }
+          knExpanded = exp;
+          knSyncNote = `${n} 个节点已同步`;
+        } catch (e) {
+          if (!cancelled) knErr = String(e);
+        } finally {
+          if (!cancelled) knLoading = false;
+        }
+      })();
+      return () => { cancelled = true; };
+    });
+    function buildTree(nodes: api.KnowledgeNode[]): TreeNode[] {
+      const byId = new Map<string, TreeNode>();
+      for (const n of nodes) byId.set(n.id, { node: n, children: [], depth: 0 });
+      const roots: TreeNode[] = [];
+      for (const n of nodes) {
+        const t = byId.get(n.id)!;
+        if (n.parent_id && byId.has(n.parent_id)) {
+          const p = byId.get(n.parent_id)!;
+          t.depth = p.depth + 1;
+          p.children.push(t);
+        } else {
+          roots.push(t);
+        }
+      }
+      // Sort siblings by position (then title for stable display).
+      const sortRec = (list: TreeNode[]) => {
+        list.sort((a, b) => a.node.position - b.node.position || a.node.title.localeCompare(b.node.title));
+        for (const t of list) sortRec(t.children);
+      };
+      sortRec(roots);
+      return roots;
+    }
+    // Effective mastery: BKT (knowledge_nodes.mastery) for nodes that have
+    // observations; otherwise the 90-day topic accuracy, otherwise the rolled-up
+    // coverage. This keeps the visual meaningful across cold start.
+    function effectiveMastery(n: api.KnowledgeNode): number {
+      if (n.observations > 0) return n.mastery;
+      if (n.kind === "topic" && n.topic_id && knTopicAccuracy[n.topic_id] != null) {
+        return knTopicAccuracy[n.topic_id]!;
+      }
+      return n.coverage > 0 ? 0.5 + n.coverage * 0.4 : 0.3;
+    }
+    function bktBandFor(m: number): Band {
+      if (m >= 0.85) return "solid";
+      if (m >= 0.7)  return "steady";
+      if (m >= 0.45) return "shaky";
+      return "cold";
+    }
+    function bktColor(b: Band) {
+      return BANDS.find((x) => x.key === b)?.color ?? "var(--fg-faint)";
+    }
+    function openSourceNode(n: api.KnowledgeNode) {
+      if (!n.source_id) return;
+      const s = subj;
+      if (!s) return;
+      const src: api.Source = {
+        id: n.source_id,
+        subject_id: s.id,
+        topic_id: n.topic_id ?? null,
+        name: n.title,
+        kind: "source",
+        status: n.coverage > 0 ? "ready" : "pending",
+        meta: n.summary ?? null,
+        origin: null,
+        error: null,
+        content: null,
+        stored_path: null,
+        tags: [],
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+      };
+      app.openSource(src, null);
+    }
+    function toggleNode(id: string) { knExpanded = { ...knExpanded, [id]: !knExpanded[id] }; }
+
   // ── 知识脑图 ──
   // 从本科目的库结构（主题→来源）+ 本地术语表拼一棵只读树，复用 AI 材料
   // 的 MindMapView 渲染器。零模型调用；与 NeuralGraph 不重叠——那张是
@@ -252,9 +365,68 @@
         {/each}
       </ol>
     </section>
+
+    <section class="ov-tree">
+      <div class="ov-tree-l">
+        <h3>知识框架树</h3>
+        <p>
+          本科目的层级树 — 主题 → 来源。颜色按 BKT 掌握的估计值（Solid ≥ 85% ，
+          Steady ≥ 70%，Shaky ≥ 45%，Cold 低于）。点叶节点直接打开来源。
+        </p>
+      </div>
+      <div class="ov-tree-card">
+        {#if knLoading}
+          <div class="ov-tree-mut">同步知识框架…</div>
+        {:else if knErr}
+          <div class="ov-tree-mut err">{knErr}</div>
+        {:else if knTree.length === 0 || (knTree[0]?.children.length ?? 0) === 0}
+          <div class="ov-tree-mut">还没有主题。先加几个来源和主题。</div>
+        {:else}
+          <ul class="ov-tree-list">
+            {#each knTree as root (root.node.id)}
+              {@render knRow(root)}
+            {/each}
+          </ul>
+          {#if knSyncNote}<div class="ov-tree-foot mono">{knSyncNote}</div>{/if}
+        {/if}
+      </div>
+    </section>
   {/if}
 </div>
 {/if}
+
+{#snippet knRow(t: TreeNode)}
+  {@const band = bktBandFor(effectiveMastery(t.node))}
+  {@const open = !!knExpanded[t.node.id]}
+  {@const hasKids = t.children.length > 0}
+  <li class="ov-tree-row" class:has-kids={hasKids}>
+    <button
+      class="ov-tree-row-h"
+      type="button"
+      onclick={() => hasKids ? toggleNode(t.node.id) : (t.node.source_id ? openSourceNode(t.node) : null)}
+    >
+      <span class="ov-tree-band" style:background={bktColor(band)} title="BKT mastery band"></span>
+      <span class="ov-tree-kind kind-{t.node.kind}">{t.node.kind}</span>
+      <span class="ov-tree-title">{t.node.title}</span>
+      <span class="ov-tree-m mono" style:color={bktColor(band)}>{Math.round(effectiveMastery(t.node) * 100)}%</span>
+      {#if t.node.observations > 0}
+        <span class="ov-tree-n mono">{t.node.observations} obs</span>
+      {/if}
+      {#if hasKids}
+        <Icon name={open ? "x" : "arrowR"} size={11} />
+      {:else if t.node.source_id}
+        <Icon name="arrowR" size={11} />
+      {/if}
+    </button>
+    {#if hasKids && open}
+      <ul class="ov-tree-list">
+        {#each t.children as child (child.node.id)}
+          {@render knRow(child)}
+        {/each}
+      </ul>
+    {/if}
+  </li>
+{/snippet}
 
 <style>
   .ov {
@@ -447,4 +619,89 @@
     color: var(--accent);
   }
   .ov-next-go:hover { background: var(--surface-2); }
+
+  /* ---- knowledge framework tree ---- */
+  .ov-tree {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px 16px;
+    background: transparent;
+  }
+  .ov-tree-l h3 { margin: 0 0 4px; font-size: 13px; }
+  .ov-tree-l p { margin: 0; color: var(--fg-muted); font-size: 11.5px; line-height: 1.55; }
+  .ov-tree-card {
+    min-width: 0;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 8px 6px;
+  }
+  .ov-tree-mut {
+    padding: 14px 12px;
+    text-align: center;
+    color: var(--fg-faint);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+  .ov-tree-mut.err { color: var(--warn); }
+  .ov-tree-foot {
+    padding: 4px 12px 6px;
+    color: var(--fg-faint);
+    font-size: 10.5px;
+  }
+  .ov-tree-list { list-style: none; margin: 0; padding: 0; }
+  .ov-tree-row { margin: 0; }
+  .ov-tree-row-h {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ov-tree-row-h:hover { background: var(--surface-2); }
+  .ov-tree-row.has-kids > .ov-tree-row-h { font-weight: 500; }
+  .ov-tree-band {
+    width: 4px; height: 18px; border-radius: 2px; flex: none;
+  }
+  .ov-tree-kind {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 4px;
+  }
+  .ov-tree-kind.kind-subject { color: var(--accent); border-color: var(--accent); }
+  .ov-tree-kind.kind-topic   { color: var(--fg-muted); }
+  .ov-tree-title {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ov-tree-m {
+    flex: none; font-weight: 600; font-size: 11px;
+  }
+  .ov-tree-n {
+    flex: none; color: var(--fg-faint); font-size: 10px;
+  }
+  .ov-tree-row > .ov-tree-list {
+    margin: 0 0 0 18px;
+    border-left: 1px dashed var(--border);
+    padding-left: 4px;
+  }
+  @media (max-width: 760px) {
+    .ov-tree { grid-template-columns: 1fr; }
+  }
 </style>
