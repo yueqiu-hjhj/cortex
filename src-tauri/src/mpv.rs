@@ -85,11 +85,18 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
 ///    downloads on first miss; cross-platform).
 /// 3. A copy already on `$PATH`.
 /// Idempotent.
-fn ensure_ytdlp(dir: &Path) -> Result<PathBuf> {
+fn ensure_ytdlp(conn: &rusqlite::Connection, dir: &Path) -> Result<PathBuf> {
     if let Some(p) = crate::ingest::tool_in("yt-dlp", Some(dir)) {
         return Ok(PathBuf::from(p));
     }
-    crate::sidecars::ensure_ytdlp(dir)
+    let mut spec = crate::sidecars::BinSpec::for_target("yt-dlp");
+    if let Ok(Some(url)) = crate::repo::get_setting(conn, "sidecar_ytdlp_url") {
+        let url = url.trim();
+        if !url.is_empty() {
+            spec = spec.with_url(url);
+        }
+    }
+    crate::sidecars::ensure(dir, &spec)
 }
 
 /// Start mpv (idle, no video) if it isn't already running, listening on the IPC
@@ -197,7 +204,11 @@ pub fn media_tools_status(app: AppHandle) -> Result<MediaTools> {
 pub fn youtube_play(app: AppHandle, url: String, volume: u8) -> Result<()> {
     let dir = data_dir(&app)?;
     let socket = socket_path(&dir);
-    let ytdlp = ensure_ytdlp(&dir)?;
+    let ytdlp = {
+        let state = app.state::<crate::db::AppState>();
+        let c = state.db.lock().unwrap();
+        ensure_ytdlp(&c, &dir)?
+    };
     ensure_mpv(&socket, &ytdlp, volume)?;
     // Stations are YouTube watch URLs; mpv's ytdl hook normally re-runs yt-dlp on
     // every load to resolve the direct googlevideo stream (several seconds). We
@@ -275,8 +286,16 @@ pub fn youtube_prewarm(app: AppHandle, urls: Vec<String>) -> Result<()> {
     let dir = data_dir(&app)?;
     // Resolve yt-dlp's path on the calling thread (cheap: avoids a download race
     // inside the worker); if it isn't available yet, skip prewarming entirely.
-    let Ok(ytdlp) = ensure_ytdlp(&dir) else {
-        return Ok(());
+    let ytdlp = {
+        let state = app.state::<crate::db::AppState>();
+        let c = match state.db.lock() {
+            Ok(g) => g,
+            Err(_) => return Ok(()),
+        };
+        match ensure_ytdlp(&c, &dir) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        }
     };
     std::thread::spawn(move || {
         for url in urls {

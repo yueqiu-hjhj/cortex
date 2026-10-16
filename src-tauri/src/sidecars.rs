@@ -56,6 +56,18 @@ impl BinSpec {
             other => panic!("sidecars::BinSpec::for_target: unknown tool `{other}`"),
         }
     }
+
+    /// Override the URL on a spec. Useful when the upstream moves its release
+    /// artifact (e.g. age bumps a tag) — the user can pin a working URL via
+    /// the `sidecar_<name>_url` settings key and we honour it without a
+    /// code change here. `url` is intentionally a `&str` (not `String`) so
+    /// `Box::leak` is the only allocation cost.
+    pub fn with_url(self, url: &str) -> BinSpec {
+        BinSpec {
+            url: Box::leak(url.to_owned().into_boxed_str()),
+            ..self
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

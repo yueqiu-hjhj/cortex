@@ -39,16 +39,22 @@ fn tool_exists(bin: &str, data_dir: &std::path::Path) -> bool {
 
 /// Resolve a tool's invocation path: bundled sidecar, then PATH, else the bare
 /// name (so the error message still mentions the tool).
-fn bin(name: &str, data_dir: &std::path::Path) -> String {
+fn bin(name: &str, data_dir: &std::path::Path, conn: &rusqlite::Connection) -> String {
     if let Some(p) = crate::ingest::tool_in(name, Some(data_dir)) {
         return p;
     }
-    let fetched = match name {
-        "age" => crate::sidecars::ensure_age(data_dir),
-        "rclone" => crate::sidecars::ensure_rclone(data_dir),
-        _ => Err(crate::error::Error::Other(format!("no runtime fetcher for `{name}`"))),
-    };
-    match fetched {
+    // Per-tool URL override (settings key: sidecar_<name>_url). Empty/missing
+    // falls back to the hardcoded BinSpec URL — the override exists so a
+    // release rename upstream doesn't require a code patch here.
+    let mut spec = crate::sidecars::BinSpec::for_target(name);
+    let key = format!("sidecar_{name}_url");
+    if let Ok(Some(url)) = crate::repo::get_setting(conn, &key) {
+        let url = url.trim();
+        if !url.is_empty() {
+            spec = spec.with_url(url);
+        }
+    }
+    match crate::sidecars::ensure(data_dir, &spec) {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => name.to_string(),
     }
@@ -123,9 +129,18 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
 
         std::fs::copy(&db_path, &tmp_db).map_err(Error::Io)?;
 
+        // Resolve tool paths with the sidecar fetcher. bin() reads the
+        // sidecar_<name>_url setting (DB read) — re-lock for each call so a
+        // long-running rclone upload doesn't keep the WAL pinned.
+        let dest = format!("{remote}/cortex-{stamp}.db.age");
+
         // Encrypt: age -r <recipient> -o <enc> <db>
+        let age_bin = {
+            let c = state.db.lock().unwrap();
+            bin("age", &data_dir, &c)
+        };
         run(
-            Command::new(bin("age", &data_dir))
+            Command::new(&age_bin)
                 .arg("-r")
                 .arg(recipient)
                 .arg("-o")
@@ -135,9 +150,12 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
         )?;
 
         // Upload: rclone copyto <enc> <remote>/cortex-<stamp>.db.age
-        let dest = format!("{remote}/cortex-{stamp}.db.age");
+        let rclone_bin = {
+            let c = state.db.lock().unwrap();
+            bin("rclone", &data_dir, &c)
+        };
         run(
-            Command::new(bin("rclone", &data_dir)).arg("copyto").arg(&tmp_enc).arg(&dest),
+            Command::new(&rclone_bin).arg("copyto").arg(&tmp_enc).arg(&dest),
             "rclone",
         )?;
 
