@@ -14,6 +14,7 @@ mod embed_onnx;
 mod error;
 mod exam;
 mod secrets;
+mod selfcheck;
 mod google;
 mod homelab;
 mod ingest;
@@ -377,6 +378,7 @@ pub fn run() {
             commands::get_secret,
             commands::delete_secret,
             commands::list_secrets,
+            commands::startup_self_check,
             commands::rename_material,
             commands::add_citation,
             commands::list_citations,

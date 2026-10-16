@@ -318,7 +318,23 @@ export const setSecret = (key: string, value: string) =>
 export const getSecret = (key: string) => invoke<string | null>("get_secret", { key });
 export const deleteSecret = (key: string) =>
   invoke<void>("delete_secret", { key });
+// ---- startup self-check ----
+export interface Check {
+  name: string;
+  ok: boolean;
+  detail: string;
+  hint?: string | null;
+}
+export interface SelfCheckReport {
+  passed: number;
+  failed: number;
+  checks: Check[];
+  user_version: number;
+  known_migrations: number;
+}
 export const listSecrets = () => invoke<string[]>("list_secrets");
+
+export const startupSelfCheck = () => invoke<SelfCheckReport>("startup_self_check");
 
 export const seedDemo = () => invoke<Subject[]>("seed_demo");
 export const envProbe = () => invoke<Record<string, boolean>>("env_probe");

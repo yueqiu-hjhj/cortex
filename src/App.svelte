@@ -27,6 +27,7 @@
   import RecordingActivity from "./components/RecordingActivity.svelte";
   import { keybinds } from "./lib/keybinds.svelte";
   import { isMobile } from "./lib/platform";
+  import * as api from "./lib/api";
   import MindMapView from "./components/MindMapView.svelte";
   import MobileShell from "./shell/MobileShell.svelte";
 
@@ -100,6 +101,26 @@
     }, 1500);
     return () => clearTimeout(prefetch);
   });
+
+  // Startup self-check. Runs once, shortly after init, and only surfaces a
+  // dismissible banner when a check fails — the app stays fully usable either
+  // way, so this never blocks boot or interrupts a working session.
+  let selfcheck = $state<api.SelfCheckReport | null>(null);
+  let selfcheckDismissed = $state(false);
+  let selfcheckOpen = $state(false);
+  let selfcheckStarted = false;
+  $effect(() => {
+    if (selfcheckStarted) return;
+    selfcheckStarted = true;
+    const t = setTimeout(() => {
+      api
+        .startupSelfCheck()
+        .then((r) => (selfcheck = r))
+        .catch(() => {});
+    }, 1200);
+    return () => clearTimeout(t);
+  });
+  const selfcheckFailures = $derived(selfcheck?.checks.filter((c) => !c.ok) ?? []);
 
   // Chat dock / FAB visibility. Read EVERY signal into a local first so &&/||
   // short-circuiting can't drop one from Svelte's reactive dependency set (that
@@ -380,6 +401,34 @@
     {/if}
 
     <div class="app-main">
+      {#if selfcheckFailures.length > 0 && !selfcheckDismissed}
+        <div class="selfcheck" role="alert">
+          <button
+            class="sc-head"
+            onclick={() => (selfcheckOpen = !selfcheckOpen)}
+            aria-expanded={selfcheckOpen}
+          >
+            <Icon name="bolt" size={14} />
+            <span class="sc-title">启动自检发现 {selfcheckFailures.length} 项问题</span>
+            <span class="sc-spacer"></span>
+            <span class="sc-toggle">{selfcheckOpen ? "收起" : "详情"}</span>
+          </button>
+          {#if selfcheckOpen}
+            <ul class="sc-list">
+              {#each selfcheckFailures as c (c.name)}
+                <li class="sc-item">
+                  <span class="sc-name">{c.name}</span>
+                  <span class="sc-detail">{c.detail}</span>
+                  {#if c.hint}<span class="sc-hint">{c.hint}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <button class="sc-close" onclick={() => (selfcheckDismissed = true)} title="关闭">
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      {/if}
       <div class="workspace">
         {#if app.view === "dashboard"}
           <Dashboard />
@@ -495,4 +544,41 @@
     color: var(--fg-muted); cursor: pointer; transition: color var(--dur), border-color var(--dur);
   }
   .sb-expand:hover { color: var(--fg-bright); border-color: var(--border-strong); }
+
+  /* Startup self-check banner. Anchored to the top of the main column so it
+     never overlaps the sidebar, and dismissible in one click. */
+  .selfcheck {
+    position: absolute; top: 10px; left: 12px; z-index: 35;
+    width: min(560px, calc(100% - 24px));
+    background: var(--surface); color: var(--fg);
+    border: 1px solid color-mix(in oklab, var(--warn) 45%, transparent);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 8px 28px color-mix(in oklab, var(--bg-sunken) 55%, transparent);
+    font-size: var(--t-sm);
+  }
+  .sc-head {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 9px 34px 9px 12px; border: 0; background: transparent;
+    color: var(--fg-bright); cursor: pointer; text-align: left;
+  }
+  .sc-head:hover { background: color-mix(in oklab, var(--warn) 10%, transparent); }
+  .sc-head > :global(svg) { color: var(--warn); flex: none; }
+  .sc-title { font-weight: 600; }
+  .sc-spacer { flex: 1; }
+  .sc-toggle { color: var(--fg-muted); font-size: var(--t-2xs); }
+  .sc-close {
+    position: absolute; top: 6px; right: 6px;
+    width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 6px; background: transparent; color: var(--fg-muted); cursor: pointer;
+  }
+  .sc-close:hover { color: var(--fg-bright); background: color-mix(in oklab, var(--fg) 12%, transparent); }
+  .sc-list { list-style: none; margin: 0; padding: 4px 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .sc-item { display: flex; flex-direction: column; gap: 2px; padding-left: 22px; position: relative; }
+  .sc-item::before {
+    content: ""; position: absolute; left: 6px; top: 6px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--warn);
+  }
+  .sc-name { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-muted); }
+  .sc-detail { color: var(--fg-bright); }
+  .sc-hint { color: var(--fg-muted); font-size: var(--t-2xs); }
 </style>

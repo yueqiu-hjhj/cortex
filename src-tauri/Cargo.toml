@@ -88,7 +88,7 @@ libc = "0.2"
 # SetThreadExecutionState needs the raw Win32 Power API. macOS/Linux use the
 # caffeinate / systemd-inhibit CLIs instead — no crate needed there.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Power", "Win32_Security_Cryptography", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Power", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 # iOS-only: native lecture recording (AVAudioRecorder via the objc2 bindings).
 # WKWebView's custom-scheme pages aren't a secure context, so getUserMedia does

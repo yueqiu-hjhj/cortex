@@ -5119,3 +5119,15 @@ pub fn list_secrets(state: State<AppState>) -> Result<Vec<String>> {
     let c = state.db.lock().unwrap();
     repo::list_secrets(&c)
 }
+// ---- startup self-check ----------------------------------------------------
+// Runs a non-fatal health battery after the DB is open and the data dir is
+// set up. The frontend shows a banner with the failures; the app still starts.
+#[tauri::command]
+pub fn startup_self_check(state: State<AppState>) -> Result<crate::selfcheck::Report> {
+    let conn = state.db.lock().unwrap();
+    let dir = state.data_dir.as_deref().unwrap_or(std::path::Path::new("."));
+    // known_migrations: count the *.sql files in src-tauri/migrations; we
+    // hardcode the count for now (the test suite asserts 31) but the right
+    // long-term answer is to scan the migrations dir on the filesystem.
+    crate::selfcheck::run(&conn, dir, 31)
+}
