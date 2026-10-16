@@ -157,8 +157,8 @@ def legacy_test() -> None:
         conn = sqlite3.connect(path)
         try:
             files = list_migrations()
-            # Apply 1..29 only (legacy), insert some realistic data, then apply 0030.
-            legacy = [f for f in files if f != "0030_knowledge_mcp_undo.sql"]
+            # Apply 1..29 only (legacy), insert some realistic data, then apply 0030 + 0031.
+            legacy = [f for f in files if f not in ("0030_knowledge_mcp_undo.sql", "0031_secrets.sql")]
             apply_migrations(conn, legacy)
             assert user_version(conn) == 29
             pre_subjects = 3
@@ -185,15 +185,13 @@ def legacy_test() -> None:
             sub_count_before = conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0]
             top_count_before = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
             src_count_before = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            # Apply 0030 only, mirroring the Rust runner's bump.
-            with open(
-                os.path.join(MIGRATIONS_DIR, "0030_knowledge_mcp_undo.sql"),
-                encoding="utf-8",
-            ) as fp:
-                conn.executescript(fp.read())
-            conn.execute("PRAGMA user_version = 30")
+            # Apply 0030 and 0031, mirroring the Rust runner's bump.
+            for fname, ver in (("0030_knowledge_mcp_undo.sql", 30), ("0031_secrets.sql", 31)):
+                with open(os.path.join(MIGRATIONS_DIR, fname), encoding="utf-8") as fp:
+                    conn.executescript(fp.read())
+                conn.execute(f"PRAGMA user_version = {ver}")
             conn.commit()
-            assert user_version(conn) == 30
+            assert user_version(conn) == 31
             sub_count_after = conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0]
             top_count_after = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
             src_count_after = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]

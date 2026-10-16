@@ -3,6 +3,7 @@
 
 use crate::db::{new_id, now_ms};
 use crate::error::{Error, Result};
+pub use crate::secrets::{set_secret, get_secret, delete_secret, list_secrets};
 use crate::models::*;
 use crate::vector::{blob_to_f32s, cosine};
 use rusqlite::{params, Connection, OptionalExtension};

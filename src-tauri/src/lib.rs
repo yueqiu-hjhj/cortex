@@ -13,6 +13,7 @@ mod embed;
 mod embed_onnx;
 mod error;
 mod exam;
+mod secrets;
 mod google;
 mod homelab;
 mod ingest;
@@ -372,6 +373,10 @@ pub fn run() {
             commands::calibration_summary,
             commands::list_undo_entries,
             commands::restore_undo,
+            commands::set_secret,
+            commands::get_secret,
+            commands::delete_secret,
+            commands::list_secrets,
             commands::rename_material,
             commands::add_citation,
             commands::list_citations,

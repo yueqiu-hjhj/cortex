@@ -311,6 +311,15 @@ export const globalSearch = (query: string) =>
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
+
+// ---- encrypted secret store (DPAPI on Windows) ----
+export const setSecret = (key: string, value: string) =>
+  invoke<void>("set_secret", { key, value });
+export const getSecret = (key: string) => invoke<string | null>("get_secret", { key });
+export const deleteSecret = (key: string) =>
+  invoke<void>("delete_secret", { key });
+export const listSecrets = () => invoke<string[]>("list_secrets");
+
 export const seedDemo = () => invoke<Subject[]>("seed_demo");
 export const envProbe = () => invoke<Record<string, boolean>>("env_probe");
 

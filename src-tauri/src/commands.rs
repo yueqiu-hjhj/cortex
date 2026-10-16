@@ -5092,3 +5092,30 @@ pub async fn onnx_download(
         }
     }
 }
+// ---- secret store (DPAPI on Windows) -----------------------------------------
+// Thin wrappers over repo::secrets. The frontend should always go through these
+// for any value matching the `*_api_key` / `*_token` / `oauth_*` /
+// `homelab_token` shape -- the settings table is no longer the home for those.
+#[tauri::command]
+pub fn set_secret(state: State<AppState>, key: String, value: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    repo::set_secret(&c, &key, &value)
+}
+
+#[tauri::command]
+pub fn get_secret(state: State<AppState>, key: String) -> Result<Option<String>> {
+    let c = state.db.lock().unwrap();
+    repo::get_secret(&c, &key)
+}
+
+#[tauri::command]
+pub fn delete_secret(state: State<AppState>, key: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    repo::delete_secret(&c, &key)
+}
+
+#[tauri::command]
+pub fn list_secrets(state: State<AppState>) -> Result<Vec<String>> {
+    let c = state.db.lock().unwrap();
+    repo::list_secrets(&c)
+}
