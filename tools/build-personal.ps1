@@ -21,6 +21,8 @@
 #                  (only with -Bundle)
 #   - deployed:  <Deploy path>\cortex.exe (+ cortex_lib.dll + VERSION.txt)
 #                  (only with -Deploy)
+#   - shortcut:  $env:USERPROFILE\Desktop\Cortex.lnk
+#                  (only when -Deploy path lives under $env:USERPROFILE\Desktop)
 #
 # Notes:
 #   - The build runs in src-tauri so cargo's incremental cache stays warm.
@@ -132,6 +134,29 @@ if ($Deploy) {
     if (-not $commitShort) { $commitShort = "unknown" }
     $stamp = "cortex $pkgVer`nbuilt:    $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`ncommit:   $commitShort`n"
     [System.IO.File]::WriteAllText((Join-Path $Deploy "VERSION.txt"), $stamp, [System.Text.UTF8Encoding]::new($false))
+
+    # Desktop shortcut. WScript.Shell is the canonical Windows API for
+    # .lnk creation; works in both Windows PowerShell 5.1 and PowerShell 7.
+    # Only happens when the deploy path is inside the user's Desktop tree
+    # (i.e. $env:USERPROFILE\Desktop\<sub>), so callers passing a folder
+    # elsewhere don't accidentally drop a shortcut onto the Desktop.
+    $desktopRoot = Join-Path $env:USERPROFILE 'Desktop'
+    if ($Deploy.StartsWith($desktopRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $shortcutPath = Join-Path $desktopRoot 'Cortex.lnk'
+        $iconPath = (Resolve-Path (Join-Path $RootDir 'src-tauri\icons\icon.ico') -ErrorAction SilentlyContinue)
+        $shell = New-Object -ComObject WScript.Shell
+        $sc = $shell.CreateShortcut($shortcutPath)
+        $sc.TargetPath = (Join-Path $Deploy 'cortex.exe')
+        $sc.WorkingDirectory = $Deploy
+        $sc.IconLocation = "$iconPath,0"
+        $sc.Description = "Cortex $pkgVer ($commitShort)"
+        $sc.WindowStyle = 7  # minimised on first launch
+        $sc.Save()
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($sc) | Out-Null
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($shell) | Out-Null
+        Write-Host "  shortcut:  $shortcutPath" -ForegroundColor Green
+    }
+
     Write-Host "  deployed: cortex.exe + cortex_lib.dll + VERSION.txt ($pkgVer)" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Open with: $Deploy\cortex.exe" -ForegroundColor Cyan
