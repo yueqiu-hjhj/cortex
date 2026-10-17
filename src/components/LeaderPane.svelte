@@ -7,6 +7,7 @@
   // lib/keybinds.svelte (shared with the help overlay); only the behavior is here.
   const RUN: Record<string, () => void> = {
     y: () => app.setView("today"),
+    w: () => app.setView("plan"),
     s: () => app.goToSources(),
     h: () => app.goToCheatsheet(),
     c: () => { app.chatOpen = true; },

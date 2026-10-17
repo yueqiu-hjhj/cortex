@@ -26,6 +26,7 @@ pub mod agents;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
+pub mod planner;
 pub mod llm;
 mod models;
 mod moodle;
@@ -527,6 +528,12 @@ pub fn run() {
             commands::list_plan_blocks,
             commands::upsert_plan_block,
             commands::delete_plan_block,
+            // planner (Phase 2)
+            commands::plan_week,
+            commands::plan_rollover,
+            commands::complete_plan_block,
+            commands::plan_board,
+            commands::materialize_goal,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

@@ -11,6 +11,7 @@ import { isMobile } from "./platform";
 
 export type View =
   | "today"
+  | "plan"
   | "dashboard"
   | "subject"
   | "source"

@@ -5705,3 +5705,43 @@ pub fn delete_plan_block(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
     wi::delete_block(&c, &id)
 }
+
+// ---- planner: open work items -> concrete plan blocks (Phase 2) ----------
+
+/// Rewrite the planner's blocks for the next `days` days. Manual blocks are
+/// preserved and treated as fixed commitments; anything that does not fit comes
+/// back in `unscheduled` with the missing minutes instead of being dropped.
+#[tauri::command]
+pub fn plan_week(state: State<AppState>, req: crate::planner::PlanRequest) -> Result<crate::planner::PlanOutcome> {
+    let c = state.db.lock().unwrap();
+    crate::planner::plan_week(&c, &req)
+}
+
+/// Mark earlier unstarted blocks as `moved` so they get re-planned today.
+#[tauri::command]
+pub fn plan_rollover(state: State<AppState>, today: String) -> Result<crate::planner::RolloverOutcome> {
+    let c = state.db.lock().unwrap();
+    crate::planner::rollover(&c, &today)
+}
+
+/// Complete a block and log its length against the item as actual minutes.
+#[tauri::command]
+pub fn complete_plan_block(state: State<AppState>, id: String) -> Result<wi::PlanBlock> {
+    let c = state.db.lock().unwrap();
+    crate::planner::complete_block(&c, &id)
+}
+
+/// Week grid: every block in the horizon joined with its item's title/state.
+#[tauri::command]
+pub fn plan_board(state: State<AppState>, start_day: String, days: i64) -> Result<Vec<crate::planner::BlockRow>> {
+    let c = state.db.lock().unwrap();
+    crate::planner::board(&c, &start_day, days)
+}
+
+/// Goal -> work items. Turns a target ("85 by June") into the per-topic tasks
+/// the planner can schedule, reusing the existing BKT-driven sprint estimator.
+#[tauri::command]
+pub fn materialize_goal(state: State<AppState>, req: crate::planner::GoalPlanRequest) -> Result<crate::planner::GoalPlanOutcome> {
+    let c = state.db.lock().unwrap();
+    crate::planner::materialize_goal(&c, &req)
+}

@@ -33,6 +33,7 @@
 
   import Dashboard from "./views/Dashboard.svelte";
   import Today from "./views/Today.svelte";
+  import Plan from "./views/Plan.svelte";
   import SubjectView from "./views/SubjectView.svelte";
   import SourceViewer from "./views/SourceViewer.svelte";
   import AddSource from "./views/AddSource.svelte";
@@ -445,6 +446,8 @@
       <div class="workspace">
         {#if app.view === "today"}
           <Today />
+        {:else if app.view === "plan"}
+          <Plan />
         {:else if app.view === "dashboard"}
           <Dashboard />
         {:else if app.view === "subject"}

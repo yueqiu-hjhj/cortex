@@ -31,8 +31,17 @@
   let error = $state<string | null>(null);
   let draft = $state("");
   let busy = $state<string | null>(null);
+  let rolledOver = false;
 
   async function refresh() {
+    // Yesterday's unstarted blocks are marked `moved` once per launch, so the
+    // next planner run re-schedules them instead of letting them rot on a day
+    // that has already passed. Today is the default view, which makes this the
+    // natural startup hook.
+    if (!rolledOver) {
+      rolledOver = true;
+      await api.planRollover(day.label).catch(() => {});
+    }
     try {
       board = await api.todayBoard(day.startMs, day.endMs, day.label);
       error = null;

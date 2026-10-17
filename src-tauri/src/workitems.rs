@@ -372,6 +372,27 @@ fn day_index(ms: i64) -> i64 {
     ms.div_euclid(DAY_MS)
 }
 
+/// Parse a `YYYY-MM-DD` local-date key into a day index. The planner and the
+/// Today board both speak this format, and it is what `plan_blocks.day` stores —
+/// a string, not an instant, so a device in another timezone still reads its own
+/// "today".
+pub fn parse_day(day: &str) -> Option<i64> {
+    let mut it = day.split('-');
+    let y: i64 = it.next()?.parse().ok()?;
+    let m: i64 = it.next()?.parse().ok()?;
+    let d: i64 = it.next()?.parse().ok()?;
+    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d))
+}
+
+/// Inverse of [`parse_day`].
+pub fn format_day(idx: i64) -> String {
+    let (y, m, d) = civil_from_days(idx);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Monday = 0 … Sunday = 6 (1970-01-01 was a Thursday).
 fn weekday(day: i64) -> u32 {
     ((day + 3).rem_euclid(7)) as u32
@@ -781,6 +802,14 @@ pub fn list_goals(conn: &Connection) -> Result<Vec<Goal>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+pub fn get_goal(conn: &Connection, id: &str) -> Result<Goal> {
+    let sql = format!("SELECT {GOAL_COLUMNS} FROM goals g WHERE g.id = ?1");
+    conn.query_row(&sql, params![id], row_to_goal).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("goal {id}")),
+        other => Error::Db(other),
+    })
+}
+
 pub fn upsert_goal(conn: &Connection, input: &GoalInput) -> Result<Goal> {
     if input.title.trim().is_empty() {
         return Err(Error::Other("goal title cannot be empty".into()));
@@ -930,6 +959,14 @@ pub fn upsert_block(
 pub fn delete_block(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM plan_blocks WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+pub fn get_block(conn: &Connection, id: &str) -> Result<PlanBlock> {
+    let sql = format!("SELECT {BLOCK_COLUMNS} FROM plan_blocks WHERE id = ?1");
+    conn.query_row(&sql, params![id], row_to_block).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("plan block {id}")),
+        other => Error::Db(other),
+    })
 }
 
 // ------------------------------------------------------------ today board

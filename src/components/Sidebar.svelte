@@ -135,6 +135,15 @@
       <Icon name="check" size={14} /><span class="lbl"> Today</span><span class="nav-k">␣ y</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'plan' ? ' on' : ''}" title="Plan — 未来七天排期 (Space w)"
+      onclick={() => app.setView("plan")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("plan")}
+    >
+      <Icon name="calendar" size={14} /><span class="lbl"> Plan</span><span class="nav-k">␣ w</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="Dashboard (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"

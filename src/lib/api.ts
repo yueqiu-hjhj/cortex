@@ -1574,3 +1574,71 @@ export const upsertPlanBlock = (
     status: status ?? null,
   });
 export const deletePlanBlock = (id: string) => invoke<void>("delete_plan_block", { id });
+
+// ---- planner: open items -> concrete plan blocks -------------------------
+
+export interface PlanRequest {
+  start_day: string;          // local YYYY-MM-DD
+  days?: number | null;
+  daily_minutes?: number | null;
+  day_start_min?: number | null;
+  day_end_min?: number | null;
+  break_min?: number | null;
+  replace?: boolean | null;
+}
+
+export interface Unscheduled {
+  item_id: string;
+  title: string;
+  minutes: number;
+  reason: string;
+}
+
+export interface PlanOutcome {
+  start_day: string;
+  days: number;
+  blocks: PlanBlock[];
+  scheduled_items: number;
+  unscheduled: Unscheduled[];
+  minutes_planned: number;
+  minutes_capacity: number;
+  notes: string[];
+}
+
+export interface RolloverOutcome {
+  moved: number;
+  from_days: string[];
+}
+
+export interface BlockRow extends PlanBlock {
+  title: string;
+  item_status: string;
+  kind: string;
+  estimate_min: number | null;
+}
+
+export const planWeek = (req: PlanRequest) => invoke<PlanOutcome>("plan_week", { req });
+export const planRollover = (today: string) =>
+  invoke<RolloverOutcome>("plan_rollover", { today });
+export const completePlanBlock = (id: string) =>
+  invoke<PlanBlock>("complete_plan_block", { id });
+export const planBoard = (startDay: string, days: number) =>
+  invoke<BlockRow[]>("plan_board", { startDay, days });
+
+export interface GoalPlanRequest {
+  goal_id: string;
+  start_day: string;
+  daily_minutes?: number | null;
+}
+
+export interface GoalPlanOutcome {
+  goal_id: string;
+  created: number;
+  skipped: number;
+  minutes: number;
+  titles: string[];
+  notes: string[];
+}
+
+export const materializeGoal = (req: GoalPlanRequest) =>
+  invoke<GoalPlanOutcome>("materialize_goal", { req });

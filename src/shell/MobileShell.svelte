@@ -11,6 +11,7 @@
   // Views (reused as-is). Heavy ones are lazy-loaded on first visit, like App.svelte.
   import Dashboard from "../views/Dashboard.svelte";
   import Today from "../views/Today.svelte";
+  import Plan from "../views/Plan.svelte";
   import SubjectView from "../views/SubjectView.svelte";
   import SourceViewer from "../views/SourceViewer.svelte";
   import AddSource from "../views/AddSource.svelte";
@@ -173,6 +174,7 @@
 
   const NAV = [
     { id: "today",       icon: "check",    label: "Today" },
+    { id: "plan",        icon: "calendar", label: "Plan" },
     { id: "dashboard",   icon: "home",     label: "Home" },
     { id: "add-source",  icon: "doc",      label: "Add source" },
     { id: "recorder",    icon: "record",   label: "Record lecture" },
@@ -214,6 +216,8 @@
   <main class="m-main">
     {#if app.view === "today"}
       <Today />
+    {:else if app.view === "plan"}
+      <Plan />
     {:else if app.view === "dashboard"}
       <Dashboard />
     {:else if app.view === "subject"}
