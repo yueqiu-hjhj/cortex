@@ -18,6 +18,8 @@ export type JobKind =
   | "infographic"
   | "slideshow"
   | "mindmap"
+  | "matrix"
+  | "guide"
   | "source";
 
 export type JobStatus = "running" | "done" | "error";
@@ -48,6 +50,8 @@ const KIND_LABEL: Record<JobKind, string> = {
   infographic: "infographic",
   slideshow: "slideshow",
   mindmap: "mind map",
+  matrix: "comparison matrix",
+  guide: "study guide",
   source: "source",
 };
 

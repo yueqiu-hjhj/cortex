@@ -9,6 +9,8 @@
   import InfographicView from "../components/InfographicView.svelte";
   import SlideshowView from "../components/SlideshowView.svelte";
   import MindMapView from "../components/MindMapView.svelte";
+  import MatrixView from "../components/MatrixView.svelte";
+  import GuideView from "../components/GuideView.svelte";
   import GeneratingCard from "../components/GeneratingCard.svelte";
   import { jobs } from "../lib/jobs.svelte";
 
@@ -20,8 +22,10 @@
     slideshow:   { label: "Slides",           group: "Slides",           icon: "grid",  color: "var(--warn)"         },
     infographic: { label: "Infographic",      group: "Infographics",     icon: "grid",  color: "var(--ok)"           },
     mindmap:     { label: "Mind map",          group: "Mind maps",        icon: "link",  color: "var(--info)"         },
+    matrix:      { label: "Comparison matrix", group: "Comparison matrices", icon: "grid", color: "var(--mode-select)" },
+    guide:       { label: "Study guide",       group: "Study guides",     icon: "cards", color: "var(--ok)"           },
   };
-  const MAT_ORDER = ["flashcards", "quiz", "audio", "slideshow", "infographic", "mindmap"];
+  const MAT_ORDER = ["flashcards", "quiz", "audio", "slideshow", "infographic", "mindmap", "matrix", "guide"];
 
   // ── unified card shape ────────────────────────────────────────
   interface Card {
@@ -94,7 +98,7 @@
   );
 
   function isLaunchable(type: string): boolean {
-    return ["flashcards", "quiz", "audio", "infographic", "slideshow", "mindmap"].includes(type);
+    return ["flashcards", "quiz", "audio", "infographic", "slideshow", "mindmap", "matrix", "guide"].includes(type);
   }
 
   function launchLabel(type: string): string {
@@ -105,6 +109,8 @@
       infographic: "View",
       slideshow: "View slides",
       mindmap: "View map",
+      matrix: "View table",
+      guide: "Read guide",
     };
     return map[type] ?? "Open";
   }
@@ -219,6 +225,18 @@
   {:else if matLaunch.type === "mindmap"}
     <MindMapView
       data={matLaunch.payload ?? undefined}
+      onExit={() => (matLaunch = null)}
+    />
+  {:else if matLaunch.type === "matrix"}
+    <MatrixView
+      data={matLaunch.payload ?? undefined}
+      title={matLaunch.title}
+      onExit={() => (matLaunch = null)}
+    />
+  {:else if matLaunch.type === "guide"}
+    <GuideView
+      data={matLaunch.payload ?? undefined}
+      title={matLaunch.title}
       onExit={() => (matLaunch = null)}
     />
   {/if}
