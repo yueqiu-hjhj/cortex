@@ -92,6 +92,7 @@ export const LEADER_ACTIONS: LeaderAction[] = [
   { key: "m", label: "Music",       detail: "study sound panel" },
   { key: "p", label: "Pomodoro",    detail: "today focus timeline" },
   { key: "q", label: "Sprint",      detail: "goal-driven study plan" },
+  { key: "l", label: "Literature",  detail: "paper reader + LLM" },
   { key: "b", label: "Sidebar",     detail: "minimize / show navbar" },
   { key: ",", label: "Settings",    detail: "open preferences" },
   { key: "g", label: "Dashboard",   detail: "go to dashboard" },

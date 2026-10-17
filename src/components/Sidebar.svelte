@@ -229,6 +229,17 @@
       <Icon name="star" size={14} /><span class="lbl"> Sprint</span><span class="nav-k">␣ q</span>
     </div>
 
+    <div
+      class="sb-nav-item{app.view === 'literature' ? ' on' : ''}"
+      onclick={() => app.setView("literature")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("literature")}
+      title="Literature reader - paper reader + selection LLM (Space l)"
+    >
+      <Icon name="reader" size={14} /><span class="lbl"> Literature</span><span class="nav-k">␣ l</span>
+    </div>
+
     <!-- Subjects section header -->
     <div class="sb-section-l">
       <span class="label">Subjects</span>

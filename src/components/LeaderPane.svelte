@@ -23,6 +23,7 @@
     m: () => { app.musicOpen = true; },
     p: () => app.setView("pomodoro"),
     q: () => app.setView("sprint"),
+    l: () => app.setView("literature"),
     b: () => app.toggleSidebar(),
     g: () => app.setView("dashboard"),
     ",": () => app.openSettings(),

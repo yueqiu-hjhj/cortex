@@ -4780,6 +4780,75 @@ pub async fn literature_search(
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
 
+/// Run a focused LLM call for selection-based reading assistance.
+/// Mode: translate:<lang>, explain, summarize, keypoints, define.
+#[tauri::command]
+pub async fn literature_explain(
+    app: AppHandle,
+    text: String,
+    mode: String,
+) -> Result<String> {
+    let text = text;
+    let mode = mode;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let state = app.state::<AppState>();
+        let mut c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other(
+                "Offline mode is on - LLM calls are disabled. Turn it off in Settings.".into(),
+            ));
+        }
+        let (spec, keys) = {
+            let s = repo::get_setting(&c, "model_chat").ok().flatten()
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string());
+            let k = read_keys(&c).unwrap_or_default();
+            (s, k)
+        };
+        let model = llm::from_spec_or_any(&spec, &keys)
+            .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+        crate::literature::explain_text(model.as_ref(), &text, &mode)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+/// Repair PDF/OCR-extracted paper text: merge hyphenated line breaks, fold
+/// soft wraps into spaces, collapse blank-line runs. Pure function; no LLM.
+#[tauri::command]
+pub fn literature_repair(text: String) -> String {
+    crate::literature::repair_paper_text(&text)
+}
+
+/// Persist a paper as a text-kind source under subject_id. Title is the
+/// paper title; text is the (already repaired) body; url is stored as the
+/// source origin for provenance.
+#[tauri::command]
+pub async fn literature_save_source(
+    app: AppHandle,
+    subject_id: String,
+    title: String,
+    text: String,
+    url: Option<String>,
+    topic_id: Option<String>,
+) -> Result<String> {
+    let subject_id = subject_id;
+    let title = title;
+    let text = text;
+    let url = url;
+    let topic_id = topic_id;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let state = app.state::<AppState>();
+        let mut c = state.db.lock().unwrap();
+        crate::literature::save_paper_as_source(
+            &mut c, &subject_id, &title, &text,
+            url.as_deref(), topic_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+
 /// Configured SearXNG base URL (resolved through the homelab fallback chain:
 /// local → Tailscale → public), or None if unset.
 fn searxng_base(c: &Connection) -> Result<Option<String>> {

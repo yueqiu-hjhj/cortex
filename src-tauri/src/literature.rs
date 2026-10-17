@@ -629,6 +629,160 @@ pub fn literature_search(
 }
 
 
+
+// ---- paper-text repair ------------------------------------------------
+
+/// Light post-processing for PDF / OCR-extracted paper text. Cheap regex
+/// passes that handle the most common artifacts so the reader view doesn't
+/// show one-word-per-line walls of text. Anything more clever (column
+/// detection, table extraction) would need a dedicated layout model; this is
+/// the no-dependency baseline.
+pub fn repair_paper_text(input: &str) -> String {
+    let mut s = input.to_string();
+    // 1. Merge hyphenated line breaks: "transfor-\nmation" -> "transformation".
+    //    Hyphen at line end + lowercase next line char => join without hyphen.
+    let re_hyphen = regex::Regex::new(r"([a-z])-\s*\n\s*([a-z])").unwrap();
+    s = re_hyphen.replace_all(&s, |c: &regex::Captures| format!("{}{}", &c[1], &c[2])).into_owned();
+    // 2. Soft line breaks inside a paragraph: a newline that is NOT followed
+    //    by a blank line is usually a typesetting wrap, not a paragraph break.
+    //    We replace those with a single space.
+    let re_soft = regex::Regex::new(r"([^\n])\n([^\n])").unwrap();
+    s = re_soft.replace_all(&s, |c: &regex::Captures| format!("{} {}", &c[1], &c[2])).into_owned();
+    // 3. Collapse runs of 3+ blank lines down to 2.
+    let re_blank = regex::Regex::new(r"\n{3,}").unwrap();
+    s = re_blank.replace_all(&s, "\n\n").into_owned();
+    // 4. Trim trailing whitespace per line.
+    let re_trail = regex::Regex::new(r"[ \t]+$").unwrap();
+    s = re_trail.replace_all(&s, "").into_owned();
+    // 5. Collapse runs of 3+ spaces (introduced by the soft-break join).
+    let re_space = regex::Regex::new(r" {3,}").unwrap();
+    s = re_space.replace_all(&s, "  ").into_owned();
+    s.trim().to_string()
+}
+
+// ---- LLM-driven annotation -------------------------------------------
+
+/// Run a focused LLM call for selection-based reading assistance. mode is
+/// one of: "translate:<lang>", "explain", "summarize", "keypoints",
+/// "define". xcerpt is the selected text (capped at 3000 chars).
+pub fn explain_text(
+    model: &dyn crate::llm::Llm,
+    excerpt: &str,
+    mode: &str,
+) -> Result<String> {
+    let trimmed: String = excerpt.chars().take(3000).collect();
+    let (sys, user) = match mode {
+        m if m.starts_with("translate:") => {
+            let target = m.trim_start_matches("translate:").trim();
+            let target = if target.is_empty() { "Simplified Chinese" } else { target };
+            let prompt = if target.eq_ignore_ascii_case("en") || target.eq_ignore_ascii_case("English") {
+                "Translate the following passage into natural, fluent English. Preserve \
+technical terms, citations, and inline math verbatim. Reply with ONLY \
+the translation, no preamble.".to_string()
+            } else {
+                format!("Translate the following passage into natural, fluent {target}. Preserve \
+technical terms, citations, and inline math verbatim. Reply with ONLY \
+the translation, no preamble.")
+            };
+            (prompt, trimmed)
+        }
+        "explain" => (
+            "You are a patient tutor. Explain the following passage in clear, plain \
+language. Highlight the key idea, the supporting evidence, and any terms \
+a non-specialist would not know. 2-3 short paragraphs, no preamble.".to_string(),
+            trimmed,
+        ),
+        "summarize" => (
+            "Summarize the following passage in ONE sentence (max 30 words). \
+Keep the technical precision; drop hedging.".to_string(),
+            trimmed,
+        ),
+        "keypoints" => (
+            "Extract 3-5 key takeaways from the following passage. One bullet each, \
+short, action-oriented. No preamble.".to_string(),
+            trimmed,
+        ),
+        "define" => (
+            "Define the most important term or concept in the following passage \
+in 1-2 sentences, in glossary style. No preamble.".to_string(),
+            trimmed,
+        ),
+        _ => return Err(Error::Other(format!(
+            "unknown mode '{mode}'; expected translate:<lang>, explain, summarize, keypoints, or define"
+        ))),
+    };
+    model.complete(&sys, &user)
+}
+
+
+// ---- save paper as a cortex source -----------------------------------
+
+/// Split text into overlapping chunks for embedding. Aim for ~CHUNK_TARGET
+/// chars with CHUNK_OVERLap of overlap on each side; respect paragraph
+/// boundaries when a paragraph is available.
+pub fn chunk_text(text: &str) -> Vec<String> {
+    const CHUNK_TARGET: usize = 1500;
+    const CHUNK_OVERLAP: usize = 200;
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let len = text.chars().count();
+    if len == 0 { return out; }
+    while start < len {
+        let mut end = (start + CHUNK_TARGET).min(len);
+        // Try to back up to the nearest paragraph break before nd.
+        if end < len {
+            if let Some(rel) = text[start..end].rfind('\n') {
+                let abs = start + rel;
+                if abs > start + CHUNK_TARGET / 2 { end = abs; }
+            }
+        }
+        let chunk: String = text.chars().skip(start).take(end - start).collect();
+        let chunk = chunk.trim().to_string();
+        if !chunk.is_empty() { out.push(chunk); }
+        if end >= len { break; }
+        start = end.saturating_sub(CHUNK_OVERLAP);
+    }
+    out
+}
+
+/// Persist a paper as a text-kind source under subject_id, with the body
+/// chunked for embedding. Returns the new source's id. The URL (if any) is
+/// stored as the source origin for provenance.
+pub fn save_paper_as_source(
+    conn: &mut rusqlite::Connection,
+    subject_id: &str,
+    title: &str,
+    text: &str,
+    url: Option<&str>,
+    topic_id: Option<&str>,
+) -> Result<String> {
+    use crate::repo;
+    let id = repo::insert_source(conn, subject_id, topic_id, title, "text", url)?;
+    let chunks = chunk_text(text);
+    let tx = conn.transaction()?;
+    for (i, chunk) in chunks.iter().enumerate() {
+        // Insert a placeholder vector (zero-length blob) so the column shape
+        // matches what the rest of the app expects; the embed-pending flag
+        // tells the search bar this source isn't searchable yet. A background
+        // embed pass (not in this commit) will fill in real vectors.
+        repo::insert_chunk(
+            &tx,
+            &id,
+            subject_id,
+            topic_id,
+            i as i64,
+            chunk,
+            None,
+            0,
+            &[],
+        )?;
+    }
+    let meta = format!("{} chunks · {} chars", chunks.len(), text.chars().count());
+    repo::finalize_source(&tx, &id, "draft", Some(&meta), Some(text), None)?;
+    tx.commit()?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,5 +860,53 @@ mod tests {
         assert!(hits[0].doi.is_some(), "doi+abstract+recent should win: {:?}", hits.iter().map(|h| (h.doi.is_some(), h.abstract_text.is_some(), h.year)).collect::<Vec<_>>());
         assert!(hits[0].reasons.iter().any(|r| r.starts_with("+doi")));
         assert!(hits[0].reasons.iter().any(|r| r.starts_with("+abstract")));
+    }
+
+
+    #[test]
+    fn repair_merges_hyphenated_line_breaks() {
+        let s = "transfor-
+mation of atten-
+tion is critical.";
+        let r = repair_paper_text(s);
+        assert!(r.contains("transformation"), "merged: {r:?}");
+        assert!(r.contains("attention"), "merged: {r:?}");
+    }
+
+    #[test]
+    fn repair_folds_soft_wraps() {
+        let s = "This is a long
+sentence that wraps across
+lines but is one paragraph.";
+        let r = repair_paper_text(s);
+        // After repair, the soft newlines should be folded into spaces.
+        assert!(r.contains("long sentence"), "soft wrap should fold: {r:?}");
+        assert!(r.contains("across lines"), "soft wrap should fold: {r:?}");
+        assert!(!r.contains("long\nsentence"), "newline should be gone: {r:?}");
+    }
+
+    #[test]
+    fn repair_preserves_paragraph_breaks() {
+        let s = "First paragraph here.
+
+Second paragraph here.";
+        let r = repair_paper_text(s);
+        assert!(r.contains("
+
+"), "paragraph break should survive: {r:?}");
+    }
+
+    #[test]
+    fn chunk_text_splits_long_input() {
+        let text: String = "a".repeat(5000);
+        let chunks = chunk_text(&text);
+        assert!(chunks.len() >= 3);
+        // Each chunk should be smaller than the input.
+        assert!(chunks.iter().all(|c| c.len() <= 2000));
+        // Overlap: last chars of chunk 0 should appear in chunk 1.
+        let last_chars: String = chunks[0].chars().rev().take(50).collect::<String>().chars().rev().collect();
+        assert!(chunks[1].starts_with(&last_chars) || chunks[1].contains(&last_chars),
+            "expected overlap, got chunk0 tail {last_chars:?} and chunk1 head {:?}",
+            chunks[1].chars().take(80).collect::<String>());
     }
 }

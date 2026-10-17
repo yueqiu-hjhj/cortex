@@ -24,6 +24,7 @@ export type View =
   | "pomodoro"
   | "review"
   | "sprint"
+  | "literature"
   | "glossary"
   | "mindmap"
   | "exam"

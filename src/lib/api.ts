@@ -615,12 +615,41 @@ export interface LiteratureResult {
   took_ms: number;
 }
 
+/**
+ * Literature: selection LLM + repair + save-to-source helpers.
+ */
+/** Run a focused LLM call for selection-based reading assistance. */
+export const literatureExplain = (text: string, mode: string) =>
+  invoke<string>("literature_explain", { text, mode });
+
+/** Repair PDF/OCR paper text: merge hyphenated line breaks, fold soft wraps, collapse blanks. */
+export const literatureRepair = (text: string) =>
+  invoke<string>("literature_repair", { text });
+
+/** Persist a paper as a text-kind source under a subject. Returns the new source id. */
+export const literatureSaveSource = (
+  subjectId: string,
+  title: string,
+  text: string,
+  url?: string | null,
+  topicId?: string | null,
+) =>
+  invoke<string>("literature_save_source", {
+    subjectId,
+    title,
+    text,
+    url: url ?? null,
+    topicId: topicId ?? null,
+  });
 export const literatureSearch = (
   query: string,
   subjectId?: string | null,
   limit?: number,
 ) =>
   invoke<LiteratureResult>("literature_search", {
+
+
+
     query,
     subjectId: subjectId ?? null,
     limit: limit ?? null,
