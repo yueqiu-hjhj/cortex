@@ -103,8 +103,12 @@
   // best value (cheap + capable) first, then premium/frontier, then reasoning — and
   // labelled with a human name + a one-word tier hint so the dropdown is scannable.
   // `custom` (OpenRouter / OpenAI-compatible) lets you type any slug not listed.
+  // The OpenAI-compatible registry (DeepSeek, Qwen, GLM, Kimi, …) is MERGED IN at
+  // load from the Rust `list_providers` command, so a new provider in Rust needs
+  // no frontend edit. ($state, not const, because that merge replaces the array.)
   type Model = { id: string; label: string };
-  const PROVIDERS: { id: string; label: string; models: Model[] }[] = [
+  type ProvList = { id: string; label: string; models: Model[] }[];
+  let PROVIDERS = $state<ProvList>([
     { id: "gemini", label: "Gemini", models: [
       { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash — ⚡ best value" },
       { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite — cheapest" },
@@ -163,13 +167,13 @@
       { id: "llama3.3:70b",  label: "Llama 3.3 70B — local, heavy" },
     ] },
     { id: "custom", label: "Custom endpoint", models: [] },
-  ];
-  const EMBED_PROVIDERS: { id: string; label: string; models: Model[] }[] = [
+  ]);
+  let EMBED_PROVIDERS = $state<ProvList>([
     { id: "onnx",   label: "Local ONNX (zero-config)", models: [{ id: "multilingual-e5-small", label: "multilingual-e5-small — 384d, on-device" }] },
     { id: "gemini",  label: "Gemini",        models: [{ id: "text-embedding-004", label: "text-embedding-004" }] },
     { id: "openai",  label: "OpenAI",        models: [{ id: "text-embedding-3-small", label: "text-embedding-3-small — cheap" }, { id: "text-embedding-3-large", label: "text-embedding-3-large — best" }] },
     { id: "ollama",  label: "Ollama (local)", models: [{ id: "nomic-embed-text", label: "nomic-embed-text — local" }, { id: "mxbai-embed-large", label: "mxbai-embed-large — local" }] },
-  ];
+  ]);
   const MODEL_TASKS = [
     { id: "chat",       label: "Chat",                  desc: "Scoped Q&A across sources" },
     { id: "cheatsheet", label: "Cheatsheet synthesis",  desc: "Completeness-checked merges" },
@@ -253,14 +257,16 @@
     custom_endpoint: "",
     custom_api_key: "",
   });
-  const keyMeta = [
+  // $state, not const: registry key rows (DeepSeek, Qwen, GLM, …) are merged in
+  // at load, ahead of the two custom-endpoint rows.
+  let keyMeta = $state<{ id: string; label: string; note: string; placeholder: string }[]>([
     { id: "openrouter", label: "OpenRouter",              note: "openrouter.ai/keys",    placeholder: "sk-or-…" },
     { id: "gemini",     label: "Gemini",                  note: "Google AI Studio",       placeholder: "AIza…" },
     { id: "claude",     label: "Claude",                  note: "console.anthropic.com",  placeholder: "sk-ant-…" },
     { id: "openai",     label: "OpenAI",                  note: "platform.openai.com",    placeholder: "sk-…" },
     { id: "custom_endpoint", label: "Custom endpoint URL", note: "OpenAI-compatible base URL", placeholder: "https://…/v1" },
     { id: "custom_api_key", label: "Custom endpoint API key", note: "Bearer token for the custom endpoint", placeholder: "sk-…" },
-  ] as const;
+  ]);
   // show/hide per key
   let showKey = $state<Record<string, boolean>>({
     openrouter: false,
@@ -1105,6 +1111,37 @@
       if (s.custom_endpoint)    keys = { ...keys, custom_endpoint: s.custom_endpoint };
       if (s.custom_api_key)     keys = { ...keys, custom_api_key: s.custom_api_key };
 
+      // OpenAI-compatible registry (DeepSeek, Qwen, GLM, Kimi, …) — merged into
+      // the provider dropdowns and the key list. Deduped against the curated
+      // entries; chat-only providers are excluded from the embed list (offering
+      // them for retrieval would just 404 at index time).
+      try {
+        const reg = await api.listProviders();
+        const chatNew = reg
+          .filter((p) => !PROVIDERS.some((x) => x.id === p.id))
+          .map((p) => ({ id: p.id, label: p.label, models: p.chat_models.map(([id, label]) => ({ id, label })) }));
+        const chatAt = PROVIDERS.findIndex((x) => x.id === "ollama");
+        PROVIDERS = [...PROVIDERS.slice(0, chatAt), ...chatNew, ...PROVIDERS.slice(chatAt)];
+        const embedNew = reg
+          .filter((p) => p.embed_model && !EMBED_PROVIDERS.some((x) => x.id === p.id))
+          .map((p) => ({ id: p.id, label: p.label, models: [{ id: p.embed_model as string, label: p.embed_model as string }] }));
+        const embedAt = EMBED_PROVIDERS.findIndex((x) => x.id === "ollama");
+        EMBED_PROVIDERS = [...EMBED_PROVIDERS.slice(0, embedAt), ...embedNew, ...EMBED_PROVIDERS.slice(embedAt)];
+        // Key rows: registry providers ahead of the two custom-endpoint rows.
+        const kmNew = reg
+          .filter((p) => !keyMeta.some((k) => k.id === p.id))
+          .map((p) => ({ id: p.id, label: p.label, note: p.key_note, placeholder: "sk-…" }));
+        const kmAt = keyMeta.findIndex((k) => k.id === "custom_endpoint");
+        keyMeta = [...keyMeta.slice(0, kmAt), ...kmNew, ...keyMeta.slice(kmAt)];
+        // Hydrate any stored registry keys in the same pass.
+        const regKeys: Record<string, string> = {};
+        for (const p of reg) {
+          const v = s[`${p.id}_api_key`];
+          if (v) regKeys[p.id] = v;
+        }
+        keys = { ...keys, ...regKeys };
+      } catch { /* registry is additive; the curated lists above still work */ }
+
       // Models
       for (const taskId of ["chat","cheatsheet","audio","quiz","flashcard","embedding"] as TaskId[]) {
         const raw = s[`model_${taskId}`];
@@ -1224,14 +1261,17 @@
   }
 
   function saveKeys() {
-    api.setSettings({
-      openrouter_api_key: keys.openrouter,
-      gemini_api_key:     keys.gemini,
-      claude_api_key:     keys.claude,
-      openai_api_key:     keys.openai,
-      custom_endpoint:    keys.custom_endpoint,
-      custom_api_key:     keys.custom_api_key,
-    }).then(() => app.pushToast({ kind: "success", title: "Keys saved", body: "Stored in the system keychain." }))
+    // Generic mapping: every row persists to `<id>_api_key` — which is exactly
+    // what the curated providers already used (openrouter_api_key, …) and what
+    // the Rust registry's `key_setting()` expects — except the endpoint URL row,
+    // which is a URL, not a key.
+    const payload: Record<string, string> = {};
+    for (const k of keyMeta) {
+      const v = keys[k.id as keyof typeof keys] ?? "";
+      if (k.id === "custom_endpoint") payload.custom_endpoint = v;
+      else payload[`${k.id}_api_key`] = v;
+    }
+    api.setSettings(payload).then(() => app.pushToast({ kind: "success", title: "Keys saved", body: "Stored in the system keychain." }))
       .catch(() => app.pushToast({ kind: "error", title: "Save failed" }));
   }
 

@@ -210,20 +210,116 @@ impl Embedder for OllamaEmbedder {
     }
 }
 
+/// One OpenAI-compatible embedder for every provider in the registry.
+///
+/// The app had *no* OpenAI-compatible embedding path at all before this — only
+/// Gemini, Ollama and on-device ONNX — which meant the whole Chinese-provider
+/// long tail was unusable for retrieval even after their chat models worked.
+pub struct OpenAiCompatEmbedder {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub dim: usize,
+}
+
+impl Embedder for OpenAiCompatEmbedder {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+        let mut out = Vec::with_capacity(texts.len());
+        // 64 per request: providers differ in batch limits and payload size, and
+        // 64 keeps a long chunk list from blowing past the common ones.
+        for batch in texts.chunks(64) {
+            let resp = client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&serde_json::json!({ "model": self.model, "input": batch }))
+                .send()?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                return Err(Error::Other(format!(
+                    "{} embed failed: {status} {}",
+                    self.model,
+                    body.chars().take(200).collect::<String>()
+                )));
+            }
+            let json: serde_json::Value = resp.json()?;
+            let rows = json["data"]
+                .as_array()
+                .ok_or_else(|| Error::Other("embeddings: no data array".into()))?;
+            if rows.len() != batch.len() {
+                return Err(Error::Other(format!(
+                    "embeddings: expected {} vectors, got {}",
+                    batch.len(),
+                    rows.len()
+                )));
+            }
+            for row in rows {
+                let vals = row["embedding"]
+                    .as_array()
+                    .ok_or_else(|| Error::Other("embeddings: row has no embedding".into()))?;
+                let v: Vec<f32> = vals
+                    .iter()
+                    .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                    .collect();
+                if v.len() != self.dim {
+                    return Err(Error::Other(format!(
+                        "embeddings: expected dim {}, got {}",
+                        self.dim,
+                        v.len()
+                    )));
+                }
+                // L2-normalise so cosine distance in SQLite means direction only.
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                out.push(if norm > 0.0 {
+                    v.iter().map(|x| x / norm).collect()
+                } else {
+                    v
+                });
+            }
+        }
+        Ok(out)
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn name(&self) -> &'static str {
+        "openai-compat"
+    }
+}
+
 /// Build an embedder from settings. Falls back to the stub on anything missing,
 /// so the app always works offline with zero configuration.
+///
+/// `keys` is the full key set (`llm::Keys`) rather than a single Gemini key:
+/// the registry's providers each need their own, and threading them through
+/// one struct keeps the signature from growing an argument per provider.
 pub fn from_settings(
     provider: &str,
-    gemini_key: Option<&str>,
+    keys: &crate::llm::Keys,
     ollama_url: Option<&str>,
     data_dir: Option<&std::path::Path>,
 ) -> Box<dyn Embedder> {
+    // Registry providers resolve first — the bespoke arms below cover the ones
+    // with a non-OpenAI wire format.
+    if let Some(p) = crate::providers::find(provider) {
+        if let (Some(k), Some(model)) = (keys.for_provider(p.id), p.embed_model) {
+            return Box::new(OpenAiCompatEmbedder {
+                base_url: p.base_url.to_string(),
+                api_key: k.to_string(),
+                model: model.to_string(),
+                dim: 1024,
+            });
+        }
+        return Box::new(StubEmbedder);
+    }
     match provider {
-        "gemini" => match gemini_key {
-            Some(k) if !k.is_empty() => Box::new(GeminiEmbedder {
+        "gemini" => match keys.for_provider("gemini") {
+            Some(k) => Box::new(GeminiEmbedder {
                 api_key: k.to_string(),
             }),
-            _ => Box::new(StubEmbedder),
+            None => Box::new(StubEmbedder),
         },
         "ollama" => Box::new(OllamaEmbedder {
             base_url: ollama_url.unwrap_or("http://localhost:11434").to_string(),

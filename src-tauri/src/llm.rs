@@ -558,6 +558,26 @@ pub struct Keys {
     pub custom_endpoint: Option<String>,
     /// Ollama base URL (e.g. http://localhost:11434) — local, keyless.
     pub ollama_url: Option<String>,
+    /// Keys for every provider in `crate::providers`, keyed by provider id.
+    /// The bespoke arms above stay authoritative (a legacy field wins), so
+    /// moving a provider into the registry never invalidates a saved key.
+    pub extra: std::collections::HashMap<String, String>,
+}
+
+impl Keys {
+    /// The API key for a provider id, whether it lives in a legacy field or in
+    /// the registry table.
+    pub fn for_provider(&self, id: &str) -> Option<&str> {
+        let legacy = match id {
+            "gemini" => self.gemini.as_deref(),
+            "openrouter" => self.openrouter.as_deref(),
+            "openai" => self.openai.as_deref(),
+            "claude" | "anthropic" => self.claude.as_deref(),
+            _ => None,
+        }
+        .or_else(|| self.extra.get(id).map(String::as_str));
+        legacy.map(str::trim).filter(|s| !s.is_empty())
+    }
 }
 
 fn nonempty(o: &Option<String>) -> Option<&str> {
@@ -586,15 +606,6 @@ pub fn from_spec(spec: &str, keys: &Keys) -> Option<Box<dyn Llm>> {
                 max_tokens: None,
             }) as Box<dyn Llm>
         }),
-        "openai" => nonempty(&keys.openai).map(|k| {
-            Box::new(OpenAiCompatLlm {
-                base_url: "https://api.openai.com/v1".into(),
-                api_key: k.to_string(),
-                model,
-                label: "openai",
-                max_tokens: None,
-            }) as Box<dyn Llm>
-        }),
         "claude" | "anthropic" => nonempty(&keys.claude).map(|k| {
             Box::new(ClaudeLlm { api_key: k.to_string(), model, max_tokens: None }) as Box<dyn Llm>
         }),
@@ -619,7 +630,19 @@ pub fn from_spec(spec: &str, keys: &Keys) -> Option<Box<dyn Llm>> {
                 max_tokens: None,
             }) as Box<dyn Llm>)
         }
-        _ => None,
+        // Everything else comes from the registry, so a new provider is data
+        // rather than a new arm here.
+        other => crate::providers::find(other).and_then(|p| {
+            keys.for_provider(p.id).map(|k| {
+                Box::new(OpenAiCompatLlm {
+                    base_url: p.base_url.to_string(),
+                    api_key: k.to_string(),
+                    model,
+                    label: p.id,
+                    max_tokens: None,
+                }) as Box<dyn Llm>
+            })
+        }),
     }
 }
 

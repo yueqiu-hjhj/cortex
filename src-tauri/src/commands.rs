@@ -147,6 +147,17 @@ pub(crate) fn read_keys(c: &Connection) -> Result<llm::Keys> {
         // Resolve through the homelab fallback chain so Ollama chat also works
         // over Tailscale/public, not just on the LAN.
         ollama_url: crate::homelab::resolved_setting(c, "ollama_url"),
+        // Registry providers: one settings row each, so adding a provider to
+        // providers.rs needs no change here.
+        extra: crate::providers::PROVIDERS
+            .iter()
+            .filter_map(|p| {
+                key(&crate::providers::key_setting(p.id))
+                    .ok()
+                    .flatten()
+                    .map(|k| (p.id.to_string(), k))
+            })
+            .collect(),
     })
 }
 
@@ -297,8 +308,54 @@ fn verify_provider_blocking(provider: &str, keys: &llm::Keys, ollama: Option<Str
             Some(base) => verify_outcome(client.get(format!("{base}/api/tags"))),
             None => VerifyResult { ok: false, detail: "set a Homelab URL".into() },
         },
-        other => VerifyResult { ok: false, detail: format!("unknown provider {other}") },
+        other => {
+            // Registry providers (DeepSeek, Qwen, GLM, Kimi, …) all speak the
+            // OpenAI API, so one probe — GET <base>/models — covers the whole
+            // table. Their keys live in the `extra` map under the provider id.
+            if let Some(p) = crate::providers::find(other) {
+                match keys.for_provider(other).map(str::trim).filter(|s| !s.is_empty()) {
+                    Some(k) => verify_outcome(
+                        client
+                            .get(format!("{}/models", p.base_url))
+                            .header("Authorization", format!("Bearer {k}")),
+                    ),
+                    None => VerifyResult { ok: false, detail: "not set".into() },
+                }
+            } else {
+                VerifyResult { ok: false, detail: format!("unknown provider {other}") }
+            }
+        }
     }
+}
+
+/// The OpenAI-compatible provider registry, for the Settings UI. Data-driven:
+/// the frontend renders model dropdowns and key rows straight from this table,
+/// so adding a provider in `providers.rs` is the whole change.
+#[derive(serde::Serialize)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub label: String,
+    pub key_note: String,
+    pub embed_model: Option<String>,
+    pub chat_models: Vec<(String, String)>,
+}
+
+#[tauri::command]
+pub fn list_providers() -> Vec<ProviderInfo> {
+    crate::providers::PROVIDERS
+        .iter()
+        .map(|p| ProviderInfo {
+            id: p.id.into(),
+            label: p.label.into(),
+            key_note: p.key_note.into(),
+            embed_model: p.embed_model.map(Into::into),
+            chat_models: p
+                .chat_models
+                .iter()
+                .map(|(id, label)| (id.to_string(), label.to_string()))
+                .collect(),
+        })
+        .collect()
 }
 
 /// Build a concise "About the user" + "Remembered facts" preamble from the
@@ -968,15 +1025,15 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
 
         emit_progress(&app, &id, "chunking", "splitting text", 50);
         let chunks = ingest::chunk_text(&text, 900, 150);
-        let (provider, gemini_key, ollama_url) = {
+        let (provider, keys, ollama_url) = {
             let c = state.db.lock().unwrap();
             (
                 effective_embed_provider(&c),
-                repo::get_setting(&c, "gemini_api_key")?,
+                read_keys(&c)?,
                 crate::homelab::resolved_setting(&c, "ollama_url"),
             )
         };
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
         emit_progress(&app, &id, "embedding", &format!("{} chunks", chunks.len()), 70);
         let vectors = ingest::embed_chunks(embedder.as_ref(), &chunks)
             .or_else(|_| ingest::embed_chunks(&embed::StubEmbedder, &chunks))?;
@@ -1249,15 +1306,15 @@ pub async fn add_source(
         &format!("{} chunks", chunks.len()),
         60,
     );
-    let (provider, gemini_key, ollama_url) = {
+    let (provider, keys, ollama_url) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
-            repo::get_setting(&c, "gemini_api_key")?,
+            read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
-    let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
+    let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
     emit_progress(
         &app,
         &source_id,
@@ -1350,11 +1407,11 @@ pub async fn search_chunks(
     subject_id: Option<String>,
     k: Option<usize>,
 ) -> Result<Vec<ChunkHit>> {
-    let (provider, gemini_key, ollama_url) = {
+    let (provider, keys, ollama_url) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
-            repo::get_setting(&c, "gemini_api_key")?,
+            read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
@@ -1363,7 +1420,7 @@ pub async fn search_chunks(
     let data_dir = state.data_dir.clone();
     let embed_text = query.clone();
     let qvec = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
         embedder.embed(&[embed_text]).map(|mut v| v.pop().unwrap_or_default())
     })
     .await
@@ -1389,11 +1446,11 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let (provider, gemini_key, ollama_url) = {
+    let (provider, keys, ollama_url) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
-            repo::get_setting(&c, "gemini_api_key")?,
+            read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
@@ -1413,7 +1470,7 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     let q = query.clone();
     let data_dir = state.data_dir.clone();
     let qvec: Option<Vec<f32>> = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
         if embedder.name() == "stub" {
             return None;
         }
@@ -1622,7 +1679,7 @@ pub async fn chat_answer(
 
     let mut hits: Vec<ChunkHit> = if embeddings_reliable {
         let embedder =
-            embed::from_settings(&embed_provider, keys.gemini.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
+            embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
         let qvec = embedder.embed(&[query.clone()])?.pop().unwrap_or_default();
         let c = state.db.lock().unwrap();
         let mut vec_hits = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
@@ -4620,15 +4677,15 @@ pub(crate) fn run_transcription_job(app: &AppHandle, source_id: &str) {
     // chunk + embed the transcript
     emit_progress(app, source_id, "chunking", "splitting transcript", 55);
     let chunks = ingest::chunk_text(&transcript, 900, 150);
-    let (embed_provider, gemini_key, ollama_url) = {
+    let (embed_provider, keys, ollama_url) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
-            repo::get_setting(&c, "gemini_api_key").ok().flatten(),
+            read_keys(&c).unwrap_or_default(),
             crate::homelab::resolved_setting(&c, "ollama_url"),
         )
     };
-    let embedder = embed::from_settings(&embed_provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
+    let embedder = embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
     emit_progress(app, source_id, "embedding", &format!("{} chunks", chunks.len()), 75);
     let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
         Ok(v) => v,
@@ -5891,6 +5948,134 @@ pub fn paper_build_matrix(
     crate::papers::build_matrix(app, paper_ids, labels)
 }
 
+// ---- AI: excerpts → citable draft --------------------------------------
+
+/// Turn a selection of excerpts into a short citable passage — the research
+/// pipeline's exit. Citation numbers are decided HERE ([n] = nth picked
+/// excerpt, in the caller's order) and the reference list is built from the
+/// excerpts, never from the model; the model only writes prose that cites
+/// those numbers, so stored drafts stay reproducible without re-asking it.
+#[tauri::command]
+pub async fn generate_draft(
+    app: AppHandle,
+    excerpt_ids: Vec<String>,
+    title: Option<String>,
+    custom_prompt: Option<String>,
+) -> Result<crate::drafts::Draft> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::drafts::Draft> {
+        let state = app.state::<AppState>();
+        let (refs, spec, keys, style) = {
+            let c = state.db.lock().unwrap();
+            let refs = crate::drafts::load_refs(&c, &excerpt_ids)?;
+            let spec = repo::get_setting(&c, "model_cheatsheet")?
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            guard_offline_llm(&c, &spec)?;
+            (refs, spec, read_keys(&c)?, style_instruction(&c))
+        };
+        let mut model =
+            llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+        {
+            let c = state.db.lock().unwrap();
+            apply_budget(&mut model, &c, "cheatsheet");
+        }
+
+        let n = refs.len();
+        let mut system = format!(
+            "You write a short literature-review style passage from numbered excerpts. \
+             Output ONLY JSON of this exact shape:\n\
+             {{\"thesis\":string,\"paragraphs\":[{{\"text\":string,\"cites\":[int]}}]}}\n\
+             Rules:\n\
+             - \"thesis\" is ONE sentence stating the passage's overall claim.\n\
+             - 1-3 \"paragraphs\", each 3-6 sentences of flowing academic prose — NO markdown, \
+             NO bullet points, NO headings.\n\
+             - Cite with the bracket numbers of the excerpts: write [1] [2] at the point of \
+             citation inside \"text\"; \"cites\" lists every number cited in that paragraph.\n\
+             - Use ONLY the numbers [1]-[{n}] from the given excerpts; never invent, renumber, \
+             or cite anything outside them.\n\
+             - Support claims ONLY with what the excerpts actually say; if two excerpts \
+             disagree, state the disagreement instead of smoothing it over.\n\
+             - Write in the language of the excerpts' quotes."
+        );
+        system.push_str(&style);
+        system.push_str(" Respond with ONLY raw JSON — no markdown code fences, no prose before or after.");
+        if let Some(extra) = custom_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
+            system.push_str(&format!("\nAdditional instructions from the user: {}", extra.trim()));
+        }
+        let user = format!(
+            "Numbered excerpts:\n\n{}\n\nWrite the passage now.",
+            crate::drafts::build_user_prompt(&refs)
+        );
+
+        let raw = model.complete(&system, &user)?;
+        let payload = llm::extract_json(&raw)
+            .map_err(|_| Error::Other("model returned unstructured output; try again".into()))?;
+        let body: crate::drafts::DraftBody = serde_json::from_value(payload.clone())
+            .map_err(|_| Error::Other("model output does not match the draft shape; try again".into()))?;
+        if body.paragraphs.is_empty() {
+            return Err(Error::Other("model returned no paragraphs; try again".into()));
+        }
+
+        // Out-of-range citation numbers are dropped, not fatal — a paragraph
+        // citing [7] when 3 excerpts exist is a model glitch, not a reason to
+        // lose the whole draft.
+        let paragraphs: Vec<serde_json::Value> = body
+            .paragraphs
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "text": p.text,
+                    "cites": p.cites.iter().filter(|c| **c >= 1 && **c <= n as i64).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let references: Vec<serde_json::Value> = refs
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "n": r.n,
+                    "excerptId": r.excerpt_id,
+                    "paperId": r.paper_id,
+                    "title": r.title,
+                    "authors": r.authors,
+                    "year": r.year,
+                    "page": r.page,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "thesis": body.thesis,
+            "paragraphs": paragraphs,
+            "references": references,
+        });
+        let meta = format!("{} paragraphs · {} references", paragraphs.len(), n);
+        let title = title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| "研究成稿".into());
+
+        let draft = {
+            let c = state.db.lock().unwrap();
+            let ids: Vec<String> = refs.iter().map(|r| r.excerpt_id.clone()).collect();
+            let id = crate::drafts::save(&c, &title, &ids, &meta, &payload)?;
+            crate::drafts::get(&c, &id)?
+        };
+        Ok(draft)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+#[tauri::command]
+pub fn draft_list(state: State<AppState>) -> Result<Vec<crate::drafts::Draft>> {
+    let c = state.db.lock().unwrap();
+    crate::drafts::list(&c)
+}
+
+#[tauri::command]
+pub fn draft_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::drafts::delete(&c, &id)
+}
+
 /// Planned vs completed minutes per day, for the Insights "plan vs actual" card.
 #[tauri::command]
 pub fn plan_vs_actual(
@@ -5913,11 +6098,11 @@ pub async fn retrieval_eval(
     state: State<'_, AppState>,
     k: Option<i64>,
 ) -> Result<Vec<crate::eval::EvalReport>> {
-    let (provider, gemini_key, ollama_url, data_dir) = {
+    let (provider, keys, ollama_url, data_dir) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
-            repo::get_setting(&c, "gemini_api_key")?,
+            read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
             state.data_dir.clone(),
         )
@@ -5932,7 +6117,7 @@ pub async fn retrieval_eval(
     let (seeded, queries) = tauri::async_runtime::spawn_blocking(move || {
         let embedder = embed::from_settings(
             &provider,
-            gemini_key.as_deref(),
+            &keys,
             ollama_url.as_deref(),
             data_dir.as_deref(),
         );

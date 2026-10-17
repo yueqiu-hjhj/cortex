@@ -43,6 +43,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0036_provenance.sql"),
     include_str!("../migrations/0037_work_items.sql"),
     include_str!("../migrations/0038_papers.sql"),
+    include_str!("../migrations/0039_drafts.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.

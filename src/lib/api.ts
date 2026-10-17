@@ -798,10 +798,22 @@ export const pingUrl = (url: string) => invoke<boolean>("ping_url", { url });
 
 /** Models actually installed on the configured Ollama server (local or homelab). Empty when unreachable / none pulled. */
 export const ollamaModels = () => invoke<string[]>("ollama_models");
-/** Lightweight authenticated probe of a provider's stored key/url. provider: gemini|openrouter|openai|claude|custom|ollama. */
+/** Lightweight authenticated probe of a provider's stored key/url. provider: gemini|openrouter|openai|claude|custom|ollama|<registry-id>. */
 export interface VerifyResult { ok: boolean; detail: string }
 export const verifyProvider = (provider: string) =>
   invoke<VerifyResult>("verify_provider", { provider });
+
+/** The OpenAI-compatible provider registry (DeepSeek, Qwen, GLM, Kimi, …). The
+ *  Settings UI renders model dropdowns and key rows straight from this table —
+ *  adding a provider in Rust is the whole change, no frontend edit needed. */
+export interface ProviderInfo {
+  id: string;
+  label: string;
+  key_note: string;
+  embed_model: string | null;
+  chat_models: [string, string][];
+}
+export const listProviders = () => invoke<ProviderInfo[]>("list_providers");
 
 // ---- Google Calendar (OAuth + sync) ----
 export interface GoogleStatus {
@@ -1769,6 +1781,46 @@ export const paperBuildMatrix = (paperIds: string[], rowLabels?: string[]) =>
     paperIds,
     rowLabels: rowLabels ?? null,
   });
+
+// ---- B5: excerpts → citable draft ------------------------------------------
+
+export interface DraftReference {
+  n: number;
+  excerptId: string;
+  paperId: string | null;
+  title: string;
+  authors: string | null;
+  year: number | null;
+  page: number | null;
+}
+export interface DraftParagraph {
+  text: string;
+  cites: number[];
+}
+export interface DraftPayload {
+  thesis: string;
+  paragraphs: DraftParagraph[];
+  references: DraftReference[];
+}
+export interface ResearchDraft {
+  id: string;
+  title: string;
+  excerpt_ids: string[];
+  meta: string | null;
+  payload: DraftPayload | null;
+  created_at: number;
+}
+
+/** Turn picked excerpts (in citation order) into a citable passage. [n] ==
+ *  excerptIds[n-1]; the reference list is built server-side from the excerpts. */
+export const generateDraft = (excerptIds: string[], title?: string, customPrompt?: string) =>
+  invoke<ResearchDraft>("generate_draft", {
+    excerptIds,
+    title: title ?? null,
+    customPrompt: customPrompt ?? null,
+  });
+export const draftList = () => invoke<ResearchDraft[]>("draft_list");
+export const draftDelete = (id: string) => invoke<void>("draft_delete", { id });
 
 // ---- plan vs actual (Insights) -------------------------------------------
 

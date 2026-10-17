@@ -28,6 +28,8 @@ pub mod cross_book;
 pub mod workitems;
 pub mod planner;
 pub mod papers;
+pub mod providers;
+pub mod drafts;
 pub mod rerank;
 pub mod eval;
 pub mod llm;
@@ -401,6 +403,7 @@ pub fn run() {
             commands::set_settings,
             commands::ollama_models,
             commands::verify_provider,
+            commands::list_providers,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,
@@ -549,6 +552,9 @@ pub fn run() {
             commands::excerpt_delete,
             commands::paper_bibtex,
             commands::paper_import_bibtex,
+            commands::generate_draft,
+            commands::draft_list,
+            commands::draft_delete,
             commands::paper_build_matrix,
             commands::plan_vs_actual,
             commands::retrieval_eval,

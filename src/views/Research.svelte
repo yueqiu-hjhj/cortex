@@ -62,6 +62,116 @@
   }
   function closeMatrix() { matrix = null; matrixError = null; }
 
+  // ----- B5: excerpts → citable draft -----
+  // The pick set is GLOBAL and insertion-ordered: the order you check excerpts
+  // across papers IS the citation order, so [1] is always the first one picked.
+  let pickedExcerpts = $state<Set<string>>(new Set());
+  let drafts = $state<api.ResearchDraft[]>([]);
+  let draftModal = $state<"builder" | "library" | null>(null);
+  let draftResult = $state<api.ResearchDraft | null>(null);
+  let viewDraft = $state<api.ResearchDraft | null>(null);
+  let builderExcerpts = $state<api.Excerpt[]>([]);
+  let draftBusy = $state(false);
+  let draftError = $state<string | null>(null);
+  let draftTitle = $state("");
+  let draftPrompt = $state("");
+  const pickedCount = $derived(pickedExcerpts.size);
+  const pickedIds = $derived(Array.from(pickedExcerpts));
+  const showingDraft = $derived(draftResult ?? viewDraft);
+
+  function toggleExcerptPick(id: string) {
+    const next = new Set(pickedExcerpts);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    pickedExcerpts = next;
+  }
+  function clearExcerptSelection() { pickedExcerpts = new Set(); }
+
+  async function openDraftBuilder() {
+    if (pickedCount === 0) return;
+    draftError = null;
+    try { builderExcerpts = await api.excerptList(); } catch { builderExcerpts = []; }
+    draftModal = "builder";
+  }
+
+  async function openDraftLibrary() {
+    draftError = null;
+    try { drafts = await api.draftList(); } catch { drafts = []; }
+    draftModal = "library";
+  }
+
+  async function runGenerateDraft() {
+    if (pickedCount === 0 || draftBusy) return;
+    draftBusy = true;
+    draftError = null;
+    try {
+      draftResult = await api.generateDraft(
+        pickedIds,
+        draftTitle.trim() || undefined,
+        draftPrompt.trim() || undefined,
+      );
+      pickedExcerpts = new Set();
+      draftTitle = "";
+      draftPrompt = "";
+      try { drafts = await api.draftList(); } catch { /* library refresh is best-effort */ }
+    } catch (e) {
+      draftError = String(e);
+    } finally {
+      draftBusy = false;
+    }
+  }
+
+  async function deleteDraft(id: string) {
+    try {
+      await api.draftDelete(id);
+      if (viewDraft?.id === id) viewDraft = null;
+      drafts = await api.draftList();
+    } catch (e) {
+      draftError = String(e);
+    }
+  }
+
+  function closeDraftModal() {
+    draftModal = null;
+    draftResult = null;
+    viewDraft = null;
+    draftError = null;
+  }
+
+  /** Split paragraph text so [n] markers render as highlighted citation chips. */
+  function citeTokens(text: string): Array<{ t: string; c?: number }> {
+    const out: Array<{ t: string; c?: number }> = [];
+    const re = /\[(\d{1,3})\]/g;
+    let last = 0;
+    for (const m of text.matchAll(re)) {
+      const idx = m.index ?? 0;
+      if (idx > last) out.push({ t: text.slice(last, idx) });
+      out.push({ t: m[0], c: Number(m[1]) });
+      last = idx + m[0].length;
+    }
+    if (last < text.length) out.push({ t: text.slice(last) });
+    return out;
+  }
+
+  function draftFullText(d: api.ResearchDraft): string {
+    const p = d.payload;
+    if (!p) return d.title;
+    const refs = (p.references ?? [])
+      .map((r) => `[${r.n}] ${r.authors ?? "佚名"}${r.year ? ` (${r.year})` : ""}. ${r.title}.`)
+      .join("\n");
+    return [p.thesis, ...p.paragraphs.map((x) => x.text), "", "参考文献", refs]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  async function copyDraft(d: api.ResearchDraft) {
+    try {
+      await navigator.clipboard.writeText(draftFullText(d));
+      say("成稿已复制到剪贴板");
+    } catch (e) {
+      draftError = String(e);
+    }
+  }
+
   let quote = $state("");
   let page = $state<number | null>(null);
   let note = $state("");
@@ -182,6 +292,11 @@
     busy = id;
     try {
       await api.excerptDelete(id);
+      if (pickedExcerpts.has(id)) {
+        const next = new Set(pickedExcerpts);
+        next.delete(id);
+        pickedExcerpts = next;
+      }
       await Promise.all([loadExcerpts(), load()]);
     } catch (e) {
       error = String(e);
@@ -250,6 +365,15 @@
       {#if matrixSelectionCount > 0}
         <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
       {/if}
+      <button
+        class="btn primary"
+        disabled={pickedCount === 0}
+        onclick={openDraftBuilder}
+        title={pickedCount === 0 ? "勾选摘录后生成成稿" : "按勾选顺序把 " + pickedCount + " 条摘录写成带引用编号的成稿"}
+      >
+        成稿 · {pickedCount}
+      </button>
+      <button class="btn" onclick={openDraftLibrary}>成稿库</button>
     </div>
   </header>
 
@@ -360,15 +484,23 @@
 
           {#if excerpts.length}
             {#each excerpts as ex (ex.id)}
-              <blockquote class="ex">
-                <p class="q">{ex.quote}</p>
-                {#if ex.note}<p class="note">{ex.note}</p>{/if}
-                <div class="efoot">
-                  {#if ex.page}<span class="pg">p.{ex.page}</span>{/if}
-                  <span class="faint">{new Date(ex.created_at).toLocaleDateString("zh-CN")}</span>
-                  <button class="x" title="删除摘录" onclick={() => dropExcerpt(ex.id)}>
-                    <Icon name="x" size={10} />
-                  </button>
+              {@const isPicked = pickedExcerpts.has(ex.id)}
+              {@const pickN = pickedIds.indexOf(ex.id) + 1}
+              <blockquote class="ex" class:picked={isPicked}>
+                <label class="excheck" title="勾选后按顺序作为成稿引用">
+                  <input type="checkbox" checked={isPicked} onchange={() => toggleExcerptPick(ex.id)} />
+                  {#if isPicked}<span class="cnum">[{pickN}]</span>{/if}
+                </label>
+                <div class="exmain">
+                  <p class="q">{ex.quote}</p>
+                  {#if ex.note}<p class="note">{ex.note}</p>{/if}
+                  <div class="efoot">
+                    {#if ex.page}<span class="pg">p.{ex.page}</span>{/if}
+                    <span class="faint">{new Date(ex.created_at).toLocaleDateString("zh-CN")}</span>
+                    <button class="x" title="删除摘录" onclick={() => dropExcerpt(ex.id)}>
+                      <Icon name="x" size={10} />
+                    </button>
+                  </div>
                 </div>
               </blockquote>
             {/each}
@@ -403,6 +535,105 @@
         <div class="matrix-modal-loading">
           <span class="is-spin" style="width:18px;height:18px"></span>
           <span>正在生成对比矩阵…</span>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if draftModal}
+  <div class="matrix-modal-bg" onclick={closeDraftModal} role="presentation"></div>
+  <div class="matrix-modal draft-modal" role="dialog" aria-label="从摘录生成成稿">
+    {#if draftError}
+      <div class="matrix-modal-bd err">
+        生成失败：{draftError}
+        <div class="matrix-modal-actions">
+          {#if draftModal === "builder" && pickedCount > 0}
+            <button class="btn" onclick={() => (draftError = null)}>返回重试</button>
+          {/if}
+          <button class="btn" onclick={closeDraftModal}>关闭</button>
+        </div>
+      </div>
+    {:else if draftBusy}
+      <div class="matrix-modal-bd">
+        <div class="matrix-modal-loading">
+          <span class="is-spin" style="width:18px;height:18px"></span>
+          <span>正在按 {pickedIds.length} 条摘录写稿…</span>
+        </div>
+      </div>
+    {:else if showingDraft}
+      <div class="matrix-modal-bd">
+        <div class="dtitle">{showingDraft.title}</div>
+        <div class="dsub">
+          {showingDraft.meta}
+          {#if showingDraft !== draftResult}· 来自成稿库{/if}
+          · {new Date(showingDraft.created_at).toLocaleString("zh-CN")}
+        </div>
+        {#if showingDraft.payload?.thesis}
+          <p class="thesis">{showingDraft.payload.thesis}</p>
+        {/if}
+        {#each showingDraft.payload?.paragraphs ?? [] as para}
+          <p class="dpara">
+            {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+          </p>
+        {/each}
+        {#if showingDraft.payload?.references?.length}
+          <div class="shead">参考文献</div>
+          <div class="refs">
+            {#each showingDraft.payload.references as r (r.n)}
+              <div class="refitem">
+                <span class="cnum">[{r.n}]</span>
+                <span>{r.authors ?? "佚名"}{r.year ? ` (${r.year})` : ""}. {r.title}.{#if r.page}（p.{r.page} 摘录）{/if}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => copyDraft(showingDraft)}>复制全文</button>
+          <button class="btn primary" onclick={closeDraftModal}>完成</button>
+        </div>
+      </div>
+    {:else if draftModal === "builder"}
+      <div class="matrix-modal-bd">
+        <div class="shead">从 {pickedCount} 条摘录生成成稿</div>
+        <p class="dhint">引用编号按勾选顺序固定：[1] 是最早勾选的那条；参考文献由摘录自动生成，不经模型改写。</p>
+        <div class="brefs">
+          {#each pickedIds as pid, i (pid)}
+            {@const ex = builderExcerpts.find((e) => e.id === pid)}
+            <div class="bref">
+              <span class="cnum">[{i + 1}]</span>
+              <span class="bref-q">{ex ? ex.quote : "（摘录已缺失，生成时会报错）"}</span>
+              <span class="bref-meta">{[ex?.paper_title, ex?.page != null ? `p.${ex.page}` : null].filter(Boolean).join(" · ")}</span>
+            </div>
+          {/each}
+        </div>
+        <input class="dt" bind:value={draftTitle} placeholder="成稿标题（可选，默认「研究成稿」）" />
+        <textarea class="dp" bind:value={draftPrompt} placeholder="补充要求（可选）：例如「两段以内」「侧重新颖性对比」「面向开题报告」"></textarea>
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={clearExcerptSelection}>清空选择</button>
+          <button class="btn" onclick={closeDraftModal}>取消</button>
+          <button class="btn primary" onclick={runGenerateDraft}>生成成稿</button>
+        </div>
+      </div>
+    {:else}
+      <div class="matrix-modal-bd">
+        <div class="shead">成稿库 <span class="n">{drafts.length}</span></div>
+        {#if !drafts.length}
+          <p class="none">还没有成稿。勾选摘录后点顶部「成稿」生成第一条。</p>
+        {/if}
+        {#each drafts as d (d.id)}
+          <div class="lrow">
+            <button type="button" class="lbody" onclick={() => (viewDraft = d)}>
+              <div class="ltitle">{d.title}</div>
+              <div class="lsub">{d.meta} · {new Date(d.created_at).toLocaleDateString("zh-CN")}</div>
+            </button>
+            <button class="x" title="删除成稿" onclick={() => deleteDraft(d.id)}>
+              <Icon name="x" size={10} />
+            </button>
+          </div>
+        {/each}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={closeDraftModal}>关闭</button>
         </div>
       </div>
     {/if}
@@ -835,4 +1066,164 @@
     justify-content: flex-end;
     gap: 8px;
   }
+
+  /* B5: excerpts → citable draft */
+  .ex {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+  }
+  .ex.picked {
+    background: rgba(124, 92, 240, 0.08);
+  }
+  .excheck {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    padding-top: 2px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .excheck input { cursor: pointer; }
+  .exmain { flex: 1; min-width: 0; }
+  .cnum {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--accent);
+    background: rgba(124, 92, 240, 0.12);
+    border-radius: 4px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+  .draft-modal { inset: 8vh 12vw; }
+  .dtitle {
+    font-size: var(--t-lg);
+    font-weight: 500;
+    color: var(--fg-bright);
+    line-height: 1.4;
+  }
+  .dsub {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .thesis {
+    margin: 14px 0 0;
+    font-size: var(--t-sm);
+    color: var(--accent);
+    line-height: 1.6;
+  }
+  .dpara {
+    margin: 10px 0 0;
+    font-size: var(--t-sm);
+    line-height: 1.8;
+    color: var(--fg);
+  }
+  .cite {
+    color: var(--accent);
+    font-size: 11px;
+    vertical-align: super;
+    padding: 0 1px;
+  }
+  .refs { margin-top: 6px; }
+  .refitem {
+    display: flex;
+    gap: 6px;
+    font-size: var(--t-xs);
+    color: var(--fg-muted);
+    line-height: 1.6;
+    margin-bottom: 4px;
+  }
+  .refitem .cnum { flex-shrink: 0; }
+  .dhint {
+    margin: 0 0 10px;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .brefs {
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+  }
+  .bref {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: var(--t-xs);
+    line-height: 1.6;
+    margin-bottom: 4px;
+  }
+  .bref .cnum { flex-shrink: 0; }
+  .bref-q {
+    color: var(--fg);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .bref-meta {
+    color: var(--fg-faint);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .dt {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--fg);
+    font-size: var(--t-xs);
+    padding: 7px 9px;
+    outline: none;
+    margin-bottom: 8px;
+  }
+  .dt:focus { border-color: var(--accent-dim); }
+  .dp {
+    width: 100%;
+    min-height: 54px;
+    resize: vertical;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--fg);
+    font-size: var(--t-xs);
+    line-height: 1.6;
+    padding: 7px 9px;
+    outline: none;
+    margin-bottom: 10px;
+  }
+  .dp:focus { border-color: var(--accent-dim); }
+  .lrow {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+  }
+  .lrow:hover { background: var(--surface-2); }
+  .lbody {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    text-align: left;
+    color: inherit;
+    padding: 9px 11px;
+    cursor: pointer;
+  }
+  .ltitle {
+    font-size: var(--t-sm);
+    color: var(--fg);
+    line-height: 1.4;
+  }
+  .lsub {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .lrow .x { margin-right: 10px; }
 </style>

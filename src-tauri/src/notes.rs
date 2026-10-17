@@ -94,16 +94,16 @@ pub async fn note_to_source(app: AppHandle, id: String) -> Result<IngestResult> 
         let chunks = ingest::chunk_text(&text, 900, 150);
 
         // 2. embed (no lock) — same settings-driven embedder as add_source
-        let (provider, gemini_key, ollama_url) = {
+        let (provider, keys, ollama_url) = {
             let c = state.db.lock().unwrap();
             (
                 repo::get_setting(&c, "embed_provider")?.unwrap_or_else(|| "stub".into()),
-                repo::get_setting(&c, "gemini_api_key")?,
+                crate::commands::read_keys(&c)?,
                 repo::get_setting(&c, "ollama_url")?,
             )
         };
         let embedder =
-            embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), state.data_dir.as_deref());
+            embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
         let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
             Ok(v) => v,
             Err(_) => {
