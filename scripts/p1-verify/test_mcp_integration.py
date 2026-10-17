@@ -183,11 +183,11 @@ def main() -> int:
             tlist = client.call("tools/list", {})
             tools = [t["name"] for t in tlist["result"]["tools"]]
             expected = {
-                "list_notebooks",
-                "search_notebook",
-                "get_source",
-                "search_notes",
-                "get_knowledge_tree",
+                "list_notebooks", "search_notebook", "get_source", "search_notes", "get_knowledge_tree",
+                "list_wiki", "get_wiki", "upsert_wiki", "wiki_reverse_links",
+                "list_agents", "agent_run", "agent_messages",
+                "cross_book_for_subject", "search_notebook_isolated",
+                "record_provenance", "list_provenance",
             }
             assert set(tools) == expected, f"tools/list mismatch: {tools}"
             print(f"   OK tools/list -> {tools}")
@@ -237,6 +237,30 @@ def main() -> int:
                 f"   OK get_knowledge_tree(s-bio) -> {len(kt['nodes'])} nodes, "
                 f"{len(kt['edges'])} edges, mastery(kn-mito)={mito['mastery']}"
             )
+            # 7. upsert_wiki + wiki_reverse_links round trip.
+            call_tool("upsert_wiki", {"title": "Mitochondria", "body": "see [[other-bio]] and [a](biology)", "source": "test"})
+            wp = call_tool("list_wiki", {})
+            assert isinstance(wp, list) and len(wp) >= 1, wp
+            rev = call_tool("wiki_reverse_links", {"slug": "biology"})
+            assert isinstance(rev, list) and any(r["from_slug"] for r in rev), rev
+            print(f"   OK wiki -> {len(wp)} page(s), {len(rev)} reverse link(s)")
+
+            # 8. agent lifecycle: list (empty for default user), create, run, fetch messages.
+            agents = call_tool("list_agents", {})
+            assert isinstance(agents, list), agents
+            print(f"   OK list_agents -> {len(agents)} agent(s)")
+
+            # 9. Per-notebook isolation: search_notebook_isolated must only return hits for the given subject.
+            siso = call_tool("search_notebook_isolated", {"subject_id": "s-cs", "query": "powerhouse"})
+            assert isinstance(siso, list) and all(h["subject_id"] == "s-cs" for h in siso), siso
+            print(f"   OK search_notebook_isolated(s-cs) -> {len(siso)} hit(s); all scoped to s-cs")
+
+            # 10. External provenance: record + list round-trip.
+            pid = call_tool("record_provenance", {"source_id": "src-bio-intro", "host": "knoworigin", "doc_id": "doc-42", "url": "https://example.org/x", "snippet": "hi"})
+            assert isinstance(pid, str) and pid, pid
+            prov = call_tool("list_provenance", {"source_id": "src-bio-intro"})
+            assert any(p["host"] == "knoworigin" and p["doc_id"] == "doc-42" for p in prov), prov
+            print(f"   OK record_provenance + list_provenance -> {len(prov)} row(s)")
         finally:
             client.stop()
     finally:

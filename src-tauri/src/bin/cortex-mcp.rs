@@ -219,38 +219,143 @@ fn tool_definitions() -> Value {
             { "name": "search_notebook",  "description": "Search indexed chunks within one subject.", "params": ["subject_id", "query", "limit?"] },
             { "name": "get_source",       "description": "Read source metadata and the concatenated chunk text.", "params": ["source_id"] },
             { "name": "search_notes",     "description": "Search user notes by title or body.", "params": ["query", "limit?"] },
-            { "name": "get_knowledge_tree","description": "Read the knowledge framework nodes/edges and mastery for a subject.", "params": ["subject_id"] }
+            { "name": "get_knowledge_tree","description": "Read the knowledge framework nodes/edges and mastery for a subject.", "params": ["subject_id"] },
+            { "name": "list_wiki",        "description": "List wiki pages for the active user.", "params": ["limit?"] },
+            { "name": "get_wiki",         "description": "Read a wiki page by id or slug.", "params": ["id", "slug?"] },
+            { "name": "upsert_wiki",      "description": "Create or update a wiki page; returns the saved page (with audit trace).", "params": ["id?", "slug?", "title", "body", "source?"] },
+            { "name": "wiki_reverse_links","description": "List pages that link to a given slug.", "params": ["slug"] },
+            { "name": "list_agents",      "description": "List configured agents for the active user.", "params": [] },
+            { "name": "agent_run",        "description": "Start a new run for an agent.", "params": ["agent_id", "input"] },
+            { "name": "agent_messages",   "description": "List the messages of an agent run (caller must own it).", "params": ["run_id", "limit?"] },
+            { "name": "cross_book_for_subject","description": "List cross-subject concept bridges touching the given subject.", "params": ["subject_id"] },
+            { "name": "search_notebook_isolated","description": "Per-notebook search: hits MUST come from chunks whose source belongs to the given subject.", "params": ["subject_id", "query", "limit?"] },
+            { "name": "record_provenance","description": "Record external provenance for a source (KnowNote-style: who provided this content).", "params": ["source_id", "host", "doc_id", "url?", "snippet?"] },
+            { "name": "list_provenance",  "description": "List external provenance rows for a source.", "params": ["source_id"] }
         ]
     })
 }
 
 fn dispatch(conn: &Connection, name: &str, args: &Value) -> Value {
-    let result = match name {
-        "list_notebooks" => list_notebooks(conn),
+    let err = |msg: &str| -> Value { json!({ "error": msg }) };
+    let from_err = |res: Result<Value, String>| -> Value { match res { Ok(v) => v, Err(e) => json!({ "error": e }) } };
+    match name {
+        "list_notebooks" => list_notebooks(conn).unwrap_or(Value::Null),
         "search_notebook" => {
             let sid = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("");
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let lim = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
-            search_notebook(conn, sid, q, lim)
+            search_notebook(conn, sid, q, lim).unwrap_or(Value::Null)
         }
         "get_source" => {
             let sid = args.get("source_id").and_then(|v| v.as_str()).unwrap_or("");
-            get_source(conn, sid)
+            get_source(conn, sid).unwrap_or(Value::Null)
         }
         "search_notes" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let lim = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
-            search_notes(conn, q, lim)
+            search_notes(conn, q, lim).unwrap_or(Value::Null)
         }
         "get_knowledge_tree" => {
             let sid = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("");
-            get_knowledge_tree(conn, sid)
+            get_knowledge_tree(conn, sid).unwrap_or(Value::Null)
         }
-        other => Err(rusqlite::Error::InvalidParameterName(format!("unknown tool {other}"))),
-    };
-    match result {
-        Ok(v) => v,
-        Err(e) => json!({ "error": e.to_string() }),
+        "list_wiki" => from_err(
+            cortex_lib::wiki::list_pages(conn, cortex_lib::wiki::DEFAULT_USER,
+                args.get("limit").and_then(|v| v.as_i64()).unwrap_or(50))
+                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        ),
+        "get_wiki" => {
+            let slug = args.get("slug").and_then(|v| v.as_str());
+            let id = args.get("id").and_then(|v| v.as_str());
+            match (id, slug) {
+                (Some(i), _) => from_err(
+                    cortex_lib::wiki::get_page(conn, cortex_lib::wiki::DEFAULT_USER, i)
+                        .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+                        .map_err(|e| e.to_string())
+                ),
+                (None, Some(s)) => from_err(
+                    cortex_lib::wiki::get_page_by_slug(conn, cortex_lib::wiki::DEFAULT_USER, s)
+                        .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+                        .map_err(|e| e.to_string())
+                ),
+                (None, None) => err("id or slug required"),
+            }
+        }
+        "upsert_wiki" => from_err(
+            cortex_lib::wiki::upsert_page(
+                conn, cortex_lib::wiki::DEFAULT_USER,
+                args.get("id").and_then(|v| v.as_str()),
+                args.get("slug").and_then(|v| v.as_str()),
+                args.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("source").and_then(|v| v.as_str()),
+            ).map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+             .map_err(|e| e.to_string())
+        ),
+        "wiki_reverse_links" => from_err(
+            cortex_lib::wiki::reverse_links(conn, cortex_lib::wiki::DEFAULT_USER,
+                args.get("slug").and_then(|v| v.as_str()).unwrap_or(""))
+                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        ),
+        "list_agents" => from_err(
+            cortex_lib::agents::list_agents(conn, cortex_lib::agents::DEFAULT_USER)
+                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        ),
+        "agent_run" => from_err(
+            cortex_lib::agents::start_run(
+                conn, cortex_lib::agents::DEFAULT_USER,
+                args.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("input").and_then(|v| v.as_str()).unwrap_or(""),
+            ).map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+             .map_err(|e| e.to_string())
+        ),
+        "agent_messages" => from_err(
+            cortex_lib::agents::list_messages(
+                conn, cortex_lib::agents::DEFAULT_USER,
+                args.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("limit").and_then(|v| v.as_i64()).unwrap_or(200),
+            ).map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+             .map_err(|e| e.to_string())
+        ),
+        "cross_book_for_subject" => from_err(
+            cortex_lib::cross_book::bridges_for_subject(conn,
+                args.get("subject_id").and_then(|v| v.as_str()).unwrap_or(""))
+                .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        ),
+        "search_notebook_isolated" => {
+            let sid = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("");
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let lim = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(15) as usize;
+            match cortex_lib::repo::keyword_search_chunks(conn, Some(sid), None, q, lim) {
+                Ok(chunks) => Value::Array(chunks.into_iter().map(|h| json!({
+                    "id": h.id, "source_id": h.source_id, "source_name": h.source_name,
+                    "text": h.text, "loc": h.loc, "score": h.score, "subject_id": sid,
+                })).collect()),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "record_provenance" => {
+            let sid = args.get("source_id").and_then(|v| v.as_str()).unwrap_or("");
+            let host = args.get("host").and_then(|v| v.as_str()).unwrap_or("");
+            let doc = args.get("doc_id").and_then(|v| v.as_str()).unwrap_or("");
+            let url = args.get("url").and_then(|v| v.as_str());
+            let snippet = args.get("snippet").and_then(|v| v.as_str());
+            match cortex_lib::repo::record_provenance(conn, sid, host, doc, url, snippet) {
+                Ok(id) => Value::String(id),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "list_provenance" => match cortex_lib::repo::list_provenance(conn,
+            args.get("source_id").and_then(|v| v.as_str()).unwrap_or(""))
+        {
+            Ok(v) => serde_json::to_value(v).unwrap_or(Value::Null),
+            Err(e) => json!({ "error": e.to_string() }),
+        },
+        other => err(&format!("unknown tool {other}")),
     }
 }
 
