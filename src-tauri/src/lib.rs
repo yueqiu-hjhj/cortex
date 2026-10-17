@@ -19,6 +19,7 @@ mod google;
 mod homelab;
 mod ingest;
 mod livesync;
+mod literature;
 mod llm;
 mod models;
 mod moodle;
@@ -402,6 +403,7 @@ pub fn run() {
             recorder::native_rec_cancel,
             recorder::native_rec_level,
             commands::web_search,
+            commands::literature_search,
             commands::add_memory,
             commands::list_memory,
             commands::delete_memory,

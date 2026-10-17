@@ -1,0 +1,710 @@
+//! Literature retrieval pipeline.
+//!
+//! Given a user query (optionally with a subject's topic keywords), produce a
+//! unified, de-duplicated, re-ranked list of academic hits. The pipeline has
+//! four stages:
+//!
+//! 1. Query rewrite — generate 2-3 search variants (original / expanded /
+//!    scholarly) by asking the configured chat LLM, with a deterministic
+//!    heuristic fallback when no LLM is available.
+//! 2. Multi-source fan-out — each variant is run against several public
+//!    scholarly sources in parallel: arXiv, Crossref, OpenAlex, Semantic
+//!    Scholar, and (if configured) the user's SearXNG "science" engine.
+//! 3. RRF fusion — Reciprocal Rank Fusion with k=60 combines the per-source
+//!    ranks into a single score per unique paper (DOI/title dedup).
+//! 4. Rule rerank — boosts for: has DOI, has abstract, recent year,
+//!    citation count, subject-keyword overlap, academic host; penalties for
+//!    SEO/ads domains and very old papers. Final score = RRF + bonuses,
+//!    sorted descending.
+//!
+//! Every step is best-effort and degrades gracefully: a single source failure
+//! does not abort the pipeline; a 0-LLM user still gets heuristic rewrites
+//! and all sources attempted.
+
+use crate::error::{Error, Result};
+use serde::Serialize;
+
+const ARXIV_BASE: &str = "https://export.arxiv.org/api";
+const CROSSREF_BASE: &str = "https://api.crossref.org/works";
+const OPENALEX_BASE: &str = "https://api.openalex.org/works";
+const S2_BASE: &str = "https://api.semanticscholar.org/graph/v1/paper/search";
+const POLITE_MAILTO: &str = "cortex@local";
+const SOURCE_TIMEOUT_SECS: u64 = 6;
+const RRF_K: f64 = 60.0;
+
+#[derive(Debug, Clone)]
+pub struct RawHit {
+    pub source: String,
+    pub rank: i64,
+    pub title: String,
+    pub authors: Vec<String>,
+    pub year: Option<i64>,
+    pub venue: Option<String>,
+    pub doi: Option<String>,
+    pub url: Option<String>,
+    pub abstract_text: Option<String>,
+    pub citation_count: Option<i64>,
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiteratureHit {
+    pub title: String,
+    pub authors: Vec<String>,
+    pub year: Option<i64>,
+    pub venue: Option<String>,
+    pub doi: Option<String>,
+    pub url: Option<String>,
+    pub abstract_text: Option<String>,
+    pub citation_count: Option<i64>,
+    pub source: String,
+    pub sources: Vec<String>,
+    pub rrf_score: f64,
+    pub final_score: f64,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiteratureResult {
+    pub query: String,
+    pub rewritten: Vec<String>,
+    pub hits: Vec<LiteratureHit>,
+    pub sources_attempted: Vec<String>,
+    pub sources_succeeded: Vec<String>,
+    pub took_ms: i64,
+}
+// ---- query rewrite ----------------------------------------------------
+
+    /// Produce 2-3 search variants for the user query. Tries the chat LLM first;
+    /// falls back to a deterministic heuristic if the LLM is the offline stub or
+    /// returns nothing usable.
+    pub fn rewrite_query(
+        llm: Option<&dyn crate::llm::Llm>,
+        query: &str,
+        subject_keywords: &[String],
+    ) -> Vec<String> {
+        if let Some(model) = llm {
+            if let Ok(variants) = llm_rewrite(model, query, subject_keywords) {
+                if !variants.is_empty() {
+                    return variants;
+                }
+            }
+        }
+        heuristic_rewrite(query, subject_keywords)
+    }
+
+    fn llm_rewrite(
+        model: &dyn crate::llm::Llm,
+        query: &str,
+        subject_keywords: &[String],
+    ) -> Result<Vec<String>> {
+        let kw_hint = if subject_keywords.is_empty() {
+            String::new()
+        } else {
+            format!("\nDomain keywords (synonyms/OR-terms when relevant): {}.\n",
+                subject_keywords.join(", "))
+        };
+        let sys = "You expand an academic search query. Output 2 or 3 distinct search \
+variants, one per line, no numbering, no quotes, no commentary. Variants \
+should target scholarly databases: include the original query, an expanded \
+form with synonyms/related terms, and a precise form (quoted key terms or \
+method/result keywords). Avoid generic words like 'literature' or 'paper'. \
+Each variant must be <= 100 characters.";
+        let user = format!("Query: {}{}\nVariants:", query, kw_hint);
+        let raw = model.complete(sys, &user)?;
+        let out: Vec<String> = raw
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty() && l.chars().count() <= 120 && l.chars().count() >= 2)
+            .take(3)
+            .collect();
+        Ok(out)
+    }
+
+    fn heuristic_rewrite(query: &str, subject_keywords: &[String]) -> Vec<String> {
+        let q = query.trim();
+        let mut out: Vec<String> = Vec::new();
+        if !q.is_empty() {
+            out.push(q.to_string());
+        }
+        if !subject_keywords.is_empty() {
+            let extra: Vec<String> = subject_keywords.iter()
+                .take(3)
+                .filter(|k| !q.to_lowercase().contains(&k.to_lowercase()))
+                .cloned()
+                .collect();
+            if !extra.is_empty() {
+                out.push(format!("{} {}", q, extra.join(" ")));
+            }
+        }
+        let stops: &[&str] = &["what", "is", "are", "how", "why", "the", "a", "of", "to", "in"];
+        let quoted: String = q.split_whitespace()
+            .filter(|w| w.len() > 3 && !stops.contains(&w.to_lowercase().as_str()))
+            .take(4)
+            .map(|w| format!("\"{}\"", w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut scholarly = if !quoted.is_empty() { quoted } else { q.to_string() };
+        let low = q.to_lowercase();
+        if !low.contains("survey") && !low.contains("review") && !low.contains("meta-analysis")
+            && !low.contains("tutorial") {
+            scholarly.push_str(" survey");
+        }
+        out.push(scholarly);
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        out.retain(|v| seen.insert(v.to_lowercase()));
+        out
+    }
+// ---- shared HTTP helper ---------------------------------------------
+
+fn http() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(SOURCE_TIMEOUT_SECS))
+        .user_agent("Cortex/1.0 (mailto:cortex@local)")
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+}
+
+/// Extract a host (no scheme/www./port) from a URL. Mirrors the helper in
+/// commands.rs but lives here to avoid leaking that private symbol.
+fn host_of(url: &str) -> Option<String> {
+    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let auth = after.split(['/', '?', '#']).next()?;
+    let auth = auth.rsplit('@').next()?;
+    let host = auth.split(':').next()?.trim_start_matches("www.");
+    if host.is_empty() { None } else { Some(host.to_string()) }
+}
+
+fn first_author_year(s: &serde_json::Value) -> (Vec<String>, Option<i64>) {
+    let authors: Vec<String> = s["author"].as_array()
+        .map(|a| a.iter().filter_map(|x| {
+            if let Some(n) = x["name"].as_str() { return Some(n.to_string()); }
+            let g = x["given"].as_str()?;
+            let f = x["family"].as_str()?;
+            Some(format!("{} {}", g, f))
+        }).collect())
+        .unwrap_or_default();
+    let year = s["published-print"]["date-parts"][0][0].as_i64()
+        .or_else(|| s["published-online"]["date-parts"][0][0].as_i64())
+        .or_else(|| s["created"]["date-parts"][0][0].as_i64());
+    (authors, year)
+}
+
+// ---- arXiv (Atom XML) -----------------------------------------------
+
+pub fn search_arxiv(query: &str) -> Vec<RawHit> {
+    let client = http();
+    let resp = match client.get(ARXIV_BASE)
+        .query(&[("search_query", format!("all:\"{}\"", query)), ("max_results", "15".to_string())])
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let text = match resp.text() { Ok(t) => t, Err(_) => return Vec::new() };
+    // Each <entry>...</entry> block. Cheap and good-enough for arXiv's well-formed Atom.
+    let mut hits: Vec<RawHit> = Vec::new();
+    let mut rank = 0i64;
+    for entry in text.split("<entry>").skip(1) {
+        let body = match entry.split("</entry>").next() { Some(b) => b, None => continue };
+        rank += 1;
+        let title = strip_tags(extract_between(body, "<title>", "</title>").unwrap_or_default().to_string());
+        let summary = strip_tags(extract_between(body, "<summary>", "</summary>").unwrap_or_default().to_string());
+        let id = extract_between(body, "<id>", "</id>").map(|s| s.to_string());
+        let published = extract_between(body, "<published>", "</published>").unwrap_or_default();
+        let year = published.get(..4).and_then(|y| y.parse::<i64>().ok());
+        let authors: Vec<String> = body.split("<author>").skip(1)
+            .filter_map(|a| a.split("</author>").next())
+            .filter_map(|a| extract_between(a, "<name>", "</name>").map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .take(10)
+            .collect();
+        if title.is_empty() { continue; }
+        let url = if id.as_ref().map(|s| s.is_empty()).unwrap_or(true) { None } else { id };
+        let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("arxiv.org".into()));
+        hits.push(RawHit {
+            source: "arxiv".into(), rank, title, authors, year,
+            venue: Some("arXiv".into()),
+            doi: None, url, abstract_text: Some(summary),
+            citation_count: None, host,
+        });
+    }
+    hits
+}
+
+fn extract_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = s.find(open)? + open.len();
+    let end = s[start..].find(close)? + start;
+    Some(&s[start..end])
+}
+
+fn strip_tags(s: String) -> String {
+    // Collapse whitespace and remove any embedded tags.
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ---- Crossref --------------------------------------------------------
+
+pub fn search_crossref(query: &str) -> Vec<RawHit> {
+    let client = http();
+    let resp = match client.get(CROSSREF_BASE)
+        .query(&[("query.bibliographic", query), ("rows", "15"), ("mailto", POLITE_MAILTO)])
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let json: serde_json::Value = match resp.json() { Ok(v) => v, Err(_) => return Vec::new() };
+    let items = match json["message"]["items"].as_array() { Some(a) => a, None => return Vec::new() };
+    let mut hits: Vec<RawHit> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let title_arr = it["title"].as_array();
+        let title = title_arr.and_then(|a| a.first()).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if title.is_empty() { continue; }
+        let (authors, year) = first_author_year(it);
+        let doi = it["DOI"].as_str().map(|s| s.to_string());
+        let url = it["URL"].as_str().map(|s| s.to_string());
+        let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("doi.org".into()));
+        let venue = it["container-title"].as_array()
+            .and_then(|a| a.first()).and_then(|v| v.as_str()).map(|s| s.to_string());
+        let citations = it["is-referenced-by-count"].as_i64();
+        hits.push(RawHit {
+            source: "crossref".into(), rank: (i as i64) + 1,
+            title, authors, year, venue, doi, url,
+            abstract_text: None, citation_count: citations,
+            host,
+        });
+    }
+    hits
+}
+
+// ---- OpenAlex --------------------------------------------------------
+
+pub fn search_openalex(query: &str) -> Vec<RawHit> {
+    let client = http();
+    let resp = match client.get(OPENALEX_BASE)
+        .query(&[("search", query), ("per-page", "15"), ("mailto", POLITE_MAILTO)])
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let json: serde_json::Value = match resp.json() { Ok(v) => v, Err(_) => return Vec::new() };
+    let items = match json["results"].as_array() { Some(a) => a, None => return Vec::new() };
+    let mut hits: Vec<RawHit> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let title = it["title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() { continue; }
+        let authors: Vec<String> = it["authorships"].as_array()
+            .map(|a| a.iter().filter_map(|x| x["author"]["display_name"].as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        let year = it["publication_year"].as_i64();
+        let venue = it["primary_location"]["source"]["display_name"].as_str().map(|s| s.to_string());
+        let doi = it["doi"].as_str().map(|s| s.to_string());
+        let url = it["id"].as_str().map(|s| s.to_string());
+        let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("openalex.org".into()));
+        let abstract_text = it["abstract_inverted_index"].as_object().map(|o| {
+            let mut parts: Vec<String> = o.iter().filter_map(|(k,v)| v.as_str().map(|s| format!("{} {}", k, s))).collect();
+            parts.sort();
+            parts.join(" ")
+        });
+        let citations = it["cited_by_count"].as_i64();
+        hits.push(RawHit {
+            source: "openalex".into(), rank: (i as i64) + 1,
+            title, authors, year, venue, doi, url, abstract_text, citation_count: citations,
+            host,
+        });
+    }
+    hits
+}
+
+// ---- Semantic Scholar ------------------------------------------------
+
+pub fn search_semantic_scholar(query: &str) -> Vec<RawHit> {
+    let client = http();
+    let fields = "title,authors,year,venue,abstract,externalIds,url,citationCount";
+    let resp = match client.get(S2_BASE)
+        .query(&[("query", query), ("limit", "15"), ("fields", fields)])
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let json: serde_json::Value = match resp.json() { Ok(v) => v, Err(_) => return Vec::new() };
+    let items = match json["data"].as_array() { Some(a) => a, None => return Vec::new() };
+    let mut hits: Vec<RawHit> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let title = it["title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() { continue; }
+        let authors: Vec<String> = it["authors"].as_array()
+            .map(|a| a.iter().filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        let year = it["year"].as_i64();
+        let venue = it["venue"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty());
+        let doi = it["externalIds"]["DOI"].as_str().map(|s| s.to_string());
+        let url = it["url"].as_str().map(|s| s.to_string());
+        let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("semanticscholar.org".into()));
+        let abstract_text = it["abstract"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty());
+        let citations = it["citationCount"].as_i64();
+        hits.push(RawHit {
+            source: "semantic_scholar".into(), rank: (i as i64) + 1,
+            title, authors, year, venue, doi, url, abstract_text, citation_count: citations,
+            host,
+        });
+    }
+    hits
+}
+
+// ---- SearXNG (science) — optional, requires configured searxng_url --
+
+pub fn search_searxng_science(query: &str, searxng_base: Option<&str>) -> Vec<RawHit> {
+    let Some(base) = searxng_base else { return Vec::new(); };
+    let client = http();
+    let resp = match client.get(format!("{}/search", base.trim_end_matches('/')))
+        .query(&[("q", query), ("format", "json"), ("categories", "science"), ("pageno", "1")])
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let json: serde_json::Value = match resp.json() { Ok(v) => v, Err(_) => return Vec::new() };
+    let items = match json["results"].as_array() { Some(a) => a, None => return Vec::new() };
+    let mut hits: Vec<RawHit> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let title = it["title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() { continue; }
+        let url = it["url"].as_str().map(|s| s.to_string());
+        let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("searxng".into()));
+        let snippet = it["content"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty());
+        // SearXNG science results often don't carry structured metadata; we
+        // surface what we can and leave the rest None for the reranker.
+        hits.push(RawHit {
+            source: "searxng".into(), rank: (i as i64) + 1,
+            title, authors: Vec::new(), year: None, venue: Some("web".into()),
+            doi: None, url, abstract_text: snippet, citation_count: None,
+            host,
+        });
+    }
+    hits
+}
+// ---- fusion & rerank ------------------------------------------------
+
+/// Normalize a title for dedup: lowercase, collapse whitespace, strip
+/// non-alphanumeric noise. We do not decode Unicode; titles in CJK still
+/// match each other (their normalized form is identical).
+fn title_key(t: &str) -> String {
+    t.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Reciprocal Rank Fusion. For each paper id (DOI preferred, else title key),
+/// sum 1 / (RRF_K + rank) across all source lists. Returns a sorted vec.
+fn rrf_fuse(lists: &[Vec<RawHit>]) -> Vec<(String, f64, Vec<String>, Vec<RawHit>)> {
+    // id -> (rrf_score, sources_seen, member_hits)
+    let mut acc: std::collections::HashMap<String, (f64, Vec<String>, Vec<RawHit>)>
+        = std::collections::HashMap::new();
+    for list in lists {
+        for h in list {
+            let key = if let Some(d) = &h.doi {
+                let d = d.to_lowercase();
+                if d.starts_with("https://doi.org/") { d } else { format!("doi:{}", d) }
+            } else {
+                format!("t:{}", title_key(&h.title))
+            };
+            let entry = acc.entry(key).or_insert((0.0, Vec::new(), Vec::new()));
+            entry.0 += 1.0 / (RRF_K + h.rank as f64);
+            if !entry.1.contains(&h.source) {
+                entry.1.push(h.source.clone());
+            }
+            entry.2.push(h.clone());
+        }
+    }
+    let mut out: Vec<(String, f64, Vec<String>, Vec<RawHit>)> = acc.into_iter()
+        .map(|(k, (s, src, hits))| (k, s, src, hits))
+        .collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// Rule-based rerank: produce the final score and a human-readable trace.
+fn current_year() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(1_730_000_000);
+    // 1970 + seconds / (365.25 * 86400) -- good enough for recency scoring.
+    1970 + (secs / 31_557_600)
+}
+
+fn rule_rerank(
+    fused_hits: &[(String, f64, Vec<String>, Vec<RawHit>)],
+    subject_keywords: &[String],
+) -> Vec<LiteratureHit> {
+    // Normalize RRF: divide by the max so the strongest hit reads as 1.0.
+    let rrf_max = fused_hits.iter().map(|(_, s, _, _)| *s).fold(0.0_f64, f64::max);
+    let norm = |s: f64| if rrf_max > 0.0 { s / rrf_max } else { 0.0 };
+    let now_year = current_year();
+    let kw_low: Vec<String> = subject_keywords.iter().map(|k| k.to_lowercase()).collect();
+
+    let mut out: Vec<LiteratureHit> = Vec::with_capacity(fused_hits.len());
+    for (_, rrf, sources, members) in fused_hits {
+        // Pick the best member as the canonical representative: prefer one
+        // with an abstract, then the most-cited, then the earliest.
+        let rep = members.iter().max_by_key(|m| (
+            (if m.abstract_text.is_some() { 1u8 } else { 0u8 }),
+            m.citation_count.unwrap_or(0),
+        )).cloned().unwrap_or_else(|| members[0].clone());
+
+        let mut score = norm(*rrf);
+        let mut reasons: Vec<String> = Vec::new();
+        reasons.push(format!("RRF {:.2} (sources: {})", rrf, sources.join(",")));
+
+        if rep.doi.is_some() {
+            score += 0.20;
+            reasons.push("+doi".into());
+        }
+        if rep.abstract_text.is_some() {
+            score += 0.15;
+            reasons.push("+abstract".into());
+        }
+        if let Some(c) = rep.citation_count {
+            let bump = (c as f64 / 100.0).min(1.0) * 0.10;
+            if bump > 0.0 {
+                score += bump;
+                reasons.push(format!("+cit:{}", c));
+            }
+        }
+        if let Some(y) = rep.year {
+            let age = (now_year - y).max(0) as f64;
+            let recency = ((5.0 - age).max(0.0) / 5.0) * 0.10;
+            if recency > 0.0 {
+                score += recency;
+                reasons.push(format!("+recent:{}", y));
+            } else if age > 20.0 {
+                score -= 0.10;
+                reasons.push(format!("-old:{}", y));
+            }
+        }
+        // Subject-keyword overlap against title + abstract.
+        if !kw_low.is_empty() {
+            let text = format!("{} {}", rep.title.to_lowercase(),
+                rep.abstract_text.as_deref().unwrap_or("").to_lowercase());
+            let hits_kw = kw_low.iter().filter(|k| text.contains(k.as_str())).count();
+            if hits_kw > 0 {
+                let bump = (hits_kw as f64 / kw_low.len() as f64).min(1.0) * 0.10;
+                score += bump;
+                reasons.push(format!("+kw:{}", hits_kw));
+            }
+        }
+        // Host heuristic.
+        let host = rep.host.as_deref().unwrap_or("").to_lowercase();
+        if host.ends_with(".edu") || host.ends_with(".ac.cn") || host.ends_with(".ac.uk")
+            || host.contains("scholar") || host.contains("semanticscholar")
+            || host.contains("arxiv.org") || host.contains("doi.org")
+            || host.contains("openalex")
+        {
+            score += 0.05;
+            reasons.push("+academic".into());
+        }
+        if host.contains("click.") || host.contains("ads.") || host.contains("shop")
+            || host.contains("spam")
+        {
+            score -= 0.10;
+            reasons.push("-seo".into());
+        }
+
+        out.push(LiteratureHit {
+            title: rep.title,
+            authors: rep.authors,
+            year: rep.year,
+            venue: rep.venue,
+            doi: rep.doi,
+            url: rep.url,
+            abstract_text: rep.abstract_text,
+            citation_count: rep.citation_count,
+            source: sources.first().cloned().unwrap_or_else(|| rep.source.clone()),
+            sources: sources.clone(),
+            rrf_score: norm(*rrf),
+            final_score: score,
+            reasons,
+        });
+    }
+    out.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+// ---- public entrypoint ---------------------------------------------
+
+/// Look up the topic keywords for a subject. Empty Vec if the subject
+/// doesn't exist or has no topics; the pipeline still works, the reranker
+/// just skips keyword overlap.
+pub fn subject_keywords(conn: &rusqlite::Connection, subject_id: &str) -> Vec<String> {
+    let mut st = match conn.prepare("SELECT name FROM topics WHERE subject_id = ?1 ORDER BY position, name") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    st.query_map([subject_id], |r| r.get::<_, String>(0))
+        .map(|rows| rows.flatten().filter(|n| !n.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Run the full pipeline. query is the user prompt; subject_id (if
+/// given) supplies topic keywords for the rewrite + rerank stages.
+/// limit caps the final hit list (default 30). Best-effort: a single
+/// source failure does not abort, and a query that nothing can match
+/// returns an empty hit list rather than an error.
+pub fn literature_search(
+    conn: &rusqlite::Connection,
+    llm: Option<&dyn crate::llm::Llm>,
+    query: &str,
+    subject_id: Option<&str>,
+    limit: usize,
+) -> Result<LiteratureResult> {
+    let started = std::time::Instant::now();
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Other("empty query".into()));
+    }
+
+    let keywords = subject_id
+        .map(|sid| subject_keywords(conn, sid))
+        .unwrap_or_default();
+    let variants = rewrite_query(llm, trimmed, &keywords);
+    if variants.is_empty() {
+        return Err(Error::Other("no rewrite variants produced".into()));
+    }
+
+    // SearXNG base is optional; resolved through the homelab chain.
+    let searxng_base = crate::homelab::resolved_setting(conn, "searxng_url");
+
+    let mut attempted: Vec<String> = Vec::new();
+    let mut succeeded: Vec<String> = Vec::new();
+    let mut all_lists: Vec<Vec<RawHit>> = Vec::new();
+    for v in &variants {
+        for (name, list) in [
+            ("arxiv", search_arxiv(v)),
+            ("crossref", search_crossref(v)),
+            ("openalex", search_openalex(v)),
+            ("semantic_scholar", search_semantic_scholar(v)),
+            ("searxng", search_searxng_science(v, searxng_base.as_deref())),
+        ] {
+            if !attempted.contains(&name.to_string()) {
+                attempted.push(name.to_string());
+            }
+            if !list.is_empty() {
+                if !succeeded.contains(&name.to_string()) {
+                    succeeded.push(name.to_string());
+                }
+                all_lists.push(list);
+            }
+        }
+    }
+
+    let fused = rrf_fuse(&all_lists);
+    let mut hits = rule_rerank(&fused, &keywords);
+    hits.truncate(limit.max(1));
+
+    Ok(LiteratureResult {
+        query: trimmed.to_string(),
+        rewritten: variants,
+        hits,
+        sources_attempted: attempted,
+        sources_succeeded: succeeded,
+        took_ms: started.elapsed().as_millis() as i64,
+    })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_key_collapses_whitespace_and_case() {
+        assert_eq!(title_key("Mitochondria  are  the"), title_key("mitochondria are the"));
+        assert_eq!(title_key("A B C"), "a b c");
+    }
+
+    #[test]
+    fn heuristic_rewrite_returns_original_expanded_and_scholarly() {
+        let v = heuristic_rewrite("transformer attention", &["deep learning".into()]);
+        assert!(v.len() >= 2, "want at least 2 variants, got {}: {:?}", v.len(), v);
+        assert!(v[0].contains("transformer"));
+        // scholarly variant should have at least one quoted term
+        assert!(v.iter().any(|x| x.contains('"')));
+    }
+
+    #[test]
+    fn heuristic_rewrite_skips_keywords_already_in_query() {
+        let v = heuristic_rewrite("deep learning", &["deep learning".into()]);
+        // 'deep learning' already in query, so the expanded variant is dropped (deduped).
+        assert!(!v.iter().any(|x| x == "deep learning deep learning"));
+    }
+
+    #[test]
+    fn rrf_fuse_aggregates_across_sources() {
+        // X is shared between lists (same DOI -> same key); Y is single-source.
+        let a = vec![
+            RawHit { source: "arxiv".into(), rank: 1, title: "X".into(),
+                authors: vec![], year: None, venue: None, doi: Some("10.1/xxx".into()), url: None,
+                abstract_text: None, citation_count: None, host: None },
+            RawHit { source: "arxiv".into(), rank: 2, title: "Y".into(),
+                authors: vec![], year: None, venue: None, doi: None, url: None,
+                abstract_text: None, citation_count: None, host: None },
+        ];
+        let b = vec![
+            RawHit { source: "crossref".into(), rank: 1, title: "X".into(),
+                authors: vec![], year: None, venue: None, doi: Some("10.1/xxx".into()), url: None,
+                abstract_text: None, citation_count: None, host: None },
+        ];
+        let fused = rrf_fuse(&[a, b]);
+        assert_eq!(fused.len(), 2, "X (deduped) and Y should both be present, got {:?}", fused.iter().map(|(k,_,_,_)| k.clone()).collect::<Vec<_>>());
+        let x_score = fused.iter().find(|(k, _, _, _)| k == "doi:10.1/xxx").map(|(_, s, _, _)| *s).unwrap_or(0.0);
+        let y_score = fused.iter().find(|(k, _, _, _)| k == "t:y").map(|(_, s, _, _)| *s).unwrap_or(0.0);
+        assert!(x_score > y_score, "X (multi-source) should outrank Y: x={} y={}", x_score, y_score);
+        // X must list both sources it appeared in.
+        let x_sources = fused.iter().find(|(k, _, _, _)| k == "doi:10.1/xxx").map(|(_, _, src, _)| src.clone()).unwrap_or_default();
+        assert!(x_sources.contains(&"arxiv".to_string()));
+        assert!(x_sources.contains(&"crossref".to_string()));
+    }
+
+    #[test]
+    fn rule_rerank_boosts_doi_and_abstract_and_recent() {
+        // Build a fused vec with three hits that differ in DOI/abstract/year only.
+        let make = |title: &str, doi: Option<&str>, abs: Option<&str>, year: Option<i64>| {
+            let key = doi.map(|d| format!("doi:{}", d)).unwrap_or_else(|| format!("t:{}", title_key(title)));
+            let rep = RawHit {
+                source: "arxiv".into(), rank: 1, title: title.into(),
+                authors: vec!["A".into()], year, venue: None,
+                doi: doi.map(|s| s.into()), url: None,
+                abstract_text: abs.map(|s| s.into()),
+                citation_count: None, host: Some("arxiv.org".into()),
+            };
+            (key, 0.5, vec!["arxiv".into()], vec![rep])
+        };
+        let now = current_year();
+        let fused = vec![
+            make("no doi no abs 2000", None, None, Some(2000)),
+            make("doi and abs", Some("10.1/x"), Some("hello deep"), Some(now)),
+        ];
+        let hits = rule_rerank(&fused, &["deep".into()]);
+        // The doi+abstract+recent hit should rank first.
+        assert!(hits[0].doi.is_some(), "doi+abstract+recent should win: {:?}", hits.iter().map(|h| (h.doi.is_some(), h.abstract_text.is_some(), h.year)).collect::<Vec<_>>());
+        assert!(hits[0].reasons.iter().any(|r| r.starts_with("+doi")));
+        assert!(hits[0].reasons.iter().any(|r| r.starts_with("+abstract")));
+    }
+}

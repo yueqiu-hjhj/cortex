@@ -4748,6 +4748,38 @@ pub async fn web_search(
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
 
+/// Run the literature retrieval pipeline (query rewrite + multi-source +
+/// RRF fusion + rule rerank). See crate::literature for the algorithm.
+#[tauri::command]
+pub async fn literature_search(
+    app: AppHandle,
+    query: String,
+    subject_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<crate::literature::LiteratureResult> {
+    let query = query;
+    let subject_id = subject_id;
+    let limit = limit.unwrap_or(30);
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::literature::LiteratureResult> {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other(
+                "Offline mode is on — literature search is disabled. Turn it off in Settings → Data & privacy.".into(),
+            ));
+        }
+        let llm_opt = {
+            let s = repo::get_setting(&c, "model_chat").ok().flatten()
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string());
+            let k = read_keys(&c).unwrap_or_default();
+            llm::from_spec_or_any(&s, &k)
+        };
+        crate::literature::literature_search(&c, llm_opt.as_deref(), &query, subject_id.as_deref(), limit)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
 /// Configured SearXNG base URL (resolved through the homelab fallback chain:
 /// local → Tailscale → public), or None if unset.
 fn searxng_base(c: &Connection) -> Result<Option<String>> {

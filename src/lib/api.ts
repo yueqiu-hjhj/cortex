@@ -589,6 +589,43 @@ export interface WebResult {
 export const webSearch = (query: string, categories?: string) =>
   invoke<WebResult[]>("web_search", { query, categories });
 
+// ---- literature search (multi-source + RRF + rule rerank) ----
+export interface LiteratureHit {
+  title: string;
+  authors: string[];
+  year?: number | null;
+  venue?: string | null;
+  doi?: string | null;
+  url?: string | null;
+  abstract_text?: string | null;
+  citation_count?: number | null;
+  source: string;
+  sources: string[];
+  rrf_score: number;
+  final_score: number;
+  reasons: string[];
+}
+
+export interface LiteratureResult {
+  query: string;
+  rewritten: string[];
+  hits: LiteratureHit[];
+  sources_attempted: string[];
+  sources_succeeded: string[];
+  took_ms: number;
+}
+
+export const literatureSearch = (
+  query: string,
+  subjectId?: string | null,
+  limit?: number,
+) =>
+  invoke<LiteratureResult>("literature_search", {
+    query,
+    subjectId: subjectId ?? null,
+    limit: limit ?? null,
+  });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
