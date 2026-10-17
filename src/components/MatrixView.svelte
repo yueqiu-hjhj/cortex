@@ -19,11 +19,11 @@
   <div class="matrix-page">
     {#if onExit}
       <div class="matrix-toolbar">
-        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="Back to materials">
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="返回学习材料">
           <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={14} /></span>
         </button>
-        <span class="matrix-title">{title ?? "Comparison matrix"}</span>
-        <span class="matrix-dim">{rows.length} rows × {columns.length} columns</span>
+        <span class="matrix-title">{title ?? "对比矩阵"}</span>
+        <span class="matrix-dim">{rows.length} 行 × {columns.length} 列</span>
       </div>
     {/if}
 
@@ -54,8 +54,8 @@
       </div>
     {:else}
       <div class="matrix-empty">
-        <p>Empty matrix.</p>
-        <p class="matrix-dim">Regenerate this material to populate it.</p>
+        <p>这个矩阵是空的。</p>
+        <p class="matrix-dim">重新生成这份材料即可填充。</p>
       </div>
     {/if}
   </div>

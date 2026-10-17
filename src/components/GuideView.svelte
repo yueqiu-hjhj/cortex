@@ -31,12 +31,12 @@
   <div class="guide-page">
     {#if onExit}
       <div class="guide-toolbar">
-        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="Back to materials">
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="返回学习材料">
           <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={14} /></span>
         </button>
-        <span class="guide-title">{title ?? "Study guide"}</span>
+        <span class="guide-title">{title ?? "学习指南"}</span>
         {#if selftest.length}
-          <span class="guide-dim">{selftest.length} self-test items</span>
+          <span class="guide-dim">{selftest.length} 道自测</span>
         {/if}
       </div>
     {/if}
@@ -62,7 +62,7 @@
 
         {#if pitfalls.length}
           <section class="guide-section">
-            <h2>Common pitfalls</h2>
+            <h2>常见易错点</h2>
             <ul class="guide-pitfalls">
               {#each pitfalls as pit, pi (pi)}
                 <li>{pit}</li>
@@ -73,7 +73,7 @@
 
         {#if selftest.length}
           <section class="guide-section">
-            <h2>Self-test</h2>
+            <h2>自测</h2>
             <div class="guide-selftest">
               {#each selftest as t, ti (ti)}
                 <details class="guide-quiz">
@@ -87,8 +87,8 @@
       </article>
     {:else}
       <div class="guide-empty">
-        <p>Empty study guide.</p>
-        <p class="guide-dim">Regenerate this material to populate it.</p>
+        <p>这份学习指南是空的。</p>
+        <p class="guide-dim">重新生成这份材料即可填充。</p>
       </div>
     {/if}
   </div>
