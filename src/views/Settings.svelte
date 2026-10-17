@@ -63,6 +63,27 @@
     : TABS;
 
   let tab = $state<string>("profile");
+
+  // ── 检索评测 ──
+  let evalBusy = $state(false);
+  let evalError = $state<string | null>(null);
+  let evalReports = $state<api.EvalReport[] | null>(null);
+  async function runRetrievalEval() {
+    if (evalBusy) return;
+    evalBusy = true;
+    evalError = null;
+    try {
+      evalReports = await api.retrievalEval(5);
+    } catch (e) {
+      evalError = String(e);
+    } finally {
+      evalBusy = false;
+    }
+  }
+  const evalBest = $derived(
+    evalReports?.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), evalReports[0]) ?? null,
+  );
+<string>("profile");
   // Honour a deep-link from elsewhere (e.g. the subject Overview → Moodle setup).
   $effect(() => {
     if (app.settingsTab) {
@@ -2578,6 +2599,112 @@ Notes: {about}</pre>
           <h2 class="set-title">Experimental</h2>
           <p class="set-sub">早期功能，可能粗糙或变动。开一个试试看。</p>
         </header>
+
+        <section class="set-group">
+          <div class="set-group-h">
+            <div>
+              <h3 class="set-group-t">检索评测</h3>
+              <p class="set-group-d">
+                用一份固定的合成语料跑四种检索配置，看各自能召回多少。语料临时写入一个名为「(eval) 检索评测」的科目，不会和你自己的资料混在一起。
+              </p>
+            </div>
+            <button class="btn btn--primary btn--sm" disabled={evalBusy} onclick={runRetrievalEval}>
+              {evalBusy ? "评测中…" : "运行评测"}
+            </button>
+          </div>
+
+          {#if evalError}
+            <div class="set-row-d" style="color:var(--err)">{evalError}</div>
+          {/if}
+
+          {#if evalReports}
+            <div class="set-card">
+              <table class="eval-table">
+                <thead>
+                  <tr><th>配置</th><th>Recall@5</th><th>MRR</th><th>命中</th></tr>
+                </thead>
+                <tbody>
+                  {#each evalReports as r (r.mode)}
+                    <tr class:best={evalBest?.mode === r.mode && evalBest.recall_at_k > 0}>
+                      <td class="mono">{r.mode}</td>
+                      <td class="mono">{(r.recall_at_k * 100).toFixed(0)}%</td>
+                      <td class="mono">{r.mrr.toFixed(3)}</td>
+                      <td class="mono">{r.rows.filter((x) => x.rank).length}/{r.evaluated}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+
+              {#each evalReports as r (r.mode)}
+                {@const misses = r.rows.filter((x) => !x.rank)}
+                {#if misses.length}
+                  <div class="eval-misses">
+                    <div class="set-row-t mono">{r.mode} · 未命中 {misses.length}</div>
+                    {#each misses as m (m.query)}
+                      <div class="eval-miss">
+                        <span class="mono eval-q">{m.query}</span>
+                        <span class="faint">期望 {m.expect}，实际前五：{m.got.slice(0, 5).join(" / ") || "无"}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h">
+            <div>
+              <h3 class="set-group-t">检索评测</h3>
+              <p class="set-group-d">
+                用一份固定的合成语料跑四种检索配置，看各自能召回多少。语料临时写入一个名为「(eval) 检索评测」的科目，不会和你自己的资料混在一起。
+              </p>
+            </div>
+            <button class="btn btn--primary btn--sm" disabled={evalBusy} onclick={runRetrievalEval}>
+              {evalBusy ? "评测中…" : "运行评测"}
+            </button>
+          </div>
+
+          {#if evalError}
+            <div class="set-row-d" style="color:var(--err)">{evalError}</div>
+          {/if}
+
+          {#if evalReports}
+            <div class="set-card">
+              <table class="eval-table">
+                <thead>
+                  <tr><th>配置</th><th>Recall@5</th><th>MRR</th><th>命中</th></tr>
+                </thead>
+                <tbody>
+                  {#each evalReports as r (r.mode)}
+                    <tr class:best={evalBest?.mode === r.mode && evalBest.recall_at_k > 0}>
+                      <td class="mono">{r.mode}</td>
+                      <td class="mono">{(r.recall_at_k * 100).toFixed(0)}%</td>
+                      <td class="mono">{r.mrr.toFixed(3)}</td>
+                      <td class="mono">{r.rows.filter((x) => x.rank).length}/{r.evaluated}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+
+              {#each evalReports as r (r.mode)}
+                {@const misses = r.rows.filter((x) => !x.rank)}
+                {#if misses.length}
+                  <div class="eval-misses">
+                    <div class="set-row-t mono">{r.mode} · 未命中 {misses.length}</div>
+                    {#each misses as m (m.query)}
+                      <div class="eval-miss">
+                        <span class="mono eval-q">{m.query}</span>
+                        <span class="faint">期望 {m.expect}，实际前五：{m.got.slice(0, 5).join(" / ") || "无"}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        </section>
 
         <section class="set-group">
           <div class="set-group-h svc-h">

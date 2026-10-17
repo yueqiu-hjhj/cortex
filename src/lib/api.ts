@@ -1762,3 +1762,25 @@ export interface PlanVsActual {
 
 export const planVsActual = (startDay: string, days: number) =>
   invoke<PlanVsActual>("plan_vs_actual", { startDay, days });
+
+// ---- retrieval evaluation -------------------------------------------------
+
+export interface EvalRow {
+  query: string;
+  expect: string;
+  got: string[];
+  rank: number | null;
+}
+
+export interface EvalReport {
+  mode: string;
+  k: number;
+  evaluated: number;
+  recall_at_k: number;
+  mrr: number;
+  rows: EvalRow[];
+}
+
+/** Run the synthetic-corpus retrieval evaluation for all four modes. */
+export const retrievalEval = (k?: number) =>
+  invoke<EvalReport[]>("retrieval_eval", { k: k ?? null });

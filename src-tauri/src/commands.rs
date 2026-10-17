@@ -102,6 +102,19 @@ fn effective_embed_provider(c: &Connection) -> String {
     }
 }
 
+/// Whether retrieval should be reranked after the cosine/keyword pass. On by
+/// default: cosine similarity measures topical closeness, not whether the chunk
+/// answers the query, and the reranker is offline and free. Setting
+/// `retrieval_rerank` to "0" restores the old behaviour (useful when A/B-ing the
+/// two with `retrieval_eval`).
+fn rerank_enabled(c: &Connection) -> bool {
+    repo::get_setting(c, "retrieval_rerank")
+        .ok()
+        .flatten()
+        .map(|v| v.trim() != "0" && v.trim() != "false")
+        .unwrap_or(true)
+}
+
 /// Apply the user's per-task output-token budget (settings key `budget_<task>`,
 /// e.g. budget_cheatsheet) to a freshly built model. This is what makes the
 /// Settings → Models token-budget sliders actually do something — without it,
@@ -1348,14 +1361,23 @@ pub async fn search_chunks(
     // Embed off the event-loop thread — embed() is a blocking network call, and a
     // sync command runs on the GTK thread (it would freeze the UI for the round-trip).
     let data_dir = state.data_dir.clone();
+    let embed_text = query.clone();
     let qvec = tauri::async_runtime::spawn_blocking(move || {
         let embedder = embed::from_settings(&provider, gemini_key.as_deref(), ollama_url.as_deref(), data_dir.as_deref());
-        embedder.embed(&[query]).map(|mut v| v.pop().unwrap_or_default())
+        embedder.embed(&[embed_text]).map(|mut v| v.pop().unwrap_or_default())
     })
     .await
     .map_err(|e| Error::Other(format!("embed task failed: {e}")))??;
     let c = state.db.lock().unwrap();
-    repo::search_chunks(&c, subject_id.as_deref(), &qvec, k.unwrap_or(8))
+    let want = k.unwrap_or(8);
+    let hits = repo::search_chunks(&c, subject_id.as_deref(), &qvec, want * 4)?;
+    // Over-fetch then rerank: cosine similarity is topical, not relevance, so the
+    // top-8 by similarity is not the best 8 to hand a model.
+    if rerank_enabled(&c) {
+        Ok(crate::rerank::rerank(&query, &hits, want))
+    } else {
+        Ok(hits.into_iter().take(want).collect())
+    }
 }
 
 /// Global Ctrl+K search: semantic over every subject's chunks (the existing
@@ -1402,7 +1424,7 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
 
     if let Some(qvec) = qvec {
         let c = state.db.lock().unwrap();
-        if let Ok(mut chunks) = repo::search_chunks(&c, None, &qvec, 8) {
+        if let Ok(mut chunks) = repo::search_chunks(&c, None, &qvec, 32) {
             chunks.sort_by(|a, b| b.score.total_cmp(&a.score));
             for h in chunks {
                 // Junk floor: weakly-related chunks aren't navigation targets.
@@ -1561,7 +1583,7 @@ pub async fn chat_answer(
 ) -> Result<ChatAnswer> {
     tauri::async_runtime::spawn_blocking(move || -> Result<ChatAnswer> {
     let state = app.state::<AppState>();
-    let (embed_provider, ollama_url, chat_spec, keys, preamble, searxng) = {
+    let (embed_provider, ollama_url, chat_spec, keys, preamble, searxng, rerank_on) = {
         let c = state.db.lock().unwrap();
         // DEFAULT_CHAT_MODEL is a fast non-reasoning model (see its doc comment for why
         // chat must not fall back to a reasoning model like Step 3.7).
@@ -1575,6 +1597,7 @@ pub async fn chat_answer(
             read_keys(&c)?,
             profile_preamble(&c)?,
             searxng_base(&c)?,
+            rerank_enabled(&c),
         )
     };
     // Require a real model before doing any work.
@@ -1619,7 +1642,13 @@ pub async fn chat_answer(
     if let Some(set) = &source_set {
         hits.retain(|h| set.contains(&h.source_id));
     }
-    hits.truncate(6);
+    // The final cut is the one that decides what the model reads, so it is the
+    // one worth reranking.
+    if rerank_on {
+        hits = crate::rerank::rerank(&query, &hits, 6);
+    } else {
+        hits.truncate(6);
+    }
 
     let context = hits
         .iter()
@@ -5855,4 +5884,51 @@ pub fn plan_vs_actual(
 ) -> Result<crate::planner::PlanVsActual> {
     let c = state.db.lock().unwrap();
     crate::planner::plan_vs_actual(&c, &start_day, days)
+}
+
+/// Run the retrieval evaluation over a synthetic corpus and return all four
+/// configurations (vector / rerank / hybrid / hybrid+rerank) so the UI can show
+/// whether reranking actually helps on THIS machine's configured embedder.
+///
+/// The corpus lives in a subject named `(eval) 检索评测` and is rewritten on
+/// every run, so it never mixes with real notes. `k` defaults to 5.
+#[tauri::command]
+pub async fn retrieval_eval(
+    state: State<'_, AppState>,
+    k: Option<i64>,
+) -> Result<Vec<crate::eval::EvalReport>> {
+    let (provider, gemini_key, ollama_url, data_dir) = {
+        let c = state.db.lock().unwrap();
+        (
+            effective_embed_provider(&c),
+            repo::get_setting(&c, "gemini_api_key")?,
+            crate::homelab::resolved_setting(&c, "ollama_url"),
+            state.data_dir.clone(),
+        )
+    };
+    let want = k.unwrap_or(crate::eval::DEFAULT_K as i64).clamp(1, 20) as usize;
+
+    // Embedding the corpus and the queries is the slow part (ONNX, or a network
+    // round-trip), so it runs on the blocking pool and returns owned data. What
+    // is left -- inserting rows and running cosine over ~40 chunks -- is local
+    // SQLite and fast enough to run inline, which is how every other search in
+    // this file is shaped.
+    let (seeded, queries) = tauri::async_runtime::spawn_blocking(move || {
+        let embedder = embed::from_settings(
+            &provider,
+            gemini_key.as_deref(),
+            ollama_url.as_deref(),
+            data_dir.as_deref(),
+        );
+        Ok::<_, crate::error::Error>((
+            crate::eval::embed_corpus(embedder.as_ref())?,
+            crate::eval::embed_queries(embedder.as_ref())?,
+        ))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
+
+    let c = state.db.lock().unwrap();
+    crate::eval::seed(&c, &seeded)?;
+    crate::eval::score_all(&c, want, &queries)
 }

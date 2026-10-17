@@ -1233,3 +1233,73 @@ body.reorder-active, body.reorder-active * { cursor: grabbing !important; user-s
 /* Music station favourite star: subtle until hovered or favourited. */
 .station .st-fav { opacity: 0.3; flex: none; }
 .station:hover .st-fav, .station .st-fav.on { opacity: 1; }
+
+/* ---- 检索评测（设置 · 实验功能）---- */
+.eval-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-xs);
+}
+.eval-table th,
+.eval-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.eval-table th {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+.eval-table tr.best td {
+  color: var(--accent);
+}
+.eval-misses {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.eval-miss {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.eval-q {
+  color: var(--fg-muted);
+}
+
+/* ---- 检索评测（设置 · 实验功能）---- */
+.eval-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-xs);
+}
+.eval-table th,
+.eval-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.eval-table th {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+.eval-table tr.best td {
+  color: var(--accent);
+}
+.eval-misses {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.eval-miss {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.eval-q {
+  color: var(--fg-muted);
+}

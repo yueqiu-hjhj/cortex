@@ -904,7 +904,7 @@ fn search_chunks_scan(
 
 /// Tokenize a query into significant lowercase terms: split on non-alphanumerics,
 /// drop very short tokens and a small stopword list. De-duplicated, capped.
-fn query_terms(query: &str) -> Vec<String> {
+pub fn query_terms(query: &str) -> Vec<String> {
     const STOPWORDS: &[&str] = &[
         "the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "her", "was",
         "one", "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now",

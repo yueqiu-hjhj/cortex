@@ -28,6 +28,8 @@ pub mod cross_book;
 pub mod workitems;
 pub mod planner;
 pub mod papers;
+pub mod rerank;
+pub mod eval;
 pub mod llm;
 mod models;
 mod moodle;
@@ -548,6 +550,7 @@ pub fn run() {
             commands::paper_bibtex,
             commands::paper_import_bibtex,
             commands::plan_vs_actual,
+            commands::retrieval_eval,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")
