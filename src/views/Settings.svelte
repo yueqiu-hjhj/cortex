@@ -1100,9 +1100,8 @@
           assign = { ...assign, [taskId]: { ...assign[taskId], budget } };
         }
       }
-      if (s.embed_provider) {
-        assign = { ...assign, embedding: { ...assign.embedding, provider: s.embed_provider } };
-      }
+      // Backend defaults to the on-device ONNX embedder when unset — mirror that.
+      assign = { ...assign, embedding: { ...assign.embedding, provider: s.embed_provider || "onnx" } };
 
       // Local models + web search + remote whisper
       if (s.ollama_url)                    endpoint = s.ollama_url;
