@@ -38,6 +38,34 @@
     catch (e) { error = String(e); }
     finally { searchBusy = false; }
   }
+
+  // 收藏：把一条检索命中写进 papers 表（Research 页的阅读清单）。
+  // 按 DOI 去重由后端保证，所以重复点也不会产生两条记录。
+  let savedKeys = $state<Record<string, true>>({});
+  let saveBusy = $state<string | null>(null);
+  const hitKey = (h: api.LiteratureHit) => h.doi || h.title;
+  async function saveHit(h: api.LiteratureHit) {
+    const key = hitKey(h);
+    if (savedKeys[key] || saveBusy) return;
+    saveBusy = key;
+    try {
+      await api.paperImport({
+        title: h.title,
+        authors: h.authors.length ? h.authors.join(", ") : null,
+        year: h.year ?? null,
+        venue: h.venue ?? null,
+        doi: h.doi ?? null,
+        url: h.url ?? null,
+        abstract_text: h.abstract_text ?? null,
+        subject_id: app.activeSubjectId ?? null,
+      });
+      savedKeys = { ...savedKeys, [key]: true };
+    } catch (e) {
+      error = String(e);
+    } finally {
+      saveBusy = null;
+    }
+  }
   function readHit(hit: api.LiteratureHit) {
     title = hit.title; finalUrl = hit.url ?? null; rawText = hit.abstract_text ?? "";
     input = hit.url ?? ""; repaired = false; selection = null;
@@ -165,7 +193,7 @@
 <div class="lr">
   <header class="lr-head">
     <div>
-      <div class="eyebrow">Literature reader</div>
+      <div class="eyebrow">文献阅读</div>
       <h1 class="lr-title">{title || "文献阅读"}</h1>
       {#if finalUrl}
         <a class="lr-url mono" href={finalUrl} target="_blank" rel="noreferrer">{finalUrl}</a>
@@ -206,7 +234,18 @@
           <button class="btn" onclick={() => readHit(hit)}>{hit.title}</button>
           <p class="mono">{hit.year ?? ""} · {hit.authors.slice(0, 3).join(", ")} · {hit.sources.join(", ")}</p>
           <p>{hit.abstract_text?.slice(0, 450) ?? "暂无摘要；可点击下方链接阅读原文。"}</p>
-          {#if hit.url}<a href={hit.url} target="_blank" rel="noreferrer">原文</a>{/if}
+          <div class="hit-actions">
+            {#if hit.url}<a href={hit.url} target="_blank" rel="noreferrer">原文</a>{/if}
+            <button
+              class="btn btn--sm"
+              class:btn--primary={!savedKeys[hitKey(hit)]}
+              disabled={!!savedKeys[hitKey(hit)] || saveBusy === hitKey(hit)}
+              onclick={() => void saveHit(hit)}
+              title="加入「研究」阅读清单"
+            >
+              {savedKeys[hitKey(hit)] ? "已收藏" : saveBusy === hitKey(hit) ? "收藏中…" : "收藏"}
+            </button>
+          </div>
           <details><summary>排序依据</summary>{hit.reasons.join(" · ")}</details>
         </div>
       {/each}
@@ -306,6 +345,12 @@
 </div>
 
 <style>
+  .hit-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0;
+  }
   .literature-search { padding: 12px 0; }
   .search-hit { padding: 12px; border-bottom: 1px solid var(--border); }
   .search-hit p { margin: 6px 0; }
