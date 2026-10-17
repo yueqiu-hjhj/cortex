@@ -25,7 +25,8 @@ pub mod obsidian;
 pub mod agents;
 pub mod wiki;
 pub mod cross_book;
-mod llm;
+pub mod workitems;
+pub mod llm;
 mod models;
 mod moodle;
 mod mpv;
@@ -507,6 +508,25 @@ pub fn run() {
             google::google_disconnect,
             google::google_sync,
             google::google_list_calendars,
+            // work items — the cross-subject spine (migration 0037)
+            commands::list_work_items,
+            commands::get_work_item,
+            commands::create_work_item,
+            commands::update_work_item,
+            commands::set_work_item_status,
+            commands::add_work_item_minutes,
+            commands::delete_work_item,
+            commands::link_work_item,
+            commands::unlink_work_item,
+            commands::list_work_item_links,
+            commands::work_items_for_entity,
+            commands::list_goals,
+            commands::upsert_goal,
+            commands::delete_goal,
+            commands::today_board,
+            commands::list_plan_blocks,
+            commands::upsert_plan_block,
+            commands::delete_plan_block,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

@@ -10,6 +10,7 @@ import { keybinds } from "./keybinds.svelte";
 import { isMobile } from "./platform";
 
 export type View =
+  | "today"
   | "dashboard"
   | "subject"
   | "source"
@@ -349,7 +350,7 @@ class AppStore {
   loading = $state(true);
 
   // navigation
-  view = $state<View>("subject");
+  view = $state<View>("today");
   subjectTab = $state<string>("cheatsheet"); // cheatsheet is the default page
   dashFocus = $state(-1); // -1 = nothing focused on load (no stray focus ring)
   // Current chat scope (set by ChatPanel) so the status-bar PWD reflects it.

@@ -126,6 +126,15 @@
   <div class="sb-scroll">
     <!-- Nav items -->
     <div
+      class="sb-nav-item{app.view === 'today' ? ' on' : ''}" title="Today — 今天该做什么 (Space y)"
+      onclick={() => app.setView("today")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("today")}
+    >
+      <Icon name="check" size={14} /><span class="lbl"> Today</span><span class="nav-k">␣ y</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="Dashboard (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"

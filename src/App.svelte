@@ -32,6 +32,7 @@
   import MobileShell from "./shell/MobileShell.svelte";
 
   import Dashboard from "./views/Dashboard.svelte";
+  import Today from "./views/Today.svelte";
   import SubjectView from "./views/SubjectView.svelte";
   import SourceViewer from "./views/SourceViewer.svelte";
   import AddSource from "./views/AddSource.svelte";
@@ -442,7 +443,9 @@
         </div>
       {/if}
       <div class="workspace">
-        {#if app.view === "dashboard"}
+        {#if app.view === "today"}
+          <Today />
+        {:else if app.view === "dashboard"}
           <Dashboard />
         {:else if app.view === "subject"}
           <SubjectView />

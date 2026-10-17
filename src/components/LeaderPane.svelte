@@ -6,6 +6,7 @@
   // Run handlers keyed by leader key. The key/label/detail spec lives in
   // lib/keybinds.svelte (shared with the help overlay); only the behavior is here.
   const RUN: Record<string, () => void> = {
+    y: () => app.setView("today"),
     s: () => app.goToSources(),
     h: () => app.goToCheatsheet(),
     c: () => { app.chatOpen = true; },

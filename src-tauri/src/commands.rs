@@ -10,6 +10,7 @@ use crate::llm;
 use crate::models::*;
 use crate::repo;
 use crate::vector::f32s_to_blob;
+use crate::workitems as wi;
 use rusqlite::Connection;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -84,15 +85,17 @@ pub(crate) fn guard_offline_llm(c: &Connection, spec: &str) -> Result<()> {
     Ok(())
 }
 
-/// The embedding provider to actually use. In offline mode, cloud providers
+/// The embedding provider to actually use. Defaults to the on-device ONNX
+/// embedder (zero-config: model is fetched on first use and cached in data_dir),
+/// so semantic retrieval works out of the box. In offline mode, cloud providers
 /// (gemini/openai) are downgraded to the local "stub" embedder so ingestion and
-/// retrieval keep working with zero network calls (Ollama embeddings stay local).
+/// retrieval keep working with zero network calls (Ollama and ONNX stay local).
 fn effective_embed_provider(c: &Connection) -> String {
     let p = repo::get_setting(c, "embed_provider")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "stub".into());
-    if offline_mode(c) && p != "ollama" && p != "stub" {
+        .unwrap_or_else(|| "onnx".into());
+    if offline_mode(c) && p != "ollama" && p != "stub" && p != "onnx" {
         "stub".into()
     } else {
         p
@@ -2967,6 +2970,34 @@ pub async fn generate_material(
              the material's structure and how ideas relate. No prose outside the JSON.".to_string(),
             format!("{topic_name} — mind map"),
         ),
+        "matrix" => (
+            "You build a COMPARISON MATRIX from the study material. Output ONLY JSON of this exact \
+             shape:\n\
+             {\"columns\":[string],\"rows\":[{\"label\":string,\"cells\":[string]}]}\n\
+             Rules: 3-6 \"columns\" are the comparison dimensions the material actually supports \
+             (e.g. \"Definition\", \"Key formula\", \"Strengths\", \"Weaknesses\", \"Example\"). \
+             2-6 \"rows\" are the items or concepts being compared; each \"label\" is a tight noun \
+             phrase (<= 6 words). Every row's \"cells\" array contains EXACTLY one entry per \
+             column, in the same order; each cell is a concise factual phrase (<= 20 words, plain \
+             text, NO markdown). Use \"—\" only when the material gives no information for that \
+             cell. Keep cells parallel across rows — compare like with like. If the material \
+             barely compares anything, pick the most contrasting concepts. No prose outside the \
+             JSON.".to_string(),
+            format!("{topic_name} — comparison matrix"),
+        ),
+        "guide" => (
+            "You distill the study material into a STUDY GUIDE. Output ONLY JSON of this exact \
+             shape:\n\
+             {\"overview\":string,\"sections\":[{\"heading\":string,\"points\":[string]}],\
+             \"pitfalls\":[string],\"selftest\":[{\"q\":string,\"a\":string}]}\n\
+             Rules: \"overview\" is 2-3 sentences framing the topic and why it matters. 3-6 \
+             \"sections\" with tight headings (<= 6 words); 2-5 \"points\" each — informative \
+             phrases (<= 20 words, plain text, NO markdown) covering definitions, mechanisms, \
+             formulas, and cause/effect, ordered from fundamental to advanced. 3-5 \"pitfalls\": \
+             common mistakes, confusions, or exam traps (each ONE sentence). 4-6 \"selftest\" \
+             items: a one-line question and a SHORT answer. No prose outside the JSON.".to_string(),
+            format!("{topic_name} — study guide"),
+        ),
         _ => (
             format!(
                 "You generate study flashcards from material. Output ONLY a JSON array of EXACTLY \
@@ -3014,6 +3045,16 @@ pub async fn generate_material(
         "mindmap" => format!(
             "{} branches",
             payload["branches"].as_array().map(|a| a.len()).unwrap_or(0)
+        ),
+        "matrix" => format!(
+            "{} × {} matrix",
+            payload["rows"].as_array().map(|a| a.len()).unwrap_or(0),
+            payload["columns"].as_array().map(|a| a.len()).unwrap_or(0)
+        ),
+        "guide" => format!(
+            "{} sections · {} self-test items",
+            payload["sections"].as_array().map(|a| a.len()).unwrap_or(0),
+            payload["selftest"].as_array().map(|a| a.len()).unwrap_or(0)
         ),
         _ => "generated".to_string(),
     };
@@ -5480,4 +5521,187 @@ pub fn external_provenance_for(state: State<AppState>, source_id: String) -> Res
 fn repo_or_error<T, F: FnOnce(&rusqlite::Connection) -> Result<T>>(state: &State<AppState>, f: F) -> Result<T> {
     let c = state.db.lock().unwrap();
     f(&c)
+}
+
+// ---- work items: the cross-subject spine (migration 0037) ----------------
+//
+// These are the only commands that are NOT scoped to a subject. Everything
+// else in this file assumes a subject_id; work items treat it as optional,
+// which is what lets one platform hold daily tasks, a plan, study material,
+// exam prep and a research pipeline at once.
+
+#[tauri::command]
+pub fn list_work_items(
+    state: State<AppState>,
+    query: Option<wi::ItemQuery>,
+) -> Result<Vec<wi::WorkItem>> {
+    let c = state.db.lock().unwrap();
+    wi::list_items(&c, &query.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn get_work_item(state: State<AppState>, id: String) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    wi::get_item(&c, &id)
+}
+
+#[tauri::command]
+pub fn create_work_item(state: State<AppState>, input: wi::ItemInput) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    wi::create_item(&c, &input)
+}
+
+#[tauri::command]
+pub fn update_work_item(
+    state: State<AppState>,
+    id: String,
+    input: wi::ItemInput,
+) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    wi::update_item(&c, &id, &input)
+}
+
+#[tauri::command]
+pub fn set_work_item_status(
+    state: State<AppState>,
+    id: String,
+    status: String,
+) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    wi::set_status(&c, &id, &status)
+}
+
+/// Pomodoro / manual time logging. Additive, so a cancelled session still
+/// records the minutes that actually happened.
+#[tauri::command]
+pub fn add_work_item_minutes(
+    state: State<AppState>,
+    id: String,
+    minutes: i64,
+) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    wi::add_actual_minutes(&c, &id, minutes)
+}
+
+#[tauri::command]
+pub fn delete_work_item(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    wi::delete_item(&c, &id)
+}
+
+#[tauri::command]
+pub fn link_work_item(
+    state: State<AppState>,
+    item_id: String,
+    entity_table: String,
+    entity_id: String,
+    role: Option<String>,
+) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    wi::link(
+        &c,
+        &item_id,
+        &entity_table,
+        &entity_id,
+        role.as_deref().unwrap_or("context"),
+    )
+}
+
+#[tauri::command]
+pub fn unlink_work_item(
+    state: State<AppState>,
+    item_id: String,
+    entity_table: String,
+    entity_id: String,
+) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    wi::unlink(&c, &item_id, &entity_table, &entity_id)
+}
+
+#[tauri::command]
+pub fn list_work_item_links(
+    state: State<AppState>,
+    item_id: String,
+) -> Result<Vec<wi::ItemLink>> {
+    let c = state.db.lock().unwrap();
+    wi::links(&c, &item_id)
+}
+
+/// Reverse lookup — "which tasks mention this source / paper?".
+#[tauri::command]
+pub fn work_items_for_entity(
+    state: State<AppState>,
+    entity_table: String,
+    entity_id: String,
+) -> Result<Vec<wi::WorkItem>> {
+    let c = state.db.lock().unwrap();
+    wi::items_for_entity(&c, &entity_table, &entity_id)
+}
+
+#[tauri::command]
+pub fn list_goals(state: State<AppState>) -> Result<Vec<wi::Goal>> {
+    let c = state.db.lock().unwrap();
+    wi::list_goals(&c)
+}
+
+#[tauri::command]
+pub fn upsert_goal(state: State<AppState>, input: wi::GoalInput) -> Result<wi::Goal> {
+    let c = state.db.lock().unwrap();
+    wi::upsert_goal(&c, &input)
+}
+
+#[tauri::command]
+pub fn delete_goal(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    wi::delete_goal(&c, &id)
+}
+
+/// One round-trip for the whole Today screen. `day_start_ms` / `day_end_ms` are
+/// computed by the frontend from the LOCAL date, so the backend never has to
+/// guess a timezone; `day` (YYYY-MM-DD) is the key the plan blocks are stored
+/// under.
+#[tauri::command]
+pub fn today_board(
+    state: State<AppState>,
+    day_start_ms: i64,
+    day_end_ms: i64,
+    day: String,
+) -> Result<wi::TodayBoard> {
+    let c = state.db.lock().unwrap();
+    wi::today_board(&c, day_start_ms, day_end_ms, &day)
+}
+
+#[tauri::command]
+pub fn list_plan_blocks(state: State<AppState>, day: String) -> Result<Vec<wi::PlanBlock>> {
+    let c = state.db.lock().unwrap();
+    wi::list_blocks(&c, &day)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_plan_block(
+    state: State<AppState>,
+    id: Option<String>,
+    item_id: String,
+    day: String,
+    start_min: i64,
+    end_min: i64,
+    status: Option<String>,
+) -> Result<wi::PlanBlock> {
+    let c = state.db.lock().unwrap();
+    wi::upsert_block(
+        &c,
+        id.as_deref(),
+        &item_id,
+        &day,
+        start_min,
+        end_min,
+        status.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn delete_plan_block(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    wi::delete_block(&c, &id)
 }

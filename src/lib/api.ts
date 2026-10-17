@@ -414,9 +414,46 @@ export const backupStatus = () => invoke<BackupStatus>("backup_status");
 export const backupNow = () => invoke<string>("backup_now");
 /** Reclaim disk space (WAL checkpoint + VACUUM). */
 export const optimizeDb = () => invoke<void>("optimize_db", {});
+
+// ---- agent platform (custom agents · skills · tools · runs) ----
+export interface Agent {
+  id: string; user_id: string; name: string; description: string | null;
+  system_prompt: string; skills: string[]; tools: string[];
+  model: string | null; temperature: number; max_steps: number;
+  enabled: boolean; created_at: number; updated_at: number;
+}
+export interface Skill {
+  id: string; user_id: string; name: string; description: string;
+  body: string; enabled: boolean; created_at: number; updated_at: number;
+}
+export interface Tool {
+  id: string; user_id: string; name: string; description: string;
+  kind: string; schema_json: string; enabled: boolean; built_in: boolean; created_at: number;
+}
+export interface AgentRun {
+  id: string; agent_id: string; user_id: string; status: string;
+  input: string; result: string | null; error: string | null;
+  steps: number; started_at: number; finished_at: number | null;
+}
+export interface AgentMessage {
+  id: string; run_id: string; role: string; content: string;
+  tool_name: string | null; created_at: number;
+}
+export const agentsList = () => invoke<Agent[]>("agents_list", {});
+export const agentsUpsert = (
+  id: string | null, name: string, description: string | null, system_prompt: string,
+  skills: string[], tools: string[], model: string | null, temperature: number,
+  max_steps: number, enabled: boolean
+) => invoke<Agent>("agents_upsert", { id, name, description, systemPrompt: system_prompt, skills, tools, model, temperature, maxSteps: max_steps, enabled });
+export const agentsDelete = (id: string) => invoke<void>("agents_delete", { id });
+export const agentsStartRun = (agentId: string, input: string) => invoke<AgentRun>("agents_start_run", { agentId, input });
+export const agentsListRuns = (limit: number) => invoke<AgentRun[]>("agents_list_runs", { limit });
+export const agentsListMessages = (runId: string, limit: number) => invoke<AgentMessage[]>("agents_list_messages", { runId, limit });
+export const agentsListSkills = () => invoke<Skill[]>("agents_list_skills", {});
+export const agentsListTools = () => invoke<Tool[]>("agents_list_tools", {});
 export const generateMaterial = (
   subjectId: string,
-  kind: "flashcards" | "quiz" | "audio" | "infographic" | "slideshow" | "mindmap",
+  kind: "flashcards" | "quiz" | "audio" | "infographic" | "slideshow" | "mindmap" | "matrix" | "guide",
   topicId?: string,
   title?: string,
   customPrompt?: string,
@@ -1349,3 +1386,191 @@ export const restoreUndo = (id: string) =>
   invoke<string>("restore_undo", { id });
 
 export const exportObsidian = (directory: string) => invoke<string>("export_obsidian", { directory });
+
+// ---- work items: the cross-subject spine (migration 0037) ----------------
+//
+// Unlike everything above, these are NOT scoped to a subject — `subject_id`
+// is optional, which is what lets the same table hold a daily errand, a study
+// task, an exam milestone and a paper to read.
+
+export type ItemStatus = "inbox" | "open" | "doing" | "blocked" | "done" | "dropped";
+export type ItemKind =
+  | "task" | "reading" | "writing" | "question" | "excerpt" | "milestone" | "material";
+export type ItemPriority = "low" | "med" | "high" | "urgent";
+
+export interface WorkItem {
+  id: string;
+  kind: ItemKind | string;
+  title: string;
+  body: string | null;
+  status: ItemStatus | string;
+  priority: ItemPriority | string | null;
+  due_ms: number | null;
+  start_ms: number | null;
+  estimate_min: number | null;
+  actual_min: number;
+  parent_id: string | null;
+  rrule: string | null;
+  subject_id: string | null;
+  topic_id: string | null;
+  goal_id: string | null;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+  done_at: number | null;
+  child_count: number;
+  open_child_count: number;
+  next_due_ms: number | null;
+}
+
+export interface ItemInput {
+  kind?: string;
+  title: string;
+  body?: string | null;
+  status?: string;
+  priority?: string | null;
+  due_ms?: number | null;
+  start_ms?: number | null;
+  estimate_min?: number | null;
+  parent_id?: string | null;
+  rrule?: string | null;
+  subject_id?: string | null;
+  topic_id?: string | null;
+  goal_id?: string | null;
+}
+
+export interface ItemQuery {
+  status?: string;          // "inbox" | "active" | a concrete status | "all"
+  kind?: string;
+  subject_id?: string;
+  goal_id?: string;
+  parent_id?: string;
+  due_before_ms?: number;
+  search?: string;
+  limit?: number;
+}
+
+export interface ItemLink {
+  item_id: string;
+  entity_table: string;
+  entity_id: string;
+  role: string;
+  created_at: number;
+}
+
+export interface Goal {
+  id: string;
+  title: string;
+  kind: string;
+  metric: string | null;
+  target: number | null;
+  current: number;
+  deadline_ms: number | null;
+  subject_id: string | null;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  item_count: number;
+  done_item_count: number;
+}
+
+export interface GoalInput {
+  id?: string | null;
+  title: string;
+  kind?: string;
+  metric?: string | null;
+  target?: number | null;
+  current?: number | null;
+  deadline_ms?: number | null;
+  subject_id?: string | null;
+  status?: string;
+}
+
+export interface PlanBlock {
+  id: string;
+  item_id: string;
+  day: string;
+  start_min: number;
+  end_min: number;
+  status: string;
+  origin: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TodayCounts {
+  overdue: number;
+  due_today: number;
+  inbox: number;
+  done_today: number;
+  open: number;
+  planned_minutes: number;
+  done_minutes: number;
+}
+
+export interface TodayBoard {
+  overdue: WorkItem[];
+  today: WorkItem[];
+  inbox: WorkItem[];
+  blocks: PlanBlock[];
+  counts: TodayCounts;
+}
+
+export const listWorkItems = (query?: ItemQuery) =>
+  invoke<WorkItem[]>("list_work_items", { query: query ?? null });
+export const getWorkItem = (id: string) => invoke<WorkItem>("get_work_item", { id });
+export const createWorkItem = (input: ItemInput) =>
+  invoke<WorkItem>("create_work_item", { input });
+export const updateWorkItem = (id: string, input: ItemInput) =>
+  invoke<WorkItem>("update_work_item", { id, input });
+export const setWorkItemStatus = (id: string, status: string) =>
+  invoke<WorkItem>("set_work_item_status", { id, status });
+export const addWorkItemMinutes = (id: string, minutes: number) =>
+  invoke<WorkItem>("add_work_item_minutes", { id, minutes });
+export const deleteWorkItem = (id: string) => invoke<void>("delete_work_item", { id });
+export const linkWorkItem = (
+  itemId: string,
+  entityTable: string,
+  entityId: string,
+  role?: string,
+) =>
+  invoke<void>("link_work_item", {
+    itemId,
+    entityTable,
+    entityId,
+    role: role ?? null,
+  });
+export const unlinkWorkItem = (itemId: string, entityTable: string, entityId: string) =>
+  invoke<void>("unlink_work_item", { itemId, entityTable, entityId });
+export const listWorkItemLinks = (itemId: string) =>
+  invoke<ItemLink[]>("list_work_item_links", { itemId });
+export const workItemsForEntity = (entityTable: string, entityId: string) =>
+  invoke<WorkItem[]>("work_items_for_entity", { entityTable, entityId });
+
+export const listGoals = () => invoke<Goal[]>("list_goals");
+export const upsertGoal = (input: GoalInput) => invoke<Goal>("upsert_goal", { input });
+export const deleteGoal = (id: string) => invoke<void>("delete_goal", { id });
+
+/** Local-midnight boundaries are computed by the caller (see `localDay` in Today.svelte). */
+export const todayBoard = (dayStartMs: number, dayEndMs: number, day: string) =>
+  invoke<TodayBoard>("today_board", { dayStartMs, dayEndMs, day });
+
+export const listPlanBlocks = (day: string) =>
+  invoke<PlanBlock[]>("list_plan_blocks", { day });
+export const upsertPlanBlock = (
+  itemId: string,
+  day: string,
+  startMin: number,
+  endMin: number,
+  id?: string,
+  status?: string,
+) =>
+  invoke<PlanBlock>("upsert_plan_block", {
+    id: id ?? null,
+    itemId,
+    day,
+    startMin,
+    endMin,
+    status: status ?? null,
+  });
+export const deletePlanBlock = (id: string) => invoke<void>("delete_plan_block", { id });
