@@ -5745,3 +5745,103 @@ pub fn materialize_goal(state: State<AppState>, req: crate::planner::GoalPlanReq
     let c = state.db.lock().unwrap();
     crate::planner::materialize_goal(&c, &req)
 }
+
+// ---- papers: the research reading list (migration 0038) ------------------
+
+#[tauri::command]
+pub fn paper_import(state: State<AppState>, input: crate::papers::PaperInput) -> Result<crate::papers::Paper> {
+    let c = state.db.lock().unwrap();
+    crate::papers::import_paper(&c, &input)
+}
+
+#[tauri::command]
+pub fn paper_list(
+    state: State<AppState>,
+    status: Option<String>,
+    subject_id: Option<String>,
+    search: Option<String>,
+) -> Result<Vec<crate::papers::Paper>> {
+    let c = state.db.lock().unwrap();
+    crate::papers::list_papers(&c, status.as_deref(), subject_id.as_deref(), search.as_deref())
+}
+
+#[tauri::command]
+pub fn paper_get(state: State<AppState>, id: String) -> Result<crate::papers::Paper> {
+    let c = state.db.lock().unwrap();
+    crate::papers::get_paper(&c, &id)
+}
+
+#[tauri::command]
+pub fn paper_update(
+    state: State<AppState>,
+    id: String,
+    patch: crate::papers::PaperPatch,
+) -> Result<crate::papers::Paper> {
+    let c = state.db.lock().unwrap();
+    crate::papers::update_paper(&c, &id, &patch)
+}
+
+#[tauri::command]
+pub fn paper_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::papers::delete_paper(&c, &id)
+}
+
+/// Turn a paper into a schedulable `reading` task and link the two.
+#[tauri::command]
+pub fn paper_start_reading(
+    state: State<AppState>,
+    paper_id: String,
+    due_ms: Option<i64>,
+) -> Result<wi::WorkItem> {
+    let c = state.db.lock().unwrap();
+    crate::papers::start_reading(&c, &paper_id, due_ms)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn excerpt_add(
+    state: State<AppState>,
+    paper_id: Option<String>,
+    source_id: Option<String>,
+    quote: String,
+    page: Option<i64>,
+    note: Option<String>,
+    tags: Option<String>,
+) -> Result<crate::papers::Excerpt> {
+    let c = state.db.lock().unwrap();
+    crate::papers::add_excerpt(
+        &c,
+        paper_id.as_deref(),
+        source_id.as_deref(),
+        &quote,
+        page,
+        note.as_deref(),
+        tags.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn excerpt_list(state: State<AppState>, paper_id: Option<String>) -> Result<Vec<crate::papers::Excerpt>> {
+    let c = state.db.lock().unwrap();
+    crate::papers::list_excerpts(&c, paper_id.as_deref())
+}
+
+#[tauri::command]
+pub fn excerpt_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::papers::delete_excerpt(&c, &id)
+}
+
+/// BibTeX export for the whole list, or just `ids` when given.
+#[tauri::command]
+pub fn paper_bibtex(state: State<AppState>, ids: Option<Vec<String>>) -> Result<String> {
+    let c = state.db.lock().unwrap();
+    crate::papers::export_bibtex(&c, &ids.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn paper_import_bibtex(state: State<AppState>, text: String) -> Result<crate::papers::ImportOutcome> {
+    let c = state.db.lock().unwrap();
+    crate::papers::import_bibtex(&c, &text)
+}

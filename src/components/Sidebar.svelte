@@ -144,6 +144,15 @@
       <Icon name="calendar" size={14} /><span class="lbl"> Plan</span><span class="nav-k">␣ w</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'research' ? ' on' : ''}" title="Research — 论文阅读与摘录 (Space u)"
+      onclick={() => app.setView("research")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("research")}
+    >
+      <Icon name="reader" size={14} /><span class="lbl"> Research</span><span class="nav-k">␣ u</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="Dashboard (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"

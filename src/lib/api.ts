@@ -1642,3 +1642,101 @@ export interface GoalPlanOutcome {
 
 export const materializeGoal = (req: GoalPlanRequest) =>
   invoke<GoalPlanOutcome>("materialize_goal", { req });
+
+// ---- papers: the research reading list (migration 0038) ------------------
+
+export interface Paper {
+  id: string;
+  title: string;
+  authors: string | null;
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  url: string | null;
+  abstract_text: string | null;
+  status: string; // to_read | reading | read | cited | dropped
+  rating: number | null;
+  notes: string | null;
+  subject_id: string | null;
+  source_id: string | null;
+  added_at: number;
+  updated_at: number;
+  excerpt_count: number;
+  open_task_count: number;
+}
+
+export interface Excerpt {
+  id: string;
+  paper_id: string | null;
+  source_id: string | null;
+  quote: string;
+  page: number | null;
+  note: string | null;
+  tags: string | null;
+  created_at: number;
+  updated_at: number;
+  paper_title: string | null;
+}
+
+export interface PaperInput {
+  title: string;
+  authors?: string | null;
+  year?: number | null;
+  venue?: string | null;
+  doi?: string | null;
+  url?: string | null;
+  abstract_text?: string | null;
+  subject_id?: string | null;
+  source_id?: string | null;
+}
+
+export interface PaperPatch {
+  status?: string | null;
+  rating?: number | null;
+  notes?: string | null;
+  subject_id?: string | null;
+  source_id?: string | null;
+}
+
+export interface BibImportOutcome {
+  imported: number;
+  skipped: number;
+  titles: string[];
+}
+
+export const paperImport = (input: PaperInput) => invoke<Paper>("paper_import", { input });
+export const paperList = (status?: string, subjectId?: string, search?: string) =>
+  invoke<Paper[]>("paper_list", {
+    status: status ?? null,
+    subjectId: subjectId ?? null,
+    search: search ?? null,
+  });
+export const paperGet = (id: string) => invoke<Paper>("paper_get", { id });
+export const paperUpdate = (id: string, patch: PaperPatch) =>
+  invoke<Paper>("paper_update", { id, patch });
+export const paperDelete = (id: string) => invoke<void>("paper_delete", { id });
+export const paperStartReading = (paperId: string, dueMs?: number) =>
+  invoke<WorkItem>("paper_start_reading", { paperId, dueMs: dueMs ?? null });
+export const excerptAdd = (
+  quote: string,
+  paperId?: string,
+  sourceId?: string,
+  page?: number,
+  note?: string,
+  tags?: string,
+) =>
+  invoke<Excerpt>("excerpt_add", {
+    paperId: paperId ?? null,
+    sourceId: sourceId ?? null,
+    quote,
+    page: page ?? null,
+    note: note ?? null,
+    tags: tags ?? null,
+  });
+export const excerptList = (paperId?: string) =>
+  invoke<Excerpt[]>("excerpt_list", { paperId: paperId ?? null });
+export const excerptDelete = (id: string) => invoke<void>("excerpt_delete", { id });
+export const paperBibtex = (ids?: string[]) =>
+  invoke<string>("paper_bibtex", { ids: ids ?? null });
+export const paperImportBibtex = (text: string) =>
+  invoke<BibImportOutcome>("paper_import_bibtex", { text });

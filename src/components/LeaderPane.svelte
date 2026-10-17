@@ -8,6 +8,7 @@
   const RUN: Record<string, () => void> = {
     y: () => app.setView("today"),
     w: () => app.setView("plan"),
+    u: () => app.setView("research"),
     s: () => app.goToSources(),
     h: () => app.goToCheatsheet(),
     c: () => { app.chatOpen = true; },

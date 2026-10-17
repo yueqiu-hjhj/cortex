@@ -27,6 +27,7 @@ pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
+pub mod papers;
 pub mod llm;
 mod models;
 mod moodle;
@@ -534,6 +535,18 @@ pub fn run() {
             commands::complete_plan_block,
             commands::plan_board,
             commands::materialize_goal,
+            // papers (Phase 3)
+            commands::paper_import,
+            commands::paper_list,
+            commands::paper_get,
+            commands::paper_update,
+            commands::paper_delete,
+            commands::paper_start_reading,
+            commands::excerpt_add,
+            commands::excerpt_list,
+            commands::excerpt_delete,
+            commands::paper_bibtex,
+            commands::paper_import_bibtex,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")
