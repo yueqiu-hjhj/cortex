@@ -4,9 +4,17 @@
 # Differences from `npm run tauri build`:
 #   - Skips code signing (TAURI_SIGNING_PRIVATE_KEY is unused).
 #   - Bundles only the NSIS installer (no MSI/WiX/.deb/.AppImage noise).
-#   - Skips the tauri-cli wrapper; calls cargo build --release directly.
+#   - Skips the tauri-cli wrapper; calls cargo build --release directly
+#     (with --features custom-protocol, see below).
 #   - Doesn't write to target/release/bundle for the unsigned case unless
 #     NSIS is requested via -Bundle switch.
+#
+# IMPORTANT: the build passes `--features custom-protocol`. Tauri's own build
+# script computes `dev = !custom-protocol`, and with `dev` on the webview is
+# pointed at `build.devUrl` (http://localhost:1420) instead of the embedded
+# `frontendDist` assets — i.e. a plain `cargo build --release` produces an exe
+# that opens straight into "localhost refused to connect". The flag is what
+# turns it into a real standalone app.
 #
 # Usage:
 #   pwsh tools\build-personal.ps1                                # exe only (fast, ~10 min)
@@ -68,13 +76,15 @@ try {
     Pop-Location
 }
 
-# 2. Rust release build. Tauri 2 with our feature set is ~10 min from cold,
-# ~30 s incremental after the first compile; runs in the background terminal
-# output stream so long compile times aren't silent.
-Write-Host '[2/3] cargo build --release (rust)…' -ForegroundColor Yellow
+# 2. Rust release build. `--features custom-protocol` is mandatory here (see
+# the header note) — without it the linked frontend assets are skipped. Tauri
+# 2 with our feature set is ~10 min from cold, ~30 s incremental after the
+# first compile; runs in the background terminal output stream so long
+# compile times aren't silent.
+Write-Host '[2/3] cargo build --release --features custom-protocol (rust)…' -ForegroundColor Yellow
 Push-Location $SrcTauri
 try {
-    cargo build --release
+    cargo build --release --features custom-protocol
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 } finally {
     Pop-Location

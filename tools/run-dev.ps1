@@ -13,10 +13,14 @@
 #
 # This script does the equivalent work without vite at all:
 #   1. Build the frontend ONCE with `npm run build` (static files in dist/).
-#   2. `cargo run` from src-tauri. The Tauri config's `frontendDist = "../dist"`
-#      points the bundled WebView at those static files; no HTTP server, no
-#      HMR, no port forwarding. Hot reload of frontend requires a re-run
-#      of this script (the same as `cargo run` for any non-webview crate).
+#   2. `cargo run --features custom-protocol` from src-tauri. That feature is
+#      what makes Tauri embed `frontendDist = "../dist"` into the binary and
+#      serve it over its own custom protocol; no HTTP server, no HMR, no port
+#      forwarding. (With the feature off, Tauri instead points the webview at
+#      `build.devUrl` = http://localhost:1420 and you get a "refused to
+#      connect" page — the whole reason this script exists.) Hot reload of
+#      frontend requires a re-run of this script (the same as `cargo run` for
+#      any non-webview crate).
 #   3. Build mode is dev (fast) by default. Pass -Release for `cargo run
 #      --release`.
 #
@@ -56,11 +60,12 @@ try {
     Pop-Location
 }
 
-# 2. Cargo run.
+# 2. Cargo run. `--features custom-protocol` is what switches the webview from
+#    the (absent) dev server to the dist/ assets baked in at compile time.
 Write-Host '[2/2] cargo run…' -ForegroundColor Yellow
 Push-Location $SrcTauri
 try {
-    $cargoArgs = @('run')
+    $cargoArgs = @('run', '--features', 'custom-protocol')
     if ($Release) { $cargoArgs += '--release' }
     cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'cargo run failed' }

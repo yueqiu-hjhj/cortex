@@ -5336,7 +5336,7 @@ pub fn startup_self_check(state: State<AppState>) -> Result<crate::selfcheck::Re
     // known_migrations: count the *.sql files in src-tauri/migrations; we
     // hardcode the count for now (the test suite asserts 31) but the right
     // long-term answer is to scan the migrations dir on the filesystem.
-    crate::selfcheck::run(&conn, dir, 31)
+    crate::selfcheck::run(&conn, dir, 35)
 }
 
 /// Export source text and notes with provenance and wiki links into a fresh vault subfolder.
@@ -5347,4 +5347,137 @@ pub async fn export_obsidian(app: AppHandle, directory: String) -> Result<String
         let pages = { let c = state.db.lock().unwrap(); crate::obsidian::pages(&c)? };
         crate::obsidian::write_pages(std::path::Path::new(&directory), &pages)
     }).await.map_err(|e| Error::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub fn agents_list(state: State<AppState>) -> Result<Vec<crate::agents::Agent>> {
+    repo_or_error(&state, |c| crate::agents::list_agents(c, crate::agents::DEFAULT_USER))
+}
+#[tauri::command]
+pub fn agents_upsert(state: State<AppState>, id: Option<String>, name: String, description: Option<String>, system_prompt: String, skills: Vec<String>, tools: Vec<String>, model: Option<String>, temperature: Option<f64>, max_steps: Option<i64>, enabled: Option<bool>) -> Result<crate::agents::Agent> {
+    let c = state.db.lock().unwrap();
+    crate::agents::upsert_agent(&c, crate::agents::DEFAULT_USER, id.as_deref(), &name, description.as_deref(), &system_prompt, &skills, &tools, model.as_deref(), temperature.unwrap_or(0.3), max_steps.unwrap_or(8), enabled.unwrap_or(true))
+}
+#[tauri::command]
+pub fn agents_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::agents::delete_agent(&c, crate::agents::DEFAULT_USER, &id)
+}
+#[tauri::command]
+pub fn agents_start_run(state: State<AppState>, agent_id: String, input: String) -> Result<crate::agents::AgentRun> {
+    let c = state.db.lock().unwrap();
+    crate::agents::start_run(&c, crate::agents::DEFAULT_USER, &agent_id, &input)
+}
+#[tauri::command]
+pub fn agents_list_runs(state: State<AppState>, limit: Option<i64>) -> Result<Vec<crate::agents::AgentRun>> {
+    let c = state.db.lock().unwrap();
+    crate::agents::list_runs(&c, crate::agents::DEFAULT_USER, limit.unwrap_or(50))
+}
+#[tauri::command]
+pub fn agents_list_messages(state: State<AppState>, run_id: String, limit: Option<i64>) -> Result<Vec<crate::agents::AgentMessage>> {
+    let c = state.db.lock().unwrap();
+    crate::agents::list_messages(&c, crate::agents::DEFAULT_USER, &run_id, limit.unwrap_or(200))
+}
+#[tauri::command]
+pub fn agents_list_skills(state: State<AppState>) -> Result<Vec<crate::agents::Skill>> {
+    let c = state.db.lock().unwrap();
+    crate::agents::list_skills(&c, crate::agents::DEFAULT_USER)
+}
+#[tauri::command]
+pub fn agents_upsert_skill(state: State<AppState>, id: Option<String>, name: String, description: String, body: String, enabled: Option<bool>) -> Result<crate::agents::Skill> {
+    let c = state.db.lock().unwrap();
+    crate::agents::upsert_skill(&c, crate::agents::DEFAULT_USER, id.as_deref(), &name, &description, &body, enabled.unwrap_or(true))
+}
+#[tauri::command]
+pub fn agents_list_tools(state: State<AppState>) -> Result<Vec<crate::agents::Tool>> {
+    let c = state.db.lock().unwrap();
+    crate::agents::list_tools(&c, crate::agents::DEFAULT_USER)
+}
+#[tauri::command]
+pub fn agents_set_tool_enabled(state: State<AppState>, name: String, enabled: bool) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::agents::set_tool_enabled(&c, crate::agents::DEFAULT_USER, &name, enabled)
+}
+
+#[tauri::command]
+pub fn wiki_list(state: State<AppState>, limit: Option<i64>) -> Result<Vec<crate::wiki::WikiPage>> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::list_pages(&c, crate::wiki::DEFAULT_USER, limit.unwrap_or(50))
+}
+#[tauri::command]
+pub fn wiki_get(state: State<AppState>, id: String) -> Result<crate::wiki::WikiPage> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::get_page(&c, crate::wiki::DEFAULT_USER, &id)
+}
+#[tauri::command]
+pub fn wiki_get_by_slug(state: State<AppState>, slug: String) -> Result<crate::wiki::WikiPage> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::get_page_by_slug(&c, crate::wiki::DEFAULT_USER, &slug)
+}
+#[tauri::command]
+pub fn wiki_upsert(state: State<AppState>, id: Option<String>, slug: Option<String>, title: String, body: String, source: Option<String>) -> Result<crate::wiki::WikiPage> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::upsert_page(&c, crate::wiki::DEFAULT_USER, id.as_deref(), slug.as_deref(), &title, &body, source.as_deref())
+}
+#[tauri::command]
+pub fn wiki_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::delete_page(&c, crate::wiki::DEFAULT_USER, &id)
+}
+#[tauri::command]
+pub fn wiki_reverse_links(state: State<AppState>, slug: String) -> Result<Vec<crate::wiki::ReverseLink>> {
+    let c = state.db.lock().unwrap();
+    crate::wiki::reverse_links(&c, crate::wiki::DEFAULT_USER, &slug)
+}
+#[tauri::command]
+pub fn wiki_lint(body: String) -> Vec<crate::wiki::WikiLint> {
+    crate::wiki::lint(&body)
+}
+
+#[tauri::command]
+pub fn cross_book_detect() -> Result<Vec<crate::cross_book::CrossConcept>> {
+    // Read-only; takes a snapshot of the conn from the caller's perspective. The
+    // helper does not lock itself so this command can run from any thread.
+    Err(Error::Other("cross_book_detect must be invoked via cross_book_for_subject".into()))
+}
+#[tauri::command]
+pub fn cross_book_for_subject(state: State<AppState>, subject_id: String) -> Result<Vec<crate::cross_book::CrossConcept>> {
+    let c = state.db.lock().unwrap();
+    crate::cross_book::bridges_for_subject(&c, &subject_id)
+}
+#[tauri::command]
+pub fn cross_book_apply(state: State<AppState>) -> Result<usize> {
+    let c = state.db.lock().unwrap();
+    crate::cross_book::apply_cross_links(&c)
+}
+
+#[tauri::command]
+pub fn search_notebook_isolated(state: State<AppState>, subject_id: String, query: String, limit: Option<i64>) -> Result<Vec<crate::models::SearchHit>> {
+    // Per-notebook isolation: a search hit MUST come from a chunk whose
+    // source belongs to the given subject. The repo helper already joins
+    // sources/chunks; we re-assert the constraint here so a corrupted row can
+    // never leak across subjects.
+    let c = state.db.lock().unwrap();
+    let chunks = crate::repo::keyword_search_chunks(&c, Some(&subject_id), None, &query, limit.unwrap_or(15) as usize)?;
+    let subjects = std::collections::HashSet::from([subject_id.clone()]);
+    Ok(chunks.into_iter().map(|h| crate::models::SearchHit {
+        kind: "chunk".into(), id: h.id, subject_id: Some(subject_id.clone()),
+        title: h.source_name, snippet: h.text, score: h.score,
+    }).collect())
+}
+
+#[tauri::command]
+pub fn external_provenance_record(state: State<AppState>, source_id: String, host: String, doc_id: String, url: Option<String>, snippet: Option<String>) -> Result<String> {
+    let c = state.db.lock().unwrap();
+    crate::repo::record_provenance(&c, &source_id, &host, &doc_id, url.as_deref(), snippet.as_deref())
+}
+#[tauri::command]
+pub fn external_provenance_for(state: State<AppState>, source_id: String) -> Result<Vec<crate::repo::ProvenanceRow>> {
+    let c = state.db.lock().unwrap();
+    crate::repo::list_provenance(&c, &source_id)
+}
+
+fn repo_or_error<T, F: FnOnce(&rusqlite::Connection) -> Result<T>>(state: &State<AppState>, f: F) -> Result<T> {
+    let c = state.db.lock().unwrap();
+    f(&c)
 }

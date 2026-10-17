@@ -326,6 +326,43 @@ pub fn reorder_topics(conn: &Connection, subject_id: &str, ids: &[String]) -> Re
     Ok(())
 }
 
+pub fn list_topics(conn: &Connection, subject_id: &str) -> Result<Vec<Topic>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, subject_id, name, glyph, position, tags FROM topics
+         WHERE subject_id=?1 ORDER BY position, created_at",
+    )?;
+    let rows = stmt.query_map(params![subject_id], map_topic)?;
+    let mut topics: Vec<Topic> = rows.collect::<rusqlite::Result<_>>()?;
+    // Pull only the columns we need; map_source has a fixed column shape that
+    // doesn't match when `tags` is omitted. We map into a tiny struct locally.
+    let mut stmt = conn.prepare(
+        "SELECT id, subject_id, topic_id, name, kind, status, meta, origin, error, content, stored_path, created_at, updated_at, diarize
+           FROM sources WHERE subject_id=?1 AND topic_id IS NOT NULL ORDER BY created_at DESC",
+    )?;
+    let tag_ids_by_source = tags_by_source(conn, Some(subject_id))?;
+    let mut sources_by_topic: HashMap<String, Vec<Source>> = HashMap::new();
+    let rows = stmt.query_map(params![subject_id], |r| {
+        let mut s = Source {
+            id: r.get(0)?, subject_id: r.get(1)?, topic_id: r.get(2)?,
+            name: r.get(3)?, kind: r.get(4)?, status: r.get(5)?,
+            meta: r.get(6)?, origin: r.get(7)?, error: r.get(8)?,
+            content: r.get(9)?, stored_path: r.get(10)?,
+            tags: Vec::new(),
+            diarize: r.get::<_, Option<i64>>(13)?.map(|v| v != 0),
+            created_at: r.get(11)?, updated_at: r.get(12)?,
+        };
+        if let Some(sid) = s.topic_id.clone() { sources_by_topic.entry(sid).or_default().push(s.clone()); }
+        Ok(s)
+    })?;
+    for _ in rows {}
+    for t in &mut topics {
+        if let Some(mut sources) = sources_by_topic.remove(&t.id) {
+            for s in &mut sources { s.tags = tag_ids_by_source.get(&s.id).cloned().unwrap_or_default(); }
+            t.sources = sources;
+        }
+    }
+    Ok(topics)
+}
 fn map_topic(r: &rusqlite::Row) -> rusqlite::Result<Topic> {
     Ok(Topic {
         id: r.get(0)?,
@@ -338,27 +375,30 @@ fn map_topic(r: &rusqlite::Row) -> rusqlite::Result<Topic> {
     })
 }
 
-pub fn list_topics(conn: &Connection, subject_id: &str) -> Result<Vec<Topic>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, subject_id, name, glyph, position, tags FROM topics
-         WHERE subject_id=?1 ORDER BY position, created_at",
-    )?;
-    let rows = stmt.query_map(params![subject_id], map_topic)?;
-    let mut topics: Vec<Topic> = rows.collect::<rusqlite::Result<_>>()?;
 
-    // All topic-filed sources of this subject in one query instead of one per topic.
-    let sql = format!(
-        "SELECT {SOURCE_LIST_COLS} FROM sources \
-         WHERE subject_id=?1 AND topic_id IS NOT NULL ORDER BY created_at"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![subject_id], map_source)?;
-    let mut by_topic = group_sources_by_topic(rows, tags_by_source(conn, Some(subject_id))?)?;
-    for t in &mut topics {
-        t.sources = by_topic.remove(&t.id).unwrap_or_default();
-    }
-    Ok(topics)
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProvenanceRow { pub id: String, pub source_id: String, pub host: String, pub doc_id: String, pub url: Option<String>, pub snippet: Option<String>, pub retrieved_at: i64, }
+
+pub fn record_provenance(conn: &Connection, source_id: &str, host: &str, doc_id: &str, url: Option<&str>, snippet: Option<&str>) -> Result<String> {
+    if host.trim().is_empty() || doc_id.trim().is_empty() { return Err(Error::Other("provenance host and doc_id are required".into())); }
+    let id = new_id();
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO source_provenance (id, source_id, host, doc_id, url, snippet, retrieved_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(source_id, host, doc_id) DO UPDATE SET url=excluded.url, snippet=excluded.snippet, retrieved_at=excluded.retrieved_at",
+        params![id, source_id, host, doc_id, url, snippet, now],
+    )?;
+    let stored: String = conn.query_row("SELECT id FROM source_provenance WHERE source_id=?1 AND host=?2 AND doc_id=?3", params![source_id, host, doc_id], |r| r.get(0))?;
+    Ok(stored)
 }
+
+pub fn list_provenance(conn: &Connection, source_id: &str) -> Result<Vec<ProvenanceRow>> {
+    let mut stmt = conn.prepare("SELECT id, source_id, host, doc_id, url, snippet, retrieved_at FROM source_provenance WHERE source_id=?1 ORDER BY retrieved_at DESC")?;
+    let rows = stmt.query_map([source_id], |r| Ok(ProvenanceRow { id: r.get(0)?, source_id: r.get(1)?, host: r.get(2)?, doc_id: r.get(3)?, url: r.get(4)?, snippet: r.get(5)?, retrieved_at: r.get(6)? }))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+
 
 /// Every subject's topics (with their sources + tags) in 3 fixed queries,
 /// grouped by subject id. Backs the sidebar tree via `list_subjects`.
