@@ -25,6 +25,7 @@ export type View =
   | "review"
   | "sprint"
   | "literature"
+  | "vocabulary"
   | "glossary"
   | "mindmap"
   | "exam"

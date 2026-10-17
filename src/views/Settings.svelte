@@ -172,6 +172,9 @@
   // ---- long-term memory state ----
   let memories     = $state<Memory[]>([]);
   let newMemory    = $state("");
+  let memoryLayer = $state("declarative");
+  let memoryEvidence = $state("");
+  let memoryConfidence = $state(0.7);
   let memoryBusy   = $state(false);
 
   async function loadMemory() {
@@ -182,7 +185,7 @@
     if (!text || memoryBusy) return;
     memoryBusy = true;
     try {
-      await api.addMemory(text);
+      await api.addMemory(text, memoryLayer, memoryLayer === "declarative" ? 1 : memoryConfidence, memoryEvidence.trim() || null);
       newMemory = "";
       await loadMemory();
     } catch {
@@ -192,6 +195,7 @@
     }
   }
   async function removeMemory(id: string) {
+    if (!await app.confirm({ title: "删除这条记忆？", danger: true })) return;
     try {
       await api.deleteMemory(id);
       await loadMemory();
@@ -1024,6 +1028,16 @@
     }
   }
 
+  async function exportObsidian() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const directory = await open({ directory: true, multiple: false, title: "选择 Obsidian 仓库或导出目录" });
+      if (typeof directory !== "string") return;
+      const dest = await api.exportObsidian(directory);
+      app.pushToast({ kind: "success", title: "Obsidian 导出完成", body: dest });
+    } catch (e) { app.pushToast({ kind: "error", title: "导出失败", body: String(e) }); }
+  }
+
   async function exportData() {
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -1470,8 +1484,8 @@
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Memory</h3>
-            <p class="set-group-d">Long-term facts the AI is given in every chat — like remembering your exam date, the textbook you use, or how you like answers framed.</p>
+            <h3 class="set-group-t">Memory · 分层记忆</h3>
+            <p class="set-group-d">声明式记忆直接用于回答；推断记忆保存证据与置信度，需确认后才用于回答。</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
@@ -1483,6 +1497,11 @@
                     placeholder="e.g. My final exam is on June 20th"
                     onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addMemoryFact(); } }}
                   />
+                  <select class="input" aria-label="记忆层级" bind:value={memoryLayer}><option value="declarative">用户声明</option><option value="inferred">待确认推断</option></select>
+                  {#if memoryLayer === "inferred"}
+                    <input class="input" aria-label="推断证据" placeholder="依据、来源或对话摘录（必填）" bind:value={memoryEvidence} />
+                    <input class="input" aria-label="置信度" type="number" min="0" max="1" step="0.05" bind:value={memoryConfidence} />
+                  {/if}
                   <button class="btn btn--primary" onclick={addMemoryFact} disabled={!newMemory.trim() || memoryBusy}>
                     <Icon name="check" size={13} /> Remember
                   </button>
@@ -1496,8 +1515,9 @@
             {:else}
               {#each memories as m (m.id)}
                 <div class="set-row">
-                  <div class="set-row-l"><div class="set-row-t">{m.content}</div></div>
+                  <div class="set-row-l"><div class="set-row-t">{m.content}</div><div class="set-row-d">{m.layer === "declarative" ? "用户声明" : `推断 · ${Math.round(m.confidence * 100)}% · ${m.confirmed ? "已确认" : "待确认，不用于回答"}`}{#if m.source} · {m.source}{/if}</div></div>
                   <div class="set-row-r">
+                    {#if !m.confirmed}<button class="btn" onclick={async () => { try { await api.confirmMemory(m.id); await loadMemory(); } catch (e) { app.pushToast({ kind: "error", title: String(e) }); } }}>确认推断</button>{/if}
                     <button class="btn btn--icon btn--sm btn--ghost" onclick={() => removeMemory(m.id)} title="Forget this">
                       <Icon name="x" size={13} />
                     </button>
@@ -2804,6 +2824,7 @@ Notes: {about}</pre>
                 <button class="btn" onclick={exportData}>
                   <Icon name="external" size={12} /> Export
                 </button>
+                <button class="btn" onclick={exportObsidian}>Obsidian Markdown</button>
               </div>
             </div>
             <div class="set-row">

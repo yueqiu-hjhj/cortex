@@ -20,6 +20,8 @@ mod homelab;
 mod ingest;
 mod livesync;
 mod literature;
+mod vocab;
+mod obsidian;
 mod llm;
 mod models;
 mod moodle;
@@ -354,6 +356,7 @@ pub fn run() {
             commands::restore_cheatsheet_version,
             commands::export_pdf,
             commands::export_database,
+            commands::export_obsidian,
             commands::export_anki,
             commands::import_anki,
             backup::backup_status,
@@ -407,7 +410,13 @@ pub fn run() {
             commands::literature_explain,
             commands::literature_repair,
             commands::literature_save_source,
+            commands::vocab_list,
+            commands::vocab_add,
+            commands::vocab_update,
+            commands::vocab_delete,
+            commands::vocab_extract,
             commands::add_memory,
+            commands::confirm_memory,
             commands::list_memory,
             commands::delete_memory,
             // custom music stations + YouTube-audio (mpv sidecar)

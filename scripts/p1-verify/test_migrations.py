@@ -158,7 +158,7 @@ def legacy_test() -> None:
         try:
             files = list_migrations()
             # Apply 1..29 only (legacy), insert some realistic data, then apply 0030 + 0031.
-            legacy = [f for f in files if f not in ("0030_knowledge_mcp_undo.sql", "0031_secrets.sql")]
+            legacy = files[:29]
             apply_migrations(conn, legacy)
             assert user_version(conn) == 29
             pre_subjects = 3
@@ -186,12 +186,12 @@ def legacy_test() -> None:
             top_count_before = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
             src_count_before = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
             # Apply 0030 and 0031, mirroring the Rust runner's bump.
-            for fname, ver in (("0030_knowledge_mcp_undo.sql", 30), ("0031_secrets.sql", 31)):
+            for ver, fname in enumerate(files[29:], start=30):
                 with open(os.path.join(MIGRATIONS_DIR, fname), encoding="utf-8") as fp:
                     conn.executescript(fp.read())
                 conn.execute(f"PRAGMA user_version = {ver}")
             conn.commit()
-            assert user_version(conn) == 31
+            assert user_version(conn) == len(files)
             sub_count_after = conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0]
             top_count_after = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
             src_count_after = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
@@ -201,7 +201,7 @@ def legacy_test() -> None:
             tools = seeded_tools(conn)
             assert len(tools) == 5, f"expected 5 seeded tools, got {len(tools)}"
             print(
-                f"   OK upgrade 29→30 keeps all "
+                f"   OK upgrade 29→{len(files)} keeps all "
                 f"{sub_count_after} subjects / {top_count_after} topics / "
                 f"{src_count_after} sources and seeds {len(tools)} tools"
             )

@@ -641,6 +641,44 @@ export const literatureSaveSource = (
     url: url ?? null,
     topicId: topicId ?? null,
   });
+
+// ---- vocabulary workbench (per-subject corpus) ----
+export interface VocabTerm {
+  id: string;
+  subject_id: string;
+  term: string;
+  normalized: string;
+  definition: string | null;
+  examples: string | null;
+  freq: number;
+  mastery: number;
+  /** new | learning | known */
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export const vocabList = (subjectId: string) =>
+  invoke<VocabTerm[]>("vocab_list", { subjectId });
+
+export const vocabAdd = (subjectId: string, term: string) =>
+  invoke<string>("vocab_add", { subjectId, term });
+
+export const vocabUpdate = (
+  id: string,
+  definition: string | null,
+  examples: string | null,
+  status: string | null,
+) =>
+  invoke<void>("vocab_update", { id, definition, examples, status });
+
+export const vocabDelete = (id: string) =>
+  invoke<string>("vocab_delete", { id });
+
+/** Scan the subject corpus, extract the top-N most frequent English tokens, and upsert. */
+export const vocabExtract = (subjectId: string, limit?: number) =>
+  invoke<number>("vocab_extract", { subjectId, limit: limit ?? null });
+
 export const literatureSearch = (
   query: string,
   subjectId?: string | null,
@@ -661,6 +699,9 @@ export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
 
 // ---- long-term memory (manual; injected into AI prompts) ----
 export interface Memory {
+  layer: "declarative" | "inferred";
+  confidence: number;
+  confirmed: boolean;
   id: string;
   content: string;
   source: string | null;
@@ -668,7 +709,8 @@ export interface Memory {
   updated_at: number;
 }
 export const listMemory = () => invoke<Memory[]>("list_memory");
-export const addMemory = (content: string) => invoke<Memory>("add_memory", { content });
+export const addMemory = (content: string, layer = "declarative", confidence = 1, source: string | null = null) => invoke<Memory>("add_memory", { content, layer, confidence, source });
+export const confirmMemory = (id: string) => invoke<void>("confirm_memory", { id });
 export const deleteMemory = (id: string) => invoke<void>("delete_memory", { id });
 
 // ---- custom music stations + YouTube-audio streaming (mpv sidecar) ----
@@ -1305,3 +1347,5 @@ export const listUndoEntries = (limit = 50) =>
 
 export const restoreUndo = (id: string) =>
   invoke<string>("restore_undo", { id });
+
+export const exportObsidian = (directory: string) => invoke<string>("export_obsidian", { directory });

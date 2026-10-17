@@ -55,6 +55,7 @@
   let ReviewTodayC = $state<any>(null);
   let SprintPlannerC = $state<any>(null);
   let LiteratureReaderC = $state<any>(null);
+  let VocabularyWorkbenchC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("./views/Settings.svelte").then((m) => (SettingsView = m.default));
   const loadRecorder = () =>
@@ -77,6 +78,8 @@
     SprintPlannerC ?? import("./views/SprintPlanner.svelte").then((m) => (SprintPlannerC = m.default));
   const loadLiteratureReader = () =>
     LiteratureReaderC ?? import("./views/LiteratureReader.svelte").then((m) => (LiteratureReaderC = m.default));
+  const loadVocabularyWorkbench = () =>
+    VocabularyWorkbenchC ?? import("./views/VocabularyWorkbench.svelte").then((m) => (VocabularyWorkbenchC = m.default));
   $effect(() => {
     if (app.view === "settings") void loadSettings();
     else if (app.view === "recorder") void loadRecorder();
@@ -89,6 +92,7 @@
     else if (app.view === "review") void loadReviewToday();
     else if (app.view === "sprint") void loadSprintPlanner();
     else if (app.view === "literature") void loadLiteratureReader();
+    else if (app.view === "vocabulary") void loadVocabularyWorkbench();
     else if (app.view === "glossary") void loadGlossary();
   });
 
@@ -470,6 +474,8 @@
           {#if SprintPlannerC}{@const SprintPlanner = SprintPlannerC}<SprintPlanner />{/if}
         {:else if app.view === "literature"}
           {#if LiteratureReaderC}{@const LiteratureReader = LiteratureReaderC}<LiteratureReader />{/if}
+        {:else if app.view === "vocabulary"}
+          {#if VocabularyWorkbenchC}{@const VocabularyWorkbench = VocabularyWorkbenchC}<VocabularyWorkbench />{/if}
         {:else if app.view === "glossary"}
           {#if GlossaryViewC}{@const GlossaryView = GlossaryViewC}<GlossaryView />{/if}
         {:else if app.view === "mindmap"}

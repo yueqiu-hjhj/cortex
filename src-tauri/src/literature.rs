@@ -24,7 +24,7 @@
 use crate::error::{Error, Result};
 use serde::Serialize;
 
-const ARXIV_BASE: &str = "https://export.arxiv.org/api";
+const ARXIV_BASE: &str = "https://export.arxiv.org/api/query";
 const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 const OPENALEX_BASE: &str = "https://api.openalex.org/works";
 const S2_BASE: &str = "https://api.semanticscholar.org/graph/v1/paper/search";
@@ -314,10 +314,12 @@ pub fn search_openalex(query: &str) -> Vec<RawHit> {
         let url = it["id"].as_str().map(|s| s.to_string());
         let host = host_of(url.as_deref().unwrap_or("")).or_else(|| Some("openalex.org".into()));
         let abstract_text = it["abstract_inverted_index"].as_object().map(|o| {
-            let mut parts: Vec<String> = o.iter().filter_map(|(k,v)| v.as_str().map(|s| format!("{} {}", k, s))).collect();
-            parts.sort();
-            parts.join(" ")
-        });
+            let mut parts: Vec<(u64, &str)> = o.iter().flat_map(|(word, positions)| {
+                positions.as_array().into_iter().flatten().filter_map(move |p| p.as_u64().map(|p| (p, word.as_str())))
+            }).collect();
+            parts.sort_by_key(|(p, _)| *p);
+            parts.into_iter().map(|(_, word)| word).collect::<Vec<_>>().join(" ")
+        }).filter(|s| !s.is_empty());
         let citations = it["cited_by_count"].as_i64();
         hits.push(RawHit {
             source: "openalex".into(), rank: (i as i64) + 1,
@@ -414,18 +416,27 @@ fn title_key(t: &str) -> String {
 
 /// Reciprocal Rank Fusion. For each paper id (DOI preferred, else title key),
 /// sum 1 / (RRF_K + rank) across all source lists. Returns a sorted vec.
+fn doi_key(doi: &str) -> String {
+    let d = doi.trim().to_lowercase();
+    let d = d.strip_prefix("https://doi.org/").or_else(|| d.strip_prefix("http://doi.org/"))
+        .or_else(|| d.strip_prefix("https://dx.doi.org/")).or_else(|| d.strip_prefix("doi:")).unwrap_or(&d);
+    format!("doi:{}", d.trim())
+}
+
 fn rrf_fuse(lists: &[Vec<RawHit>]) -> Vec<(String, f64, Vec<String>, Vec<RawHit>)> {
     // id -> (rrf_score, sources_seen, member_hits)
     let mut acc: std::collections::HashMap<String, (f64, Vec<String>, Vec<RawHit>)>
         = std::collections::HashMap::new();
+    let title_dois: std::collections::HashMap<String, String> = lists.iter().flatten()
+        .filter_map(|h| h.doi.as_deref().map(|d| (title_key(&h.title), doi_key(d)))).collect();
     for list in lists {
+        let mut seen = std::collections::HashSet::new();
         for h in list {
-            let key = if let Some(d) = &h.doi {
-                let d = d.to_lowercase();
-                if d.starts_with("https://doi.org/") { d } else { format!("doi:{}", d) }
-            } else {
-                format!("t:{}", title_key(&h.title))
-            };
+            let title = title_key(&h.title);
+            let key = h.doi.as_deref().map(doi_key)
+                .or_else(|| title_dois.get(&title).cloned())
+                .unwrap_or_else(|| format!("t:{}", title));
+            if !seen.insert(key.clone()) { continue; }
             let entry = acc.entry(key).or_insert((0.0, Vec::new(), Vec::new()));
             entry.0 += 1.0 / (RRF_K + h.rank as f64);
             if !entry.1.contains(&h.source) {
@@ -568,10 +579,10 @@ pub fn subject_keywords(conn: &rusqlite::Connection, subject_id: &str) -> Vec<St
 /// source failure does not abort, and a query that nothing can match
 /// returns an empty hit list rather than an error.
 pub fn literature_search(
-    conn: &rusqlite::Connection,
     llm: Option<&dyn crate::llm::Llm>,
     query: &str,
-    subject_id: Option<&str>,
+    keywords: &[String],
+    searxng_base: Option<&str>,
     limit: usize,
 ) -> Result<LiteratureResult> {
     let started = std::time::Instant::now();
@@ -580,35 +591,37 @@ pub fn literature_search(
         return Err(Error::Other("empty query".into()));
     }
 
-    let keywords = subject_id
-        .map(|sid| subject_keywords(conn, sid))
-        .unwrap_or_default();
-    let variants = rewrite_query(llm, trimmed, &keywords);
+    let mut variants = vec![trimmed.to_string()];
+    for variant in rewrite_query(llm, trimmed, keywords) {
+        if !variants.iter().any(|v| v.eq_ignore_ascii_case(&variant)) { variants.push(variant); }
+    }
+    variants.truncate(3);
     if variants.is_empty() {
         return Err(Error::Other("no rewrite variants produced".into()));
     }
 
     // SearXNG base is optional; resolved through the homelab chain.
-    let searxng_base = crate::homelab::resolved_setting(conn, "searxng_url");
 
     let mut attempted: Vec<String> = Vec::new();
     let mut succeeded: Vec<String> = Vec::new();
     let mut all_lists: Vec<Vec<RawHit>> = Vec::new();
     for v in &variants {
-        for (name, list) in [
-            ("arxiv", search_arxiv(v)),
-            ("crossref", search_crossref(v)),
-            ("openalex", search_openalex(v)),
-            ("semantic_scholar", search_semantic_scholar(v)),
-            ("searxng", search_searxng_science(v, searxng_base.as_deref())),
-        ] {
-            if !attempted.contains(&name.to_string()) {
-                attempted.push(name.to_string());
+        let lists = std::thread::scope(|scope| {
+            let mut jobs = vec![
+                ("arxiv", scope.spawn(|| search_arxiv(v))),
+                ("crossref", scope.spawn(|| search_crossref(v))),
+                ("openalex", scope.spawn(|| search_openalex(v))),
+                ("semantic_scholar", scope.spawn(|| search_semantic_scholar(v))),
+            ];
+            if searxng_base.is_some() {
+                jobs.push(("searxng", scope.spawn(|| search_searxng_science(v, searxng_base))));
             }
+            jobs.into_iter().map(|(name, job)| (name, job.join().unwrap_or_default())).collect::<Vec<_>>()
+        });
+        for (name, list) in lists {
+            if !attempted.contains(&name.to_string()) { attempted.push(name.to_string()); }
             if !list.is_empty() {
-                if !succeeded.contains(&name.to_string()) {
-                    succeeded.push(name.to_string());
-                }
+                if !succeeded.contains(&name.to_string()) { succeeded.push(name.to_string()); }
                 all_lists.push(list);
             }
         }
@@ -725,62 +738,25 @@ pub fn chunk_text(text: &str) -> Vec<String> {
     const CHUNK_OVERLAP: usize = 200;
     let mut out: Vec<String> = Vec::new();
     let mut start = 0usize;
-    let len = text.chars().count();
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
     if len == 0 { return out; }
     while start < len {
         let mut end = (start + CHUNK_TARGET).min(len);
         // Try to back up to the nearest paragraph break before nd.
         if end < len {
-            if let Some(rel) = text[start..end].rfind('\n') {
+            if let Some(rel) = chars[start..end].iter().rposition(|c| *c == '\n') {
                 let abs = start + rel;
                 if abs > start + CHUNK_TARGET / 2 { end = abs; }
             }
         }
-        let chunk: String = text.chars().skip(start).take(end - start).collect();
+        let chunk: String = chars[start..end].iter().collect();
         let chunk = chunk.trim().to_string();
         if !chunk.is_empty() { out.push(chunk); }
         if end >= len { break; }
         start = end.saturating_sub(CHUNK_OVERLAP);
     }
     out
-}
-
-/// Persist a paper as a text-kind source under subject_id, with the body
-/// chunked for embedding. Returns the new source's id. The URL (if any) is
-/// stored as the source origin for provenance.
-pub fn save_paper_as_source(
-    conn: &mut rusqlite::Connection,
-    subject_id: &str,
-    title: &str,
-    text: &str,
-    url: Option<&str>,
-    topic_id: Option<&str>,
-) -> Result<String> {
-    use crate::repo;
-    let id = repo::insert_source(conn, subject_id, topic_id, title, "text", url)?;
-    let chunks = chunk_text(text);
-    let tx = conn.transaction()?;
-    for (i, chunk) in chunks.iter().enumerate() {
-        // Insert a placeholder vector (zero-length blob) so the column shape
-        // matches what the rest of the app expects; the embed-pending flag
-        // tells the search bar this source isn't searchable yet. A background
-        // embed pass (not in this commit) will fill in real vectors.
-        repo::insert_chunk(
-            &tx,
-            &id,
-            subject_id,
-            topic_id,
-            i as i64,
-            chunk,
-            None,
-            0,
-            &[],
-        )?;
-    }
-    let meta = format!("{} chunks · {} chars", chunks.len(), text.chars().count());
-    repo::finalize_source(&tx, &id, "draft", Some(&meta), Some(text), None)?;
-    tx.commit()?;
-    Ok(id)
 }
 
 #[cfg(test)]
@@ -894,6 +870,27 @@ Second paragraph here.";
         assert!(r.contains("
 
 "), "paragraph break should survive: {r:?}");
+    }
+
+    #[test]
+    fn chunks_handle_unicode_and_paragraph_boundaries() {
+        let text = "中文🧠 paragraph\n".repeat(400);
+        let chunks = chunk_text(&text);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 1500));
+        assert!(chunks.last().unwrap().ends_with("paragraph"));
+    }
+
+    #[test]
+    fn rrf_matches_doi_urls_and_title_only_hits() {
+        let hit = |doi: Option<&str>| RawHit { source: "test".into(), rank: 1,
+            title: "Same Paper".into(), authors: vec![], year: None, venue: None,
+            doi: doi.map(str::to_string), url: None, abstract_text: None,
+            citation_count: None, host: None };
+        let fused = rrf_fuse(&[vec![hit(None)], vec![hit(Some("10.1/abc"))], vec![hit(Some("https://doi.org/10.1/ABC"))]]);
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].0, "doi:10.1/abc");
+        assert_eq!(fused[0].3.len(), 3);
     }
 
     #[test]

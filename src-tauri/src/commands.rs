@@ -322,8 +322,10 @@ fn profile_preamble(c: &Connection) -> Result<String> {
     }
     if !memories.is_empty() {
         out.push_str("Remembered facts:\n");
-        for m in memories.iter().take(50) {
-            out.push_str("- ");
+        for m in memories.iter().filter(|m| m.confirmed).take(50) {
+            if m.layer == "inferred" {
+                out.push_str(&format!("- [User-confirmed inference; confidence {:.0}%; evidence: {}] ", m.confidence * 100.0, m.source.as_deref().unwrap_or("unspecified")));
+            } else { out.push_str("- [User declaration] "); }
             out.push_str(m.content.trim());
             out.push('\n');
         }
@@ -4774,7 +4776,10 @@ pub async fn literature_search(
             let k = read_keys(&c).unwrap_or_default();
             llm::from_spec_or_any(&s, &k)
         };
-        crate::literature::literature_search(&c, llm_opt.as_deref(), &query, subject_id.as_deref(), limit)
+        let keywords = subject_id.as_deref().map(|id| crate::literature::subject_keywords(&c, id)).unwrap_or_default();
+        let searxng = crate::homelab::resolved_setting(&c, "searxng_url");
+        drop(c);
+        crate::literature::literature_search(llm_opt.as_deref(), &query, &keywords, searxng.as_deref(), limit)
     })
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
@@ -4792,7 +4797,7 @@ pub async fn literature_explain(
     let mode = mode;
     tauri::async_runtime::spawn_blocking(move || -> Result<String> {
         let state = app.state::<AppState>();
-        let mut c = state.db.lock().unwrap();
+        let c = state.db.lock().unwrap();
         if offline_mode(&c) {
             return Err(Error::Other(
                 "Offline mode is on - LLM calls are disabled. Turn it off in Settings.".into(),
@@ -4806,6 +4811,7 @@ pub async fn literature_explain(
         };
         let model = llm::from_spec_or_any(&spec, &keys)
             .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+        drop(c);
         crate::literature::explain_text(model.as_ref(), &text, &mode)
     })
     .await
@@ -4831,22 +4837,93 @@ pub async fn literature_save_source(
     url: Option<String>,
     topic_id: Option<String>,
 ) -> Result<String> {
+    if title.trim().is_empty() || text.trim().is_empty() {
+        return Err(Error::Other("paper title and body are required".into()));
+    }
+    let result = add_source(app, AddSourceInput {
+        subject_id, topic_id, name: Some(title), kind: Some("txt".into()),
+        text: Some(text), path: None, url, tags: vec![],
+    }).await?;
+    Ok(result.source.id)
+}
+
+/// List vocabulary terms for a subject (most frequent first).
+#[tauri::command]
+pub async fn vocab_list(
+    app: AppHandle,
+    subject_id: String,
+) -> Result<Vec<crate::vocab::VocabTerm>> {
     let subject_id = subject_id;
-    let title = title;
-    let text = text;
-    let url = url;
-    let topic_id = topic_id;
-    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::vocab::VocabTerm>> {
         let state = app.state::<AppState>();
-        let mut c = state.db.lock().unwrap();
-        crate::literature::save_paper_as_source(
-            &mut c, &subject_id, &title, &text,
-            url.as_deref(), topic_id.as_deref(),
-        )
+        let c = state.db.lock().unwrap();
+        crate::vocab::list_terms(&c, &subject_id)
     })
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
+
+/// Add a single term. If the normalized form already exists, freq is bumped.
+#[tauri::command]
+pub async fn vocab_add(
+    app: AppHandle,
+    subject_id: String,
+    term: String,
+) -> Result<String> {
+    let subject_id = subject_id;
+    let term = term;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        crate::vocab::upsert_term(&c, &subject_id, &term, 1)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+/// Update a term definition / examples / status.
+#[tauri::command]
+pub fn vocab_update(
+    state: tauri::State<AppState>,
+    id: String,
+    definition: Option<String>,
+    examples: Option<String>,
+    status: Option<String>,
+) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::vocab::update_term(
+        &c,
+        &id,
+        definition.as_deref(),
+        examples.as_deref(),
+        status.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn vocab_delete(state: tauri::State<AppState>, id: String) -> Result<String> {
+    let c = state.db.lock().unwrap();
+    crate::vocab::delete_term(&c, &id)
+}
+
+/// Scan the subject corpus, extract top-N tokens, upsert. Returns count.
+#[tauri::command]
+pub async fn vocab_extract(
+    app: AppHandle,
+    subject_id: String,
+    limit: Option<usize>,
+) -> Result<usize> {
+    let subject_id = subject_id;
+    let limit = limit.unwrap_or(200);
+    tauri::async_runtime::spawn_blocking(move || -> Result<usize> {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        crate::vocab::extract_and_upsert(&c, &subject_id, limit)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
 
 
 /// Configured SearXNG base URL (resolved through the homelab fallback chain:
@@ -4921,9 +4998,14 @@ fn wants_images(query: &str) -> bool {
 // ---- long-term memory -------------------------------------------------
 
 #[tauri::command]
-pub fn add_memory(state: State<AppState>, content: String) -> Result<Memory> {
+pub fn add_memory(state: State<AppState>, content: String, layer: Option<String>, confidence: Option<f64>, source: Option<String>) -> Result<Memory> {
     let c = state.db.lock().unwrap();
-    repo::insert_memory(&c, &content, None)
+    repo::insert_layered_memory(&c, &content, layer.as_deref().unwrap_or("declarative"), confidence.unwrap_or(1.0), source.as_deref())
+}
+
+#[tauri::command]
+pub fn confirm_memory(state: State<AppState>, id: String) -> Result<()> {
+    repo::confirm_memory(&state.db.lock().unwrap(), &id)
 }
 
 #[tauri::command]
@@ -5255,4 +5337,14 @@ pub fn startup_self_check(state: State<AppState>) -> Result<crate::selfcheck::Re
     // hardcode the count for now (the test suite asserts 31) but the right
     // long-term answer is to scan the migrations dir on the filesystem.
     crate::selfcheck::run(&conn, dir, 31)
+}
+
+/// Export source text and notes with provenance and wiki links into a fresh vault subfolder.
+#[tauri::command]
+pub async fn export_obsidian(app: AppHandle, directory: String) -> Result<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let pages = { let c = state.db.lock().unwrap(); crate::obsidian::pages(&c)? };
+        crate::obsidian::write_pages(std::path::Path::new(&directory), &pages)
+    }).await.map_err(|e| Error::Other(e.to_string()))?
 }

@@ -240,6 +240,17 @@
       <Icon name="reader" size={14} /><span class="lbl"> Literature</span><span class="nav-k">␣ l</span>
     </div>
 
+    <div
+      class="sb-nav-item{app.view === 'vocabulary' ? ' on' : ''}"
+      onclick={() => app.setView("vocabulary")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("vocabulary")}
+      title="Vocabulary workbench - per-subject English term dictionary (Space v)"
+    >
+      <Icon name="cards" size={14} /><span class="lbl"> Vocabulary</span><span class="nav-k">␣ v</span>
+    </div>
+
     <!-- Subjects section header -->
     <div class="sb-section-l">
       <span class="label">Subjects</span>

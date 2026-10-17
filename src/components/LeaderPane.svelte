@@ -24,6 +24,7 @@
     p: () => app.setView("pomodoro"),
     q: () => app.setView("sprint"),
     l: () => app.setView("literature"),
+    v: () => app.setView("vocabulary"),
     b: () => app.toggleSidebar(),
     g: () => app.setView("dashboard"),
     ",": () => app.openSettings(),

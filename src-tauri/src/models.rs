@@ -496,12 +496,22 @@ pub struct MediaTools {
 /// A manually-saved long-term memory fact, injected into chat/synthesis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
+    #[serde(default = "default_memory_layer")]
+    pub layer: String,
+    #[serde(default = "default_memory_confidence")]
+    pub confidence: f64,
+    #[serde(default = "default_memory_confirmed")]
+    pub confirmed: bool,
     pub id: String,
     pub content: String,
     pub source: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+fn default_memory_layer() -> String { "declarative".into() }
+fn default_memory_confidence() -> f64 { 1.0 }
+fn default_memory_confirmed() -> bool { true }
 
 // ---- notes ------------------------------------------------------------
 

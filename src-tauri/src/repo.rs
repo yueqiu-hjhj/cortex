@@ -1711,6 +1711,7 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 // ---- long-term memory --------------------------------------------------
 
 pub fn insert_memory(conn: &Connection, content: &str, source: Option<&str>) -> Result<Memory> {
+    if content.trim().is_empty() { return Err(Error::Other("memory is empty".into())); }
     let id = new_id();
     let ts = now_ms();
     conn.execute(
@@ -1719,6 +1720,7 @@ pub fn insert_memory(conn: &Connection, content: &str, source: Option<&str>) -> 
         params![id, content, source, ts],
     )?;
     Ok(Memory {
+        layer: "declarative".into(), confidence: 1.0, confirmed: true,
         id,
         content: content.to_string(),
         source: source.map(|s| s.to_string()),
@@ -1729,10 +1731,11 @@ pub fn insert_memory(conn: &Connection, content: &str, source: Option<&str>) -> 
 
 pub fn list_memory(conn: &Connection) -> Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content, source, created_at, updated_at FROM user_memory ORDER BY created_at DESC",
+        "SELECT id, content, source, created_at, updated_at, layer, confidence, confirmed FROM user_memory ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(Memory {
+            layer: r.get(5)?, confidence: r.get(6)?, confirmed: r.get(7)?,
             id: r.get(0)?,
             content: r.get(1)?,
             source: r.get(2)?,
@@ -1741,6 +1744,30 @@ pub fn list_memory(conn: &Connection) -> Result<Vec<Memory>> {
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Inferred memories require supporting provenance and explicit confirmation before prompt use.
+pub fn insert_layered_memory(conn: &Connection, content: &str, layer: &str, confidence: f64, source: Option<&str>) -> Result<Memory> {
+    if !matches!(layer, "declarative" | "inferred") || !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+        return Err(Error::Other("invalid memory layer or confidence".into()));
+    }
+    if layer == "inferred" && source.is_none_or(|s| s.trim().is_empty()) {
+        return Err(Error::Other("inferred memory requires evidence".into()));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut memory = insert_memory(&tx, content, source)?;
+    memory.layer = layer.into(); memory.confidence = confidence; memory.confirmed = layer == "declarative";
+    tx.execute("UPDATE user_memory SET layer=?1, confidence=?2, confirmed=?3 WHERE id=?4",
+        params![layer, confidence, memory.confirmed, memory.id])?;
+    tx.commit()?;
+    Ok(memory)
+}
+
+pub fn confirm_memory(conn: &Connection, id: &str) -> Result<()> {
+    if conn.execute("UPDATE user_memory SET confirmed=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])? == 0 {
+        return Err(Error::NotFound(format!("memory {id}")));
+    }
+    Ok(())
 }
 
 pub fn delete_memory(conn: &Connection, id: &str) -> Result<()> {
@@ -3750,6 +3777,7 @@ fn insert_json_row(
                     Box::new(n.as_f64().unwrap_or(0.0))
                 }
             }
+            serde_json::Value::String(s) => Box::new(s),
             other => Box::new(other.to_string()),
         });
     }
@@ -3761,7 +3789,7 @@ fn insert_json_row(
 /// Snapshot every row of `table`, optionally restricted by `where` (which must
 /// include a `?1` placeholder). Values are typed by their SQLite column type so
 /// integers stay integers and NULLs survive the round-trip.
-fn snapshot_rows(conn: &Connection, table: &str, where_sql: &str, arg: &str) -> Result<Vec<serde_json::Value>> {
+pub(crate) fn snapshot_rows(conn: &Connection, table: &str, where_sql: &str, arg: &str) -> Result<Vec<serde_json::Value>> {
     use rusqlite::types::ValueRef;
     struct Col {
         name: String,
@@ -3833,7 +3861,7 @@ fn row_label(v: &serde_json::Value) -> String {
         .to_string()
 }
 
-fn record_undo_row(
+pub(crate) fn record_undo_row(
     conn: &Connection,
     action: &str,
     entity_table: &str,
@@ -3925,6 +3953,7 @@ pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<String> {
     }
     let notes = snapshot_rows(conn, "notes", "WHERE subject_id=?1", id)?;
     let materials = snapshot_rows(conn, "materials", "WHERE subject_id=?1", id)?;
+    let vocab = snapshot_rows(conn, "vocab_terms", "WHERE subject_id=?1", id)?;
     let label = row_label(&first);
     delete_subject(conn, id)?;
     let undo_id = record_undo_row(
@@ -3940,7 +3969,8 @@ pub fn delete_subject_with_undo(conn: &Connection, id: &str) -> Result<String> {
             "chunks": chunks,
             "tag_ids": tag_ids,
             "notes": notes,
-            "materials": materials
+            "materials": materials,
+            "vocab_terms": vocab
         }),
     )?;
     Ok(undo_id)
@@ -4099,6 +4129,7 @@ pub fn restore_undo(conn: &mut Connection, id: &str) -> Result<String> {
     };
 
     let _restored = match table.as_str() {
+        "vocab" => restore_rows(&tx, "vocab_terms", &payload)?,
         "subject" | "source" => {
             let n = restore_rows(&tx, "subjects", &payload)?;
             restore_rows(&tx, "topics", &payload)?;
@@ -4114,6 +4145,7 @@ pub fn restore_undo(conn: &mut Connection, id: &str) -> Result<String> {
             {
                 link_tags(&tx, source)?;
             }
+            restore_rows(&tx, "vocab_terms", &payload)?;
             restore_rows(&tx, "notes", &payload)?;
             restore_rows(&tx, "materials", &payload)?;
             n
@@ -4748,6 +4780,23 @@ mod tests {
 
         delete_citation(&c, &id).unwrap();
         assert!(list_citations(&c, &sid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn memory_layers_require_evidence_and_confirmation() {
+        let state = AppState::in_memory().unwrap();
+        let c = state.db.lock().unwrap();
+        let explicit = insert_memory(&c, "Exam in June", None).unwrap();
+        assert!(explicit.confirmed);
+        assert!(insert_layered_memory(&c, "Needs practice", "inferred", 0.7, None).is_err());
+        let inferred = insert_layered_memory(&c, "Needs practice", "inferred", 0.7, Some("quiz result")).unwrap();
+        assert!(!inferred.confirmed);
+        confirm_memory(&c, &inferred.id).unwrap();
+        let rows = list_memory(&c).unwrap();
+        assert!(rows.iter().find(|m| m.id == inferred.id).unwrap().confirmed);
+        assert!(insert_layered_memory(&c, "bad", "inferred", 2.0, Some("evidence")).is_err());
+        let old: Memory = serde_json::from_value(serde_json::json!({"id":"old", "content":"legacy", "source":null, "created_at":1, "updated_at":1})).unwrap();
+        assert!(old.confirmed); assert_eq!(old.layer, "declarative");
     }
 
     #[test]

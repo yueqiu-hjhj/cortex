@@ -35,6 +35,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0028_cheatsheet_tombstone.sql"),
     include_str!("../migrations/0029_source_diarize.sql"),
     include_str!("../migrations/0030_knowledge_mcp_undo.sql"),
+    include_str!("../migrations/0031_secrets.sql"),
+    include_str!("../migrations/0032_vocab.sql"),
+    include_str!("../migrations/0033_memory_layers.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.

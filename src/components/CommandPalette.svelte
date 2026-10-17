@@ -115,6 +115,7 @@
 
     { id: "v-sprint", group: "Go to", label: "Sprint planner", kind: "view", icon: "star", hint: "g " + kh(keybinds.map.leader) + " q", run: () => app.setView("sprint") },
     { id: "v-literature", group: "Go to", label: "Literature reader", kind: "view", icon: "reader", hint: "g " + kh(keybinds.map.leader) + " l", run: () => app.setView("literature") },
+    { id: "v-vocabulary", group: "Go to", label: "Vocabulary workbench", kind: "view", icon: "cards", hint: "g " + kh(keybinds.map.leader) + " v", run: () => app.setView("vocabulary") },
     { id: "s-settings", group: "Settings", label: "Open settings", kind: "setting", icon: "settings", run: () => app.setView("settings") },
     { id: "s-keys", group: "Settings", label: "API keys & models", kind: "setting", icon: "lock", run: () => app.setView("settings") },
     { id: "s-profile", group: "Settings", label: "Edit your profile", kind: "setting", icon: "diamond", run: () => app.setView("settings") },

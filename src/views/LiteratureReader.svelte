@@ -6,11 +6,10 @@
   //      we render the readable text. Best for arXiv abstracts, blog posts,
   //      and HTML papers.
   //   2. Paste: drop a chunk of text in directly (PDF excerpts, OCR dumps).
-  //   3. Library: open an existing text-kind source from the subject library.
   //
   // Selection toolbar: when the user selects text inside the article body, a
   // small floating bar appears with Translate / Explain / Summarize / Copy.
-  // Each action calls literature_explain; the result streams into a right-side
+  // Each action calls literature_explain; the result appears in a right-side
   // panel. Offline users (no LLM) get the Copy option only.
   //
   // Repair: a "Repair layout" button re-passes the text through
@@ -24,12 +23,25 @@
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
-  import DatePicker from "../components/DatePicker.svelte";
-  import { tick } from "svelte";
 
   type Mode = "translate:zh" | "translate:en" | "explain" | "summarize" | "keypoints" | "define";
 
-  let mode = $state<Mode>("translate:zh");
+  let searchQuery = $state("");
+  let searchBusy = $state(false);
+  let searchResult = $state<api.LiteratureResult | null>(null);
+  let paperElement: HTMLElement;
+  let actionSerial = 0;
+  async function searchPapers() {
+    if (!searchQuery.trim() || searchBusy) return;
+    searchBusy = true; error = null;
+    try { searchResult = await api.literatureSearch(searchQuery.trim(), app.activeSubjectId, 20); }
+    catch (e) { error = String(e); }
+    finally { searchBusy = false; }
+  }
+  function readHit(hit: api.LiteratureHit) {
+    title = hit.title; finalUrl = hit.url ?? null; rawText = hit.abstract_text ?? "";
+    input = hit.url ?? ""; repaired = false; selection = null;
+  }
   let input = $state("");
   let inputKind = $state<"url" | "paste">("url");
   let title = $state("");
@@ -83,6 +95,7 @@
   function onMouseUp() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) { selection = null; return; }
+    if (!sel.anchorNode || !sel.focusNode || !paperElement?.contains(sel.anchorNode) || !paperElement.contains(sel.focusNode)) { selection = null; return; }
     const text = sel.toString().trim();
     if (text.length < 2) { selection = null; return; }
     const range = sel.getRangeAt(0);
@@ -92,19 +105,20 @@
 
   async function runSelection(m: Mode) {
     if (!selection) return;
+    const request = ++actionSerial;
     selectionAction = { mode: m, prompt: selection.text, result: "", loading: true };
     try {
       const r = await api.literatureExplain(selection.text, m);
-      if (selectionAction) selectionAction.result = r;
+      if (request === actionSerial && selectionAction) selectionAction.result = r;
     } catch (e) {
-      if (selectionAction) selectionAction.result = `(${String(e)})`;
+      if (request === actionSerial && selectionAction) selectionAction.result = `(${String(e)})`;
     } finally {
-      if (selectionAction) selectionAction.loading = false;
+      if (request === actionSerial && selectionAction) selectionAction.loading = false;
     }
   }
 
   function closeSelectionAction() {
-    selectionAction = null;
+    actionSerial++; selectionAction = null;
   }
 
   async function copySelection() {
@@ -143,12 +157,8 @@
   const canSave = $derived(!!saveSubjectId && title.trim().length > 0 && rawText.trim().length > 0);
 
   const modeLabel: Record<Mode, string> = {
-    "translate:zh": "ç¿»è¯æä¸­æ",
-    "translate:en": "Translate to English",
-    "explain": "AI è®²è§£",
-    "summarize": "æè¦",
-    "keypoints": "æ°å¾",
-    "define": "æ¯è¯­",
+    "translate:zh": "翻译成中文", "translate:en": "Translate to English",
+    explain: "AI 讲解", summarize: "摘要", keypoints: "要点", define: "术语",
   };
 </script>
 
@@ -156,7 +166,7 @@
   <header class="lr-head">
     <div>
       <div class="eyebrow">Literature reader</div>
-      <h1 class="lr-title">{title || "æç®éè¯»"}</h1>
+      <h1 class="lr-title">{title || "文献阅读"}</h1>
       {#if finalUrl}
         <a class="lr-url mono" href={finalUrl} target="_blank" rel="noreferrer">{finalUrl}</a>
       {/if}
@@ -186,12 +196,29 @@
     </div>
   </header>
 
+  <section class="literature-search">
+    <input class="ipt" aria-label="文献检索" placeholder="检索论文关键词…" bind:value={searchQuery} onkeydown={(e) => e.key === "Enter" && void searchPapers()} />
+    <button class="btn primary" disabled={searchBusy || !searchQuery.trim()} onclick={() => void searchPapers()}>{searchBusy ? "检索中…" : "多源检索"}</button>
+    {#if searchResult}
+      <p class="mono">{searchResult.hits.length} 篇 · {searchResult.took_ms} ms · 返回结果的来源：{searchResult.sources_succeeded.join(", ") || "无"}</p>
+      {#each searchResult.hits as hit}
+        <div class="search-hit">
+          <button class="btn" onclick={() => readHit(hit)}>{hit.title}</button>
+          <p class="mono">{hit.year ?? ""} · {hit.authors.slice(0, 3).join(", ")} · {hit.sources.join(", ")}</p>
+          <p>{hit.abstract_text?.slice(0, 450) ?? "暂无摘要；可点击下方链接阅读原文。"}</p>
+          {#if hit.url}<a href={hit.url} target="_blank" rel="noreferrer">原文</a>{/if}
+          <details><summary>排序依据</summary>{hit.reasons.join(" · ")}</details>
+        </div>
+      {/each}
+      {#if !searchResult.hits.length}<p>没有检索结果；请调整关键词后重试。</p>{/if}
+    {/if}
+  </section>
   {#if error}
     <div class="err mono">{error}</div>
   {/if}
 
   <div class="lr-body" onmouseup={onMouseUp} role="presentation">
-    <article class="paper">
+    <article class="paper" bind:this={paperElement}>
       {#if loading}
         <div class="paper-empty mono">正在加载…</div>
       {:else if !rawText}
@@ -279,6 +306,9 @@
 </div>
 
 <style>
+  .literature-search { padding: 12px 0; }
+  .search-hit { padding: 12px; border-bottom: 1px solid var(--border); }
+  .search-hit p { margin: 6px 0; }
   .lr {
     flex: 1; min-height: 0; overflow: auto;
     padding: 22px 28px 32px;
