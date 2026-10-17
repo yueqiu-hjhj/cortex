@@ -109,8 +109,8 @@
     <button
       class="sb-bell"
       type="button"
-      title="Notifications (u)"
-      aria-label="Notifications{app.unreadCount > 0 ? ` — ${app.unreadCount} unread` : ''}"
+      title="通知 (u)"
+      aria-label="通知{app.unreadCount > 0 ? ` — ${app.unreadCount} 条未读` : ''}"
       onclick={() => app.toggleNotifications()}
     >
       <Icon name="bell" size={15} />
@@ -126,103 +126,103 @@
   <div class="sb-scroll">
     <!-- Nav items -->
     <div
-      class="sb-nav-item{app.view === 'today' ? ' on' : ''}" title="Today — 今天该做什么 (Space y)"
+      class="sb-nav-item{app.view === 'today' ? ' on' : ''}" title="今天 — 该做什么 (Space y)"
       onclick={() => app.setView("today")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("today")}
     >
-      <Icon name="check" size={14} /><span class="lbl"> Today</span><span class="nav-k">␣ y</span>
+      <Icon name="check" size={14} /><span class="lbl"> 今天</span><span class="nav-k">␣ y</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'plan' ? ' on' : ''}" title="Plan — 未来七天排期 (Space w)"
+      class="sb-nav-item{app.view === 'plan' ? ' on' : ''}" title="计划 — 未来七天排期 (Space w)"
       onclick={() => app.setView("plan")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("plan")}
     >
-      <Icon name="calendar" size={14} /><span class="lbl"> Plan</span><span class="nav-k">␣ w</span>
+      <Icon name="calendar" size={14} /><span class="lbl"> 计划</span><span class="nav-k">␣ w</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'research' ? ' on' : ''}" title="Research — 论文阅读与摘录 (Space u)"
+      class="sb-nav-item{app.view === 'research' ? ' on' : ''}" title="研究 — 论文阅读与摘录 (Space u)"
       onclick={() => app.setView("research")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("research")}
     >
-      <Icon name="reader" size={14} /><span class="lbl"> Research</span><span class="nav-k">␣ u</span>
+      <Icon name="reader" size={14} /><span class="lbl"> 研究</span><span class="nav-k">␣ u</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="Dashboard (Space g)"
+      class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="总览 (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("dashboard")}
     >
-      <Icon name="home" size={14} /><span class="lbl"> Dashboard</span><span class="nav-k">␣ g</span>
+      <Icon name="home" size={14} /><span class="lbl"> 总览</span><span class="nav-k">␣ g</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'recorder' ? ' on' : ''}" title="Record lecture (Space r)"
+      class="sb-nav-item{app.view === 'recorder' ? ' on' : ''}" title="录制讲座 (Space r)"
       onclick={() => app.setView("recorder")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("recorder")}
     >
-      <Icon name="record" size={13} /><span class="lbl"> Record lecture</span><span class="nav-k">␣ r</span>
+      <Icon name="record" size={13} /><span class="lbl"> 录制讲座</span><span class="nav-k">␣ r</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'add-source' ? ' on' : ''}" title="Add source (Space s)"
+      class="sb-nav-item{app.view === 'add-source' ? ' on' : ''}" title="添加资料 (Space s)"
       onclick={() => app.setView("add-source")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("add-source")}
     >
-      <Icon name="plus" size={14} /><span class="lbl"> Add source</span><span class="nav-k">␣ s</span>
+      <Icon name="plus" size={14} /><span class="lbl"> 添加资料</span><span class="nav-k">␣ s</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'notes' ? ' on' : ''}" title="Notes (Space o)"
+      class="sb-nav-item{app.view === 'notes' ? ' on' : ''}" title="笔记 (Space o)"
       onclick={() => app.setView("notes")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("notes")}
     >
-      <Icon name="reader" size={14} /><span class="lbl"> Notes</span><span class="nav-k">␣ o</span>
+      <Icon name="reader" size={14} /><span class="lbl"> 笔记</span><span class="nav-k">␣ o</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'calendar' ? ' on' : ''}" title="Calendar (Space a)"
+      class="sb-nav-item{app.view === 'calendar' ? ' on' : ''}" title="日历 (Space a)"
       onclick={() => app.setView("calendar")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("calendar")}
     >
-      <Icon name="calendar" size={14} /><span class="lbl"> Calendar</span><span class="nav-k">␣ a</span>
+      <Icon name="calendar" size={14} /><span class="lbl"> 日历</span><span class="nav-k">␣ a</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'analytics' ? ' on' : ''}" title="Insights (Space i)"
+      class="sb-nav-item{app.view === 'analytics' ? ' on' : ''}" title="学习分析 (Space i)"
       onclick={() => app.setView("analytics")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("analytics")}
     >
-      <Icon name="chart" size={14} /><span class="lbl"> Insights</span><span class="nav-k">␣ i</span>
+      <Icon name="chart" size={14} /><span class="lbl"> 学习分析</span><span class="nav-k">␣ i</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'neural-graph' ? ' on' : ''}" title="Neural Graph (Space n)"
+      class="sb-nav-item{app.view === 'neural-graph' ? ' on' : ''}" title="知识图谱 (Space n)"
       onclick={() => app.setView("neural-graph")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("neural-graph")}
     >
-      <Icon name="graph" size={14} /><span class="lbl"> Neural Graph</span><span class="nav-k">␣ n</span>
+      <Icon name="graph" size={14} /><span class="lbl"> 知识图谱</span><span class="nav-k">␣ n</span>
     </div>
     <div
-      class="sb-nav-item{app.view === 'mindmap' ? ' on' : ''}" title="Mind Map (Space m)"
+      class="sb-nav-item{app.view === 'mindmap' ? ' on' : ''}" title="思维导图 (Space m)"
       onclick={() => app.setView("mindmap")}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("mindmap")}
     >
-      <Icon name="link" size={14} /><span class="lbl"> Mind Map</span><span class="nav-k">␣ m</span>
+      <Icon name="link" size={14} /><span class="lbl"> 思维导图</span><span class="nav-k">␣ m</span>
     </div>
     <div
       class="sb-nav-item{app.view === 'pomodoro' ? ' on' : ''}"
@@ -230,9 +230,9 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("pomodoro")}
-      title="Pomodoro (Space p)"
+      title="番茄钟 (Space p)"
     >
-      <Icon name="bolt" size={14} /><span class="lbl"> Pomodoro</span><span class="nav-k">␣ p</span>
+      <Icon name="bolt" size={14} /><span class="lbl"> 番茄钟</span><span class="nav-k">␣ p</span>
     </div>
     <div
       class="sb-nav-item{app.view === 'review' ? ' on' : ''}"
@@ -240,9 +240,9 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("review")}
-      title="Review today — FSRS 到期队列"
+      title="今日复习 — FSRS 到期队列"
     >
-      <Icon name="cards" size={14} /><span class="lbl"> Review</span><span class="nav-k">FSRS</span>
+      <Icon name="cards" size={14} /><span class="lbl"> 复习</span><span class="nav-k">FSRS</span>
     </div>
 
     <div
@@ -251,9 +251,9 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("sprint")}
-      title="Sprint planner — 目标驱动的冲刺规划 (Space q)"
+      title="冲刺规划 — 目标驱动 (Space q)"
     >
-      <Icon name="star" size={14} /><span class="lbl"> Sprint</span><span class="nav-k">␣ q</span>
+      <Icon name="star" size={14} /><span class="lbl"> 冲刺</span><span class="nav-k">␣ q</span>
     </div>
 
     <div
@@ -262,9 +262,9 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("literature")}
-      title="Literature reader - paper reader + selection LLM (Space l)"
+      title="文献阅读 — 论文精读 + 划词解释 (Space l)"
     >
-      <Icon name="reader" size={14} /><span class="lbl"> Literature</span><span class="nav-k">␣ l</span>
+      <Icon name="reader" size={14} /><span class="lbl"> 文献</span><span class="nav-k">␣ l</span>
     </div>
 
     <div
@@ -273,17 +273,17 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("vocabulary")}
-      title="Vocabulary workbench - per-subject English term dictionary (Space v)"
+      title="词汇本 — 按科目的术语词典 (Space v)"
     >
-      <Icon name="cards" size={14} /><span class="lbl"> Vocabulary</span><span class="nav-k">␣ v</span>
+      <Icon name="cards" size={14} /><span class="lbl"> 词汇</span><span class="nav-k">␣ v</span>
     </div>
 
     <!-- Subjects section header -->
     <div class="sb-section-l">
-      <span class="label">Subjects</span>
+      <span class="label">科目</span>
       <span
         class="add"
-        title="New subject"
+        title="新建科目"
         role="button"
         tabindex="0"
         onclick={() => app.setView("add-subject")}
@@ -311,7 +311,7 @@
             onclick={(e) => toggleExpand(s.id, e)}
             role="button"
             tabindex="-1"
-            aria-label="Expand {s.name}"
+            aria-label="展开 {s.name}"
           >
             <Icon name="chevron" size={11} />
           </span>
@@ -323,8 +323,8 @@
             <button
               class="s-act"
               type="button"
-              title="Edit subject"
-              aria-label="Edit {s.name}"
+              title="编辑科目"
+              aria-label="编辑 {s.name}"
               onclick={(e) => editSubject(s, e)}
             >
               <Icon name="pencil" size={12} />
@@ -332,8 +332,8 @@
             <button
               class="s-act"
               type="button"
-              title="Add a topic to {s.name}"
-              aria-label="Add topic to {s.name}"
+              title="给 {s.name} 添加主题"
+              aria-label="给 {s.name} 添加主题"
               onclick={async (e) => {
                 e.stopPropagation();
                 app.activeSubjectId = s.id;
@@ -366,15 +366,15 @@
                 use:reorderable={{ index: ti, group: "topics:" + s.id, onReorder: (from, to) => reorderTopic(s.id, s.topics.map((x) => x.id), from, to) }}
               >
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <span class="t-tw{tOpen ? ' open' : ''}" role="button" tabindex="-1" aria-label="Toggle sources" onclick={(e) => toggleTopic(t.id, e)}><Icon name="chevron" size={10} /></span>
+                <span class="t-tw{tOpen ? ' open' : ''}" role="button" tabindex="-1" aria-label="展开/收起资料" onclick={(e) => toggleTopic(t.id, e)}><Icon name="chevron" size={10} /></span>
                 <span class="t-glyph" style="flex:none;font-size:11px;margin-right:5px">{t.glyph || topicGlyph(t.id)}</span>
                 <span class="t-name">{t.name}</span>
                 <span class="t-actions">
                   <button
                     class="s-act"
                     type="button"
-                    title="Rename topic"
-                    aria-label="Rename {t.name}"
+                    title="重命名主题"
+                    aria-label="重命名 {t.name}"
                     onclick={(e) => editTopic(t, s.id, e)}
                   >
                     <Icon name="pencil" size={11} />
@@ -382,8 +382,8 @@
                   <button
                     class="s-act"
                     type="button"
-                    title="Add a source to {t.name}"
-                    aria-label="Add source to {t.name}"
+                    title="给 {t.name} 添加资料"
+                    aria-label="给 {t.name} 添加资料"
                     onclick={(e) => { e.stopPropagation(); app.newSourceInTopic(t.id); }}
                   >
                     <Icon name="plus" size={11} />
@@ -392,8 +392,8 @@
                     <button
                       class="s-act"
                       type="button"
-                      title="Delete empty topic"
-                      aria-label="Delete topic {t.name}"
+                      title="删除空主题"
+                      aria-label="删除主题 {t.name}"
                       onclick={async (e) => {
                         e.stopPropagation();
                         const ok = await app.confirm({ title: `Delete topic "${t.name}"?`, body: "This empty topic will be removed.", danger: true, okLabel: "Delete" });
@@ -437,7 +437,7 @@
                 onkeydown={(e) => (e.key === "Enter" || e.key === " ") && toggleTopic(ugId, e)}
               >
                 <span class="t-tw{ugOpen ? ' open' : ''}"><Icon name="chevron" size={10} /></span>
-                <span class="t-name">Ungrouped</span>
+                <span class="t-name">未分组</span>
               </div>
               {#if ugOpen}
                 {#each ungroupedSources(s) as src (src.id)}
@@ -468,7 +468,7 @@
   <button
     class="sb-settings{app.view === 'settings' ? ' on' : ''}"
     onclick={() => app.setView("settings")}
-    title="Settings"
+    title="设置"
   >
     <Icon name="settings" size={14} /> Settings
   </button>

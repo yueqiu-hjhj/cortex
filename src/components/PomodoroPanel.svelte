@@ -393,8 +393,8 @@
     <div class="pom-modal" role="presentation" onmousedown={(e) => e.stopPropagation()}>
       <header class="pom-head">
         <div>
-          <div class="eyebrow">Focus ritual</div>
-          <div class="pom-title">Pomodoro</div>
+          <div class="eyebrow">专注节奏</div>
+          <div class="pom-title">番茄钟</div>
         </div>
         <div class="pom-head-actions">
           <button
@@ -454,28 +454,28 @@
       {#if showSettings}
         <div class="pom-settings">
           <div class="pom-set-row">
-            <label class="mono" for="pm-work">Focus</label>
+            <label class="mono" for="pm-work">专注</label>
             <input
               id="pm-work" type="number" min="1" max="180" value={pomo.workMin}
               onchange={(e) => commitSettings(+(e.target as HTMLInputElement).value, pomo.breakMin, pomo.longBreakMin)}
             />
-            <span class="pom-set-unit mono">min</span>
+            <span class="pom-set-unit mono">分钟</span>
           </div>
           <div class="pom-set-row">
-            <label class="mono" for="pm-short">Short break</label>
+            <label class="mono" for="pm-short">短休息</label>
             <input
               id="pm-short" type="number" min="1" max="180" value={pomo.breakMin}
               onchange={(e) => commitSettings(pomo.workMin, +(e.target as HTMLInputElement).value, pomo.longBreakMin)}
             />
-            <span class="pom-set-unit mono">min</span>
+            <span class="pom-set-unit mono">分钟</span>
           </div>
           <div class="pom-set-row">
-            <label class="mono" for="pm-long">Long break</label>
+            <label class="mono" for="pm-long">长休息</label>
             <input
               id="pm-long" type="number" min="1" max="180" value={pomo.longBreakMin}
               onchange={(e) => commitSettings(pomo.workMin, pomo.breakMin, +(e.target as HTMLInputElement).value)}
             />
-            <span class="pom-set-unit mono">min</span>
+            <span class="pom-set-unit mono">分钟</span>
           </div>
           <div class="pom-set-note mono">Long break every {pomo.sessionsBeforeLong}th focus session · {pomo.completedSessions} done today.</div>
         </div>

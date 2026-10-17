@@ -37,18 +37,18 @@
   }
   const TOOLS: Tool[] = [
     { id: "ocr", name: "OCR 截屏", desc: "截图问答卡", icon: "camera", tone: "amber", run: () => { void app.openOcrFromClipboard(); } },
-    { id: "cheat",     name: "Cheatsheet",  desc: "自动生成的复习提纲",          icon: "book",    tone: "accent", run: () => goToSubjectTab("cheatsheet") },
-    { id: "cards",     name: "Flashcards",  desc: "FSRS 间隔重复抽认卡",         icon: "cards",    tone: "ok",     run: () => goToSubjectTab("materials") },
-    { id: "quiz",      name: "Quiz",        desc: "边做边检验掌握度",            icon: "check",    tone: "warn",   run: () => goToSubjectTab("materials") },
-    { id: "graph",     name: "Neural Graph",desc: "知识图谱 / 神经星图",          icon: "graph",    tone: "accent", run: () => app.setView("neural-graph") },
-    { id: "pomo",      name: "Pomodoro",   desc: "今天的专注时间线",                icon: "bolt",     tone: "accent", run: () => app.setView("pomodoro") },
-    { id: "materials", name: "Materials",   desc: "学习材料 + 讲义 + 导图",        icon: "grid",     tone: "info",   run: () => goToSubjectTab("materials") },
-    { id: "notes",     name: "Notes",       desc: "Markdown 笔记 + 闪念",         icon: "reader",   tone: "ok",     run: () => app.setView("notes") },
-    { id: "cite",      name: "Citations",   desc: "引用 + 大纲 + 学习计划",        icon: "cards",    tone: "info",   run: () => goToSubjectTab("citations") },
-    { id: "insights",  name: "Insights",    desc: "时间线 + 准确率 + 弱项",         icon: "chart",    tone: "accent", run: () => app.setView("analytics") },
-    { id: "calendar",  name: "Calendar",    desc: "日历 + 任务 + 截止日",           icon: "calendar", tone: "warn",   run: () => app.setView("calendar") },
-    { id: "record",    name: "Recorder",    desc: "录课 + 转写 + AI 摘要",        icon: "record",   tone: "err",    run: () => app.setView("recorder") },
-    { id: "glossary",   name: "Glossary",   desc: "术语 + 定义卡组",                icon: "book",     tone: "lavender",run: () => {
+    { id: "cheat",     name: "速查表",  desc: "自动生成的复习提纲",          icon: "book",    tone: "accent", run: () => goToSubjectTab("cheatsheet") },
+    { id: "cards",     name: "闪卡",  desc: "FSRS 间隔重复抽认卡",         icon: "cards",    tone: "ok",     run: () => goToSubjectTab("materials") },
+    { id: "quiz",      name: "测验",        desc: "边做边检验掌握度",            icon: "check",    tone: "warn",   run: () => goToSubjectTab("materials") },
+    { id: "graph",     name: "知识图谱",desc: "知识图谱 / 神经星图",          icon: "graph",    tone: "accent", run: () => app.setView("neural-graph") },
+    { id: "pomo",      name: "番茄钟",   desc: "今天的专注时间线",                icon: "bolt",     tone: "accent", run: () => app.setView("pomodoro") },
+    { id: "materials", name: "学习材料",   desc: "学习材料 + 讲义 + 导图",        icon: "grid",     tone: "info",   run: () => goToSubjectTab("materials") },
+    { id: "notes",     name: "笔记",       desc: "Markdown 笔记 + 闪念",         icon: "reader",   tone: "ok",     run: () => app.setView("notes") },
+    { id: "cite",      name: "引用",   desc: "引用 + 大纲 + 学习计划",        icon: "cards",    tone: "info",   run: () => goToSubjectTab("citations") },
+    { id: "insights",  name: "学习分析",    desc: "时间线 + 准确率 + 弱项",         icon: "chart",    tone: "accent", run: () => app.setView("analytics") },
+    { id: "calendar",  name: "日历",    desc: "日历 + 任务 + 截止日",           icon: "calendar", tone: "warn",   run: () => app.setView("calendar") },
+    { id: "record",    name: "录音",    desc: "录课 + 转写 + AI 摘要",        icon: "record",   tone: "err",    run: () => app.setView("recorder") },
+    { id: "glossary",   name: "术语表",   desc: "术语 + 定义卡组",                icon: "book",     tone: "lavender",run: () => {
       if (!app.activeSubjectId && app.subjects[0]) app.openSubject(app.subjects[0].id);
       app.setView("glossary");
     } },
@@ -94,12 +94,12 @@
   <div class="dash">
     <header class="dash-head">
       <div>
-        <div class="eyebrow">{dayName} · week {weekNum}</div>
-        <h1 class="dash-title">Your subjects</h1>
+        <div class="eyebrow">{dayName} · 第 {weekNum} 周</div>
+        <h1 class="dash-title">我的科目</h1>
       </div>
       <div class="row gap-2">
         <button class="btn btn--sm btn--primary" onclick={() => app.setView("add-subject")}>
-          <Icon name="plus" size={13} /> New subject
+          <Icon name="plus" size={13} /> 新建科目
         </button>
       </div>
     </header>
@@ -175,7 +175,7 @@
     <div class="subj-grid">
       {#if app.subjects.length === 0}
         <div style:grid-column="1 / -1" style:text-align="center" style:padding="48px 0" style:color="var(--fg-faint)">
-          Add your first subject.
+          添加第一个科目。
         </div>
       {/if}
 
@@ -200,7 +200,7 @@
           <div class="subj-stat mono">{s.sourceCount} sources · {s.topics.length} topics</div>
           <div class="subj-foot">
             {#if s.sourceCount === 0}
-              <span class="status-pill status-pill--review"><span class="dot"></span>No sources yet</span>
+              <span class="status-pill status-pill--review"><span class="dot"></span>还没有资料</span>
             {:else}
               <span class="status-pill status-pill--ready"><span class="dot"></span>{s.sourceCount} source{s.sourceCount === 1 ? "" : "s"}</span>
             {/if}
@@ -211,7 +211,7 @@
       <button class="subj-card subj-card--add" onclick={() => app.setView("add-subject")}>
         <div class="add-inner">
           <Icon name="plus" size={20} color="var(--fg-faint)" />
-          <span>Add subject</span>
+          <span>新建科目</span>
         </div>
       </button>
     </div>

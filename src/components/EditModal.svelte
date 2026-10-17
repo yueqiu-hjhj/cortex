@@ -132,31 +132,31 @@
 
       <label class="edit-field">
         <span class="edit-lbl">{t.kind === "topic" ? "Topic name" : "Name"}</span>
-        <input bind:this={firstInput} bind:value={name} class="input" placeholder="Name" />
+        <input bind:this={firstInput} bind:value={name} class="input" placeholder="名称" />
       </label>
 
       {#if t.kind === "topic"}
         <div class="edit-field">
-          <span class="edit-lbl">Icon</span>
+          <span class="edit-lbl">图标</span>
           <EmojiPicker value={glyph} onPick={(e) => (glyph = e)} />
         </div>
         <label class="edit-field">
-          <span class="edit-lbl">Tags <span class="faint">e.g. A2 · chat &amp; deadlines group by tag</span></span>
-          <input bind:value={tagsText} class="input" placeholder="comma, separated, tags" />
+          <span class="edit-lbl">标签 <span class="faint">例如：作业2 · 对话与截止日按标签分组</span></span>
+          <input bind:value={tagsText} class="input" placeholder="用逗号分隔" />
         </label>
       {/if}
 
       {#if t.kind === "subject"}
         <label class="edit-field">
-          <span class="edit-lbl">Code</span>
-          <input bind:value={code} class="input" placeholder="e.g. PHIL-101" />
+          <span class="edit-lbl">课程代码</span>
+          <input bind:value={code} class="input" placeholder="例如：PHIL-101" />
         </label>
         <div class="edit-field">
-          <span class="edit-lbl">Glyph</span>
+          <span class="edit-lbl">图标字符</span>
           <EmojiPicker value={glyph} onPick={(e) => (glyph = e)} />
         </div>
         <div class="edit-field">
-          <span class="edit-lbl">Color</span>
+          <span class="edit-lbl">颜色</span>
           <div class="edit-colors">
             {#each SUBJECT_COLORS as c}
               <button
@@ -174,33 +174,33 @@
 
       {#if t.kind === "source"}
         <div class="edit-field">
-          <span class="edit-lbl">Subject</span>
+          <span class="edit-lbl">科目</span>
           <Picker
             value={selectedSubjectId}
             onChange={(id) => { selectedSubjectId = id; topicId = ""; }}
             options={subjectOptions}
-            placeholder="— select subject —"
+            placeholder="— 选择科目 —"
           />
         </div>
         <div class="edit-field">
-          <span class="edit-lbl">Topic</span>
+          <span class="edit-lbl">主题</span>
           <Picker
             value={topicId}
             onChange={(id) => (topicId = id)}
             options={topicOptions}
-            placeholder="— no topic —"
+            placeholder="— 不归入主题 —"
           />
         </div>
         <label class="edit-field">
-          <span class="edit-lbl">Tags</span>
-          <input bind:value={tagsText} class="input" placeholder="comma, separated, tags" />
+          <span class="edit-lbl">标签</span>
+          <input bind:value={tagsText} class="input" placeholder="用逗号分隔" />
         </label>
       {/if}
 
       <div class="edit-actions">
-        <button class="btn btn--danger btn--sm" type="button" style="margin-right:auto" onclick={del}>Delete</button>
+        <button class="btn btn--danger btn--sm" type="button" style="margin-right:auto" onclick={del}>删除</button>
         {#if t.kind === "subject"}
-          <button class="btn btn--ghost btn--sm" type="button" onclick={archive}>Archive</button>
+          <button class="btn btn--ghost btn--sm" type="button" onclick={archive}>归档</button>
         {/if}
         <button class="btn btn--ghost btn--sm" type="button" onclick={() => app.closeEdit()}>Cancel</button>
         <button class="btn btn--primary btn--sm" type="button" onclick={save}>Save</button>

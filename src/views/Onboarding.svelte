@@ -58,7 +58,7 @@
       {/each}
     </div>
     <div class="onb-skip">
-      <button class="btn btn--ghost btn--sm" onclick={finish}>Skip setup</button>
+      <button class="btn btn--ghost btn--sm" onclick={finish}>跳过设置</button>
     </div>
   </div>
 
@@ -68,43 +68,43 @@
       <!-- Step 0: Welcome -->
       {#if step === 0}
         <div class="onb-pane">
-          <div class="eyebrow">First run</div>
-          <h1 class="read onb-h">A calm place for hard subjects.</h1>
+          <div class="eyebrow">首次使用</div>
+          <h1 class="read onb-h">给难学的科目，一个安静的地方。</h1>
           <p class="onb-p read">
-            Cortex turns lectures, PDFs, recordings and the web into structured study material —
-            cheatsheets you can trust, flashcards, and a chat that stays scoped to exactly what
-            you ask. Five quick steps; you can change anything later.
+            Cortex 把讲义、PDF、录音和网页变成结构化的学习材料 —
+            可信的速查表、闪卡，以及严格限定在你所选范围内的对话。
+            五步即可完成，之后随时可以改。
           </p>
           <div class="onb-feats">
             <div class="onb-feat">
               <Icon name="book" size={15} color="var(--accent)" />
-              <span>Completeness-checked cheatsheets — nothing silently dropped</span>
+              <span>速查表做完整性检查 — 不会悄悄漏掉内容</span>
             </div>
             <div class="onb-feat">
               <Icon name="record" size={15} color="var(--accent)" />
-              <span>Lecture recording &amp; transcription, built in</span>
+              <span>内置讲座录音与实时转写</span>
             </div>
             <div class="onb-feat">
               <Icon name="cmd" size={15} color="var(--accent)" />
-              <span>Keyboard-first, Helix-style modal navigation</span>
+              <span>键盘优先，Helix 风格的模式化导航</span>
             </div>
           </div>
           <button class="btn btn--primary onb-cta" onclick={next}>
-            Get started <Icon name="arrowR" size={14} />
+            开始使用 <Icon name="arrowR" size={14} />
           </button>
         </div>
 
       <!-- Step 1: BYOK -->
       {:else if step === 1}
         <div class="onb-pane">
-          <div class="eyebrow">Bring your own key</div>
-          <h1 class="read onb-h">Paste your Gemini API key.</h1>
+          <div class="eyebrow">自带密钥</div>
+          <h1 class="read onb-h">粘贴你的 Gemini API 密钥。</h1>
           <p class="onb-p read">
             Cortex is BYOK — your key stays on this machine, in the OS keychain. Nothing routes
             through our servers. You can add Claude, OpenAI or a local Ollama model later in Settings.
           </p>
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">GEMINI_API_KEY</label>
+          <label class="onb-label mono">GEMINI 密钥</label>
           <input
             class="input"
             bind:value={apiKey}
@@ -113,22 +113,22 @@
           />
           <div class="onb-row">
             <Icon name="diamond" size={11} color="var(--fg-faint)" />
-            <span class="mono faint">Stored in keychain · never synced</span>
+            <span class="mono faint">存在系统钥匙串 · 永不同步</span>
           </div>
           <div class="onb-actions">
-            <button class="btn btn--ghost" onclick={next}>I'll add it later</button>
-            <button class="btn btn--primary" onclick={next}>Continue <Icon name="arrowR" size={14} /></button>
+            <button class="btn btn--ghost" onclick={next}>稍后再加</button>
+            <button class="btn btn--primary" onclick={next}>继续 <Icon name="arrowR" size={14} /></button>
           </div>
         </div>
 
       <!-- Step 2: Theme -->
       {:else if step === 2}
         <div class="onb-pane">
-          <div class="eyebrow">Appearance</div>
-          <h1 class="read onb-h">We detected your Omarchy theme.</h1>
+          <div class="eyebrow">外观</div>
+          <h1 class="read onb-h">检测到你的 Omarchy 主题。</h1>
           <p class="onb-p read">
-            Cortex re-skins live with your desktop. We found <b class="accent">Osaka Jade</b> —
-            keep it, or pick another. Switching your Omarchy theme later updates Cortex automatically.
+            Cortex 会跟着桌面主题实时换肤。检测到 <b class="accent">Osaka Jade</b> —
+            可以直接用它，也可以另选一个。之后切换 Omarchy 主题时 Cortex 会自动更新。
           </p>
           <div class="onb-themes">
             {#each THEME_OPTS as t}
@@ -148,20 +148,19 @@
             {/each}
           </div>
           <div class="onb-actions">
-            <span class="mono faint">Detected via Omarchy</span>
-            <button class="btn btn--primary" onclick={next}>Continue <Icon name="arrowR" size={14} /></button>
+            <span class="mono faint">来自 Omarchy 检测</span>
+            <button class="btn btn--primary" onclick={next}>继续 <Icon name="arrowR" size={14} /></button>
           </div>
         </div>
 
       <!-- Step 3: Homelab -->
       {:else if step === 3}
         <div class="onb-pane">
-          <div class="eyebrow">Optional</div>
-          <h1 class="read onb-h">Got a homelab?</h1>
+          <div class="eyebrow">可选</div>
+          <h1 class="read onb-h">有自己的 homelab 吗？</h1>
           <p class="onb-p read">
-            Offload heavy jobs — Whisper transcription, large-model synthesis, backups — to a
-            machine on your network. Cortex stays fully local without it; this just makes big
-            jobs faster.
+            可以把重活 — Whisper 转写、大模型生成、备份 — 交给局域网里的机器。
+            不配置也完全可用，只是大任务会慢一些。
           </p>
           <button
             class={"onb-toggle" + (homelab ? " on" : "")}
@@ -173,7 +172,7 @@
           {#if homelab}
             <div class="onb-homelab">
               <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label class="onb-label mono">ENDPOINT</label>
+              <label class="onb-label mono">服务地址</label>
               <input
                 class="input"
                 bind:value={homelabEndpoint}
@@ -186,27 +185,27 @@
             </div>
           {/if}
           <div class="onb-actions">
-            <button class="btn btn--ghost" onclick={next}>Skip</button>
-            <button class="btn btn--primary" onclick={next}>Continue <Icon name="arrowR" size={14} /></button>
+            <button class="btn btn--ghost" onclick={next}>跳过</button>
+            <button class="btn btn--primary" onclick={next}>继续 <Icon name="arrowR" size={14} /></button>
           </div>
         </div>
 
       <!-- Step 4: First subject -->
       {:else if step === 4}
         <div class="onb-pane">
-          <div class="eyebrow">Last step</div>
-          <h1 class="read onb-h">Create your first subject.</h1>
+          <div class="eyebrow">最后一步</div>
+          <h1 class="read onb-h">创建第一个科目。</h1>
           <p class="onb-p read">
             A subject holds topics, sources and one living cheatsheet. Name it after a course —
             you'll add lectures next.
           </p>
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">SUBJECT NAME</label>
+          <label class="onb-label mono">科目名称</label>
           <!-- svelte-ignore a11y_autofocus -->
           <input
             class="input"
             bind:value={subjName}
-            placeholder="e.g. Algorithms"
+            placeholder="例如：算法导论"
             autofocus
           />
           <div class="onb-suggest">

@@ -16,14 +16,14 @@
 
   // material type metadata
   const MAT_TYPES: Record<string, { label: string; group: string; icon: string; color: string }> = {
-    flashcards:  { label: "Flashcards",      group: "Flashcards",       icon: "cards", color: "var(--accent)"       },
-    quiz:        { label: "Quiz",             group: "Quizzes",          icon: "check", color: "var(--info)"         },
-    audio:       { label: "Audio overview",   group: "Audio overviews",  icon: "music", color: "var(--mode-select)"  },
-    slideshow:   { label: "Slides",           group: "Slides",           icon: "grid",  color: "var(--warn)"         },
-    infographic: { label: "Infographic",      group: "Infographics",     icon: "grid",  color: "var(--ok)"           },
-    mindmap:     { label: "Mind map",          group: "Mind maps",        icon: "link",  color: "var(--info)"         },
-    matrix:      { label: "Comparison matrix", group: "Comparison matrices", icon: "grid", color: "var(--mode-select)" },
-    guide:       { label: "Study guide",       group: "Study guides",     icon: "cards", color: "var(--ok)"           },
+    flashcards:  { label: "闪卡",      group: "闪卡",       icon: "cards", color: "var(--accent)"       },
+    quiz:        { label: "测验",             group: "测验",          icon: "check", color: "var(--info)"         },
+    audio:       { label: "音频概览",   group: "音频概览",  icon: "music", color: "var(--mode-select)"  },
+    slideshow:   { label: "幻灯片",           group: "幻灯片",           icon: "grid",  color: "var(--warn)"         },
+    infographic: { label: "信息图",      group: "信息图",     icon: "grid",  color: "var(--ok)"           },
+    mindmap:     { label: "思维导图",          group: "思维导图",        icon: "link",  color: "var(--info)"         },
+    matrix:      { label: "对比矩阵", group: "对比矩阵", icon: "grid", color: "var(--mode-select)" },
+    guide:       { label: "学习指南",       group: "学习指南",     icon: "cards", color: "var(--ok)"           },
   };
   const MAT_ORDER = ["flashcards", "quiz", "audio", "slideshow", "infographic", "mindmap", "matrix", "guide"];
 
@@ -103,16 +103,16 @@
 
   function launchLabel(type: string): string {
     const map: Record<string, string> = {
-      flashcards: "Study",
-      quiz: "Start quiz",
-      audio: "Play",
-      infographic: "View",
-      slideshow: "View slides",
-      mindmap: "View map",
-      matrix: "View table",
-      guide: "Read guide",
+      flashcards: "开始复习",
+      quiz: "开始测验",
+      audio: "播放",
+      infographic: "查看",
+      slideshow: "看幻灯片",
+      mindmap: "看导图",
+      matrix: "看表格",
+      guide: "读指南",
     };
-    return map[type] ?? "Open";
+    return map[type] ?? "打开";
   }
 
   function launch(m: Card) {
@@ -276,7 +276,7 @@
 
       {#if loading}
         <div class="mat-empty">
-          <span class="mono faint">Loading materials…</span>
+          <span class="mono faint">正在加载材料…</span>
         </div>
       {:else if materials.length === 0}
         <!-- empty state -->
@@ -284,8 +284,8 @@
           <div class="mat-empty-ico">
             <Icon name="bolt" size={26} color="var(--fg-faint)" />
           </div>
-          <h2 class="read mat-empty-h">No materials yet</h2>
-          <p class="mono faint mat-empty-sub">Generate flashcards, quizzes, study guides, slides, or infographics from your sources.</p>
+          <h2 class="read mat-empty-h">还没有学习材料</h2>
+          <p class="mono faint mat-empty-sub">从你的资料生成闪卡、测验、学习指南、幻灯片或信息图。</p>
           <button
             class="btn btn--primary"
             onclick={() => app.setView("gen-material")}
@@ -299,7 +299,7 @@
           <button
             class="filter-chip{filter === 'all' ? ' on' : ''}"
             onclick={() => (filter = "all")}
-          >All topics</button>
+          >全部主题</button>
           {#each topics as t (t)}
             <button
               class="filter-chip{filter === t ? ' on' : ''}"

@@ -631,8 +631,8 @@
       <!-- No subject open -->
       <div class="cs-empty-state">
         <Icon name="diamond" size={28} color="var(--fg3)" />
-        <div class="ces-title">No subject open</div>
-        <div class="ces-sub">Open a subject from the sidebar to view its cheatsheet.</div>
+        <div class="ces-title">未打开科目</div>
+        <div class="ces-sub">从左侧选择一个科目，查看它的速查表。</div>
       </div>
     {:else}
       {@const sub = app.activeSubject}
@@ -674,7 +674,7 @@
           <div class="cs-working-ico">
             <Icon name="diamond" size={26} color="var(--fg3)" />
           </div>
-          <p class="cs-working-sub mono muted">Loading cheatsheet…</p>
+          <p class="cs-working-sub mono muted">正在加载速查表…</p>
         </div>
       {:else if !hasCheatsheet}
         <!-- Selection has no stored cheatsheet yet -->
@@ -687,7 +687,7 @@
           <div class="cs-working-ico">
             <Icon name="diamond" size={26} color="var(--fg3)" />
           </div>
-          <h1 class="cs-working-title read">No cheatsheet yet</h1>
+          <h1 class="cs-working-title read">还没有速查表</h1>
           <p class="cs-working-sub mono muted">
             {#if noSources}
               Add sources to {selectedTopicId === null
@@ -728,11 +728,11 @@
           </div>
           <div class="cs-doc-actions">
             {#if insertMode}
-              <span class="cs-insert-badge mono">— INSERT —</span>
-              <span class="cs-insert-hint faint">click any block to edit</span>
+              <span class="cs-insert-badge mono">— 编辑中 —</span>
+              <span class="cs-insert-hint faint">点击任意块即可编辑</span>
               <span class="cs-insert-status mono faint">{inlineDirty ? "saving…" : "saved ✓"}</span>
               <button class="btn btn--sm btn--primary" onclick={exitInsert}>
-                <Icon name="check" size={13} /> Done <span class="kbd">Esc</span>
+                <Icon name="check" size={13} /> 完成 <span class="kbd">Esc</span>
               </button>
             {:else if mode === "edit"}
               <button class="btn btn--sm btn--ghost" onclick={cancelEdit} disabled={saving}>
@@ -750,7 +750,7 @@
               </button>
               {#if !isMobile}
                 <button class="btn btn--sm" onclick={enterInsert} title="Edit inline — just type, it autosaves; Esc to finish (i)">
-                  <Icon name="pencil" size={13} /> Inline edit <span class="kbd">i</span>
+                  <Icon name="pencil" size={13} /> 就地编辑 <span class="kbd">i</span>
                 </button>
               {/if}
               <button class="btn btn--sm" onclick={enterEdit} title="Structured editor — add/remove sections + images">
@@ -891,7 +891,7 @@
                               onclickcapture={(e) => { e.preventDefault(); e.stopPropagation(); openBodyEdit(bk); }}
                               onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); openBodyEdit(bk); } }}
                             >
-                              {#if item.d.trim()}<RichText text={item.d} />{:else}<span class="cs-ce-empty">Empty — click to write…</span>{/if}
+                              {#if item.d.trim()}<RichText text={item.d} />{:else}<span class="cs-ce-empty">空 — 点击输入…</span>{/if}
                             </div>
                           {/if}
                         {:else}<RichText text={item.d} />{/if}
@@ -953,9 +953,9 @@
        "Inline edit" button, which is hidden on mobile. -->
   {#if isMobile && hasCheatsheet && mode === "preview"}
     {#if insertMode}
-      <button class="cs-fab-edit" onclick={exitInsert} aria-label="Done editing" title="Finish editing (Esc)"><Icon name="check" size={16} /> Done</button>
+      <button class="cs-fab-edit" onclick={exitInsert} aria-label="结束编辑" title="结束编辑 (Esc)"><Icon name="check" size={16} /> 完成</button>
     {:else}
-      <button class="cs-fab-edit" onclick={enterInsert} aria-label="Edit cheatsheet" title="Edit inline"><Icon name="pencil" size={16} /> Edit</button>
+      <button class="cs-fab-edit" onclick={enterInsert} aria-label="编辑速查表" title="就地编辑"><Icon name="pencil" size={16} /> 编辑</button>
     {/if}
     <!-- Mobile section jump (desktop's top-right index, as a bottom-left button → sheet). -->
     <button class="cs-fab-sections" onclick={() => (sectionsOpen = true)} aria-label="Jump to a section" title="Sections">
@@ -964,11 +964,11 @@
   {/if}
 
   {#if isMobile && sectionsOpen}
-    <button class="cs-sheet-back" aria-label="Close" onclick={() => (sectionsOpen = false)}></button>
+    <button class="cs-sheet-back" aria-label="关闭" onclick={() => (sectionsOpen = false)}></button>
     <nav class="cs-sheet" aria-label="Jump to section">
       <div class="cs-sheet-head">
-        <span class="page-title">Sections</span>
-        <button class="btn btn--icon btn--sm btn--ghost" aria-label="Close" onclick={() => (sectionsOpen = false)}><Icon name="x" size={15} /></button>
+        <span class="page-title">章节</span>
+        <button class="btn btn--icon btn--sm btn--ghost" aria-label="关闭" onclick={() => (sectionsOpen = false)}><Icon name="x" size={15} /></button>
       </div>
       <div class="cs-sheet-list">
         {#each indexSections as sec (sec.id)}
@@ -996,7 +996,7 @@
     <div class="cs-hist" onmousedown={(e) => e.stopPropagation()}>
       <header class="cs-hist-head">
         <div>
-          <div class="eyebrow">Version history</div>
+          <div class="eyebrow">版本历史</div>
           <div class="cs-hist-title mono">{cheatTopic} · diff vs current</div>
         </div>
         <div class="cs-hist-stats mono">
@@ -1010,9 +1010,9 @@
       <div class="cs-hist-body">
         <aside class="cs-hist-list">
           {#if histLoading}
-            <div class="mono faint" style="padding:12px">Loading…</div>
+            <div class="mono faint" style="padding:12px">正在加载…</div>
           {:else if versions.length === 0}
-            <div class="mono faint" style="padding:12px">No versions yet.</div>
+            <div class="mono faint" style="padding:12px">还没有历史版本。</div>
           {:else}
             {#each versions as v, i (v.id)}
               <button

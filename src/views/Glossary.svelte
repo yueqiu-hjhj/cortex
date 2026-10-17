@@ -118,7 +118,7 @@
 <div class="glossary">
   <header class="gl-head">
     <div>
-      <div class="eyebrow">Glossary</div>
+      <div class="eyebrow">术语表</div>
       <h1 class="gl-title">
         {subjectName ? subjectName + " · Glossary" : "Glossary"}
       </h1>
@@ -142,14 +142,14 @@
           aria-selected={filter === "all"}
           onclick={() => (filter = "all")}
           type="button"
-        >All <span class="seg-count">{counts.total}</span></button>
+        >全部 <span class="seg-count">{counts.total}</span></button>
         <button
           class="seg-btn{filter === "fuzzy" ? " on" : ""}"
           role="tab"
           aria-selected={filter === "fuzzy"}
           onclick={() => (filter = "fuzzy")}
           type="button"
-        >Fuzzy <span class="seg-count">{counts.fuzzy}</span></button>
+        >模糊 <span class="seg-count">{counts.fuzzy}</span></button>
       </div>
     </div>
   </header>
@@ -157,8 +157,8 @@
   {#if !sid}
     <div class="gl-empty">
       <div class="gl-empty-glyph">📖</div>
-      <div class="gl-empty-title">No subject selected</div>
-      <div class="gl-empty-body">Glossaries are per-subject. Open a subject first, then come back here.</div>
+      <div class="gl-empty-title">未选择科目</div>
+      <div class="gl-empty-body">术语表按科目区分。请先打开一个科目再回来。</div>
       <button class="btn btn--primary btn--sm" type="button" onclick={() => app.setView("dashboard")}>
         Go to dashboard
       </button>
@@ -188,18 +188,18 @@
     </form>
 
     {#if !loaded}
-      <div class="gl-hint">Loading…</div>
+      <div class="gl-hint">正在加载…</div>
     {:else if terms.length === 0}
       <div class="gl-empty">
         <div class="gl-empty-glyph">📝</div>
-        <div class="gl-empty-title">No terms yet</div>
-        <div class="gl-empty-body">Add a term and its definition above to start building this glossary.</div>
+        <div class="gl-empty-title">还没有术语</div>
+        <div class="gl-empty-body">在上方添加术语和定义，开始建立这个术语表。</div>
       </div>
     {:else if visible.length === 0}
       <div class="gl-empty">
         <div class="gl-empty-glyph">✓</div>
-        <div class="gl-empty-title">No fuzzy terms</div>
-        <div class="gl-empty-body">Everything is known or new. Mark a few as "Still fuzzy" to build a review queue.</div>
+        <div class="gl-empty-title">没有模糊术语</div>
+        <div class="gl-empty-body">全部术语要么已掌握要么是新的。标记几个为「仍然模糊」来建立复习队列。</div>
       </div>
     {:else}
       <div class="gl-grid" class:gl-grid--review={filter === "fuzzy"}>
@@ -217,23 +217,23 @@
               <div class="gl-face gl-face-front">
                 <span class={"gl-status dot-" + t.status} title={t.status}></span>
                 <span class="gl-term">{t.term}</span>
-                <span class="gl-hint">click to flip</span>
+                <span class="gl-hint">点击翻面</span>
               </div>
               <div class="gl-face gl-face-back">
-                <span class="gl-def">{#if t.definition}{t.definition}{:else}<em class="faint">no definition</em>{/if}</span>
+                <span class="gl-def">{#if t.definition}{t.definition}{:else}<em class="faint">暂无定义</em>{/if}</span>
                 <div class="gl-actions" role="group">
                   <button
                     type="button"
                     class="btn btn--ok btn--sm"
                     onclick={(e) => { e.stopPropagation(); grade(t.id, "known"); }}
                     title="Mark as known"
-                  >Know it</button>
+                  >已掌握</button>
                   <button
                     type="button"
                     class="btn btn--fuzzy btn--sm"
                     onclick={(e) => { e.stopPropagation(); grade(t.id, "fuzzy"); }}
                     title="Mark as still fuzzy"
-                  >Still fuzzy</button>
+                  >仍然模糊</button>
                   <span class="grow"></span>
                   <button
                     type="button"

@@ -80,8 +80,8 @@
       <h2 class="read">{score} / {activeQs.length} correct</h2>
       <p class="mono muted">{score === activeQs.length ? "Flawless — nice." : "Review the misses, then retry."}</p>
       <div class="row gap-2" style="justify-content: center">
-        <button class="btn btn--primary" onclick={restart}>Retry</button>
-        <button class="btn" onclick={startReview}>Review wrong answers</button>
+        <button class="btn btn--primary" onclick={restart}>重做</button>
+        <button class="btn" onclick={startReview}>回顾错题</button>
         {#if onExit}
           <button class="btn" onclick={onExit}>
             <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={12} /></span> Materials
@@ -91,9 +91,9 @@
 
       <div class="qz-review">
         <div class="qz-revise">
-          <p class="mono qz-revise-head">What to revise</p>
+          <p class="mono qz-revise-head">需要复习</p>
           {#if wrongQs.length === 0}
-            <p class="read qz-revise-clear">Nothing to revise — you nailed every question.</p>
+            <p class="read qz-revise-clear">没有需要复习的 — 全部答对了。</p>
           {:else}
             <ul class="qz-revise-list">
               {#each wrongQs as wq (wq.q)}
@@ -133,8 +133,8 @@
                       <span class="quiz-key mono">{String.fromCharCode(65 + oi)}</span>
                       <span class="read">{opt}</span>
                       <span class="qz-review-tags">
-                        {#if isPick}<span class="badge qz-tag-you">Your answer</span>{/if}
-                        {#if isAnswer}<span class="badge qz-tag-correct">Correct</span>{/if}
+                        {#if isPick}<span class="badge qz-tag-you">你的选择</span>{/if}
+                        {#if isAnswer}<span class="badge qz-tag-correct">正确答案</span>{/if}
                       </span>
                     </div>
                   {/each}
@@ -170,7 +170,7 @@
 
     <div class="fc-meta mono">
       <span>{reviewKeys ? "Review" : "Question"} {i + 1} / {activeQs.length}</span>
-      <span>Recursion · multiple choice</span>
+      <span>单选题</span>
     </div>
 
     <div class="quiz-card">

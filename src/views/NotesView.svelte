@@ -246,7 +246,7 @@
     {:else}
       <aside class="notes-list">
         <div class="notes-list-head">
-          <span class="notes-list-title">Notes</span>
+          <span class="notes-list-title">笔记</span>
           <div class="notes-list-head-actions">
             <button class="btn btn--primary btn--sm" type="button" onclick={newNote} title="New note">
               <Icon name="plus" size={12} /> New note
@@ -269,11 +269,11 @@
         </div>
         <div class="notes-items">
           {#if loading}
-            <div class="notes-hint">Loading…</div>
+            <div class="notes-hint">正在加载…</div>
           {:else if notes.length === 0}
             <div class="notes-empty">
               <div class="notes-empty-glyph">📝</div>
-              <div class="notes-empty-title">No notes yet</div>
+              <div class="notes-empty-title">还没有笔记</div>
               <div class="notes-empty-body">
                 {app.activeSubjectId ? "Capture ideas in Markdown for this subject." : "Capture ideas in Markdown."}
               </div>
@@ -307,7 +307,7 @@
           {/if}
           <input
             class="notes-title"
-            placeholder="Untitled"
+            placeholder="未命名"
             value={title}
             oninput={(e) => { title = (e.target as HTMLInputElement).value; markDirty(); }}
           />
@@ -372,8 +372,8 @@
       {:else if !loading}
         <div class="notes-detail-empty">
           <div class="notes-empty-glyph">🗒️</div>
-          <div class="notes-empty-title">Select or create a note</div>
-          <div class="notes-empty-body">Your Markdown notes live here.</div>
+          <div class="notes-empty-title">选择或新建一条笔记</div>
+          <div class="notes-empty-body">你的 Markdown 笔记都在这里。</div>
         </div>
       {/if}
     </section>
@@ -386,7 +386,7 @@
     <div class="notes-fs-head">
       <input
         class="notes-fs-title"
-        placeholder="Untitled"
+        placeholder="未命名"
         value={title}
         oninput={(e) => { title = (e.target as HTMLInputElement).value; markDirty(); }}
       />
@@ -444,11 +444,11 @@
   <div class="workspace-scroll notes-workspace-scroll">
     <div class="notes-page">
       <div class="notes-page-head">
-        <div class="eyebrow">Notes</div>
+        <div class="eyebrow">笔记</div>
         <h1 class="notes-page-title">
           {app.activeSubject ? app.activeSubject.name + " · Notes" : "Notes"}
         </h1>
-        <div class="mono faint" style="font-size:var(--t-xs)">Markdown notes you can convert into sources</div>
+        <div class="mono faint" style="font-size:var(--t-xs)">Markdown 笔记，可转换成资料</div>
       </div>
       {@render notesWorkspace()}
     </div>
@@ -460,7 +460,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="ocr-modal" onmousedown={e => e.stopPropagation()}>
       <div class="ocr-head">
-        <h3>OCR — paste screenshot</h3>
+        <h3>OCR — 粘贴截图</h3>
         <button class="btn btn--icon btn--sm btn--ghost" type="button" disabled={ocrBusy} onclick={() => (ocrOpen = false)} aria-label="Close">
           <Icon name="x" size={14} />
         </button>
@@ -478,12 +478,12 @@
           <textarea class="ocr-textarea" bind:value={ocrBody} disabled={ocrBusy} rows="14"></textarea>
         </label>
         {#if ocrBusy}
-          <div class="ocr-busy">Transcribing… this uses the configured vision model.</div>
+          <div class="ocr-busy">正在识别…会使用已配置的视觉模型。</div>
         {/if}
       </div>
       <div class="ocr-foot">
-        <button class="btn btn--ghost btn--sm" type="button" disabled={ocrBusy} onclick={() => (ocrOpen = false)}>Cancel</button>
-        <button class="btn btn--primary btn--sm" type="button" disabled={ocrBusy || !ocrBody.trim()} onclick={saveOcrAsNote}>Save as note</button>
+        <button class="btn btn--ghost btn--sm" type="button" disabled={ocrBusy} onclick={() => (ocrOpen = false)}>取消</button>
+        <button class="btn btn--primary btn--sm" type="button" disabled={ocrBusy || !ocrBody.trim()} onclick={saveOcrAsNote}>保存为笔记</button>
       </div>
     </div>
   </div>

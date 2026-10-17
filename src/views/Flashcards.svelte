@@ -183,16 +183,16 @@
       <div class="fc-done-glyph">
         <Icon name="check" size={22} color="var(--ok)" />
       </div>
-      <h2 class="read">Deck complete</h2>
+      <h2 class="read">这一组复习完了</h2>
       <p class="mono muted">
         {activeDeck.length} cards graded · spaced-repetition schedule updated.
       </p>
       <div class="row gap-2" style="justify-content: center">
-        <button class="btn btn--primary" onclick={restart}>Study again</button>
+        <button class="btn btn--primary" onclick={restart}>再复习一轮</button>
         {#if dueCount > 0}
           <button class="btn" onclick={startDue}>Study due · {dueCount}</button>
         {/if}
-        <button class="btn" onclick={startReview}>Review missed</button>
+        <button class="btn" onclick={startReview}>复习答错的</button>
         {#if onExit}
           <button class="btn" onclick={onExit}>
             <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={12} /></span> Materials
@@ -202,7 +202,7 @@
 
       <div class="fc-review">
         <div class="fc-review-head mono">
-          <span>Cards you missed</span>
+          <span>答错的卡片</span>
           {#if missedCards.length > 0}
             <span class="badge">{missedCards.length}</span>
           {/if}
@@ -214,7 +214,7 @@
             {#each missedCards as card, idx (idx)}
               <li class="fc-review-item">
                 <div class="fc-review-q read"><RichText text={card.q} /></div>
-                <div class="fc-review-a-label mono">ANSWER</div>
+                <div class="fc-review-a-label mono">答案</div>
                 <div class="fc-review-a read"><RichText text={card.a} /></div>
               </li>
             {/each}
@@ -227,7 +227,7 @@
       <div class="fc-done-glyph">
         <Icon name="cards" size={22} color="var(--accent)" />
       </div>
-      <h2 class="read">Flashcards</h2>
+      <h2 class="read">闪卡</h2>
       <p class="mono muted">
         {deck.length} {deck.length === 1 ? "card" : "cards"}{dueCount > 0 ? ` · ${dueCount} due now` : " · nothing due right now"}
       </p>
@@ -238,7 +238,7 @@
         {:else}
           <button class="btn btn--primary" onclick={studyAll}>Study all · {deck.length}</button>
         {/if}
-        <button class="btn" onclick={startReview}>Review missed</button>
+        <button class="btn" onclick={startReview}>复习答错的</button>
       </div>
       {#if onExit}
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick={onExit}>
@@ -270,7 +270,7 @@
 
     <div class="fc-meta mono">
       <span>{reviewKeys ? "Review" : "Card"} {i + 1} / {activeDeck.length}</span>
-      <span>Recursion · SRS</span>
+      <span>间隔重复 · SRS</span>
     </div>
 
     <div
@@ -281,12 +281,12 @@
       onkeydown={(e) => { if (e.key === "Enter" && !glow) flipped = !flipped; }}
     >
       <div class="fc-face fc-front">
-        <div class="fc-side mono">QUESTION</div>
+        <div class="fc-side mono">问题</div>
         <div class="read fc-text"><RichText text={activeDeck[i].q} /></div>
-        <div class="fc-hint mono">click or <span class="kbd">␣</span> to flip</div>
+        <div class="fc-hint mono">点击或按 <span class="kbd">␣</span> 翻面</div>
       </div>
       <div class="fc-face fc-back">
-        <div class="fc-side mono">ANSWER</div>
+        <div class="fc-side mono">答案</div>
         <div class="read fc-text"><RichText text={activeDeck[i].a} /></div>
       </div>
     </div>

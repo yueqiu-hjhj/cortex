@@ -14,11 +14,11 @@
   let textTitle = $state("");
 
   const allMethods = [
-    { id: "upload" as const, ico: "doc",    t: "Upload Files",   d: "PDF · PPTX · DOCX · TXT · MD", k: "u" },
-    { id: "url"    as const, ico: "search", t: "Paste URL",       d: "web page · YouTube",            k: "p" },
-    { id: "text"   as const, ico: "doc",    t: "Paste Text",      d: "markdown · plain text",         k: "t" },
-    { id: "record" as const, ico: "record", t: "Record Lecture",  d: "live audio + transcript",       k: "r" },
-    { id: "photo"  as const, ico: "grid",   t: "Snap Photo",      d: "OCR a whiteboard / page",       k: "o" },
+    { id: "upload" as const, ico: "doc",    t: "上传文件",   d: "PDF · PPTX · DOCX · TXT · MD", k: "u" },
+    { id: "url"    as const, ico: "search", t: "粘贴链接",       d: "网页 · YouTube",            k: "p" },
+    { id: "text"   as const, ico: "doc",    t: "粘贴文本",      d: "Markdown · 纯文本",         k: "t" },
+    { id: "record" as const, ico: "record", t: "录制讲座",  d: "实时录音 + 转写",       k: "r" },
+    { id: "photo"  as const, ico: "grid",   t: "拍照识别",      d: "白板 / 书页 OCR",       k: "o" },
   ] as const;
   // Recording is available on mobile again: it captures audio and transcribes via the
   // homelab Whisper endpoint (remote-first). MobileShell mounts the Recorder view.
@@ -287,8 +287,8 @@
       </button>
     {/if}
     <div>
-      <div class="eyebrow">Add source</div>
-      <h1 class="addsrc-title">New source</h1>
+      <div class="eyebrow">添加资料</div>
+      <h1 class="addsrc-title">新资料</h1>
     </div>
     {#if selectedSubject}
       <div class="addsrc-crumb mono faint">
@@ -303,13 +303,13 @@
       {#if isMobile}
         <!-- Touch: a themed dropdown instead of clipping tiles. -->
         <div class="field">
-          <span class="onb-label mono">SOURCE TYPE</span>
+          <span class="onb-label mono">资料来源</span>
           <Picker
             value={method ?? ""}
             onChange={(id) => selectMethod(id as typeof methods[number]["id"])}
             options={methods.map((m) => ({ id: m.id, label: m.t }))}
             icon={methods.find((m) => m.id === method)?.ico ?? "doc"}
-            placeholder="Choose a source type…"
+            placeholder="选择一种来源…"
           />
         </div>
       {:else}
@@ -332,22 +332,22 @@
 
       <div class="addsrc-target">
         <div class="field">
-          <span class="onb-label mono">SUBJECT</span>
+          <span class="onb-label mono">科目</span>
           <Picker
             value={selectedSubjectId}
             onChange={(id) => { selectedSubjectId = id; selectedTopic = ""; }}
             options={subjectOptions}
-            placeholder="— select subject —"
+            placeholder="— 选择科目 —"
           />
         </div>
         {#if selectedSubject}
           <div class="field">
-            <span class="onb-label mono">TOPIC <span class="faint">where this lives</span></span>
+            <span class="onb-label mono">主题 <span class="faint">归到哪里</span></span>
             <Picker
               value={selectedTopic}
               onChange={(id) => (selectedTopic = id)}
               options={topicOptions}
-              placeholder="— no topic —"
+              placeholder="— 不归入主题 —"
             />
           </div>
         {/if}
@@ -362,50 +362,50 @@
         {#if method === null}
           <div class="addsrc-empty">
             <Icon name="plus" size={26} color="var(--fg-faint)" />
-            <p class="mono faint">Pick a source type on the left,<br />or press its key (u · p · t · r · o).</p>
+            <p class="mono faint">在左侧选择来源类型，<br />或按对应按键（u · p · t · r · o）。</p>
           </div>
         {:else if method === "url"}
-          <span class="onb-label mono">URL</span>
+          <span class="onb-label mono">链接</span>
           <!-- svelte-ignore a11y_autofocus -->
-          <input class="input" autofocus placeholder="https://… or a YouTube link" bind:value onkeydown={(e) => e.key === "Enter" && beginUrl()} />
-          <p class="mono faint addsrc-hint">A web page or YouTube link — Cortex fetches and ingests the readable content.</p>
+          <input class="input" autofocus placeholder="https://… 或 YouTube 链接" bind:value onkeydown={(e) => e.key === "Enter" && beginUrl()} />
+          <p class="mono faint addsrc-hint">网页或 YouTube 链接，会自动抓取正文并入库。</p>
         {:else if method === "text"}
-          <span class="onb-label mono">PASTE TEXT</span>
+          <span class="onb-label mono">粘贴文本</span>
           <!-- svelte-ignore a11y_autofocus -->
-          <input class="input" autofocus placeholder="Title (optional)" bind:value={textTitle} />
-          <textarea class="input addsrc-textarea" placeholder="Paste your text or markdown here…" bind:value></textarea>
+          <input class="input" autofocus placeholder="标题（可选）" bind:value={textTitle} />
+          <textarea class="input addsrc-textarea" placeholder="在这里粘贴文本或 Markdown…" bind:value></textarea>
         {:else if method === "upload"}
-          <span class="onb-label mono">UPLOAD FILES</span>
+          <span class="onb-label mono">上传文件</span>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="add-drop addsrc-drop" onclick={beginUpload}>
             <Icon name="doc" size={22} color="var(--fg-faint)" />
-            <span class="mono">Drag files in, or click to browse — one or many</span>
-            <span class="mono faint">PDF · PPTX · DOCX · TXT · MD · images</span>
+            <span class="mono">拖入文件，或点击浏览 — 支持多选</span>
+            <span class="mono faint">PDF · PPTX · DOCX · TXT · MD · 图片</span>
           </div>
           <button class="btn btn--ghost btn--sm" style="margin-top:8px" onclick={beginFolder}>
             <Icon name="grid" size={12} /> Add a folder — imports every supported file inside
           </button>
         {:else if method === "photo"}
-          <span class="onb-label mono">SNAP PHOTO</span>
+          <span class="onb-label mono">拍照识别</span>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="add-drop addsrc-drop" onclick={beginPhoto}>
             <Icon name="grid" size={22} color="var(--fg-faint)" />
-            <span class="mono">Click to browse for an image</span>
-            <span class="mono faint">PNG · JPG · WebP — OCR'd to text</span>
+            <span class="mono">点击选择一张图片</span>
+            <span class="mono faint">PNG · JPG · WebP — 自动 OCR 成文字</span>
           </div>
         {:else if method === "record"}
           <div class="addsrc-empty">
             <Icon name="record" size={26} color="var(--accent)" />
-            <p class="mono faint">Opening the lecture recorder…</p>
+            <p class="mono faint">正在打开讲座录音…</p>
           </div>
         {/if}
       </div>
 
       <!-- Footer actions -->
       <div class="add-foot addsrc-foot">
-        <button class="btn btn--ghost" onclick={() => app.setView("subject")}>Cancel</button>
+        <button class="btn btn--ghost" onclick={() => app.setView("subject")}>取消</button>
         {#if method === "url" || method === "text"}
           <button class="btn btn--primary" disabled={!value.trim() || !selectedSubject} onclick={handleBegin}>
             Ingest source <Icon name="arrowR" size={13} />

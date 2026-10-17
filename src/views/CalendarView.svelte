@@ -450,7 +450,7 @@
       <button class="btn btn--ghost btn--icon btn--sm" type="button" aria-label="Previous" onclick={prev}>
         <Icon name="chevron" size={12} style="transform:rotate(180deg)" />
       </button>
-      <button class="btn btn--sm cal-today" type="button" onclick={goToday}>Today</button>
+      <button class="btn btn--sm cal-today" type="button" onclick={goToday}>今天</button>
       <button class="btn btn--ghost btn--icon btn--sm" type="button" aria-label="Next" onclick={next}>
         <Icon name="chevron" size={12} />
       </button>
@@ -459,9 +459,9 @@
 
     <div class="cal-head-r">
       <div class="seg cal-modeseg" role="group" aria-label="Calendar view">
-        <button type="button" class={"seg-opt" + (mode === "month" ? " on" : "")} onclick={() => setMode("month")}>Month</button>
-        <button type="button" class={"seg-opt" + (mode === "week" ? " on" : "")} onclick={() => setMode("week")}>Week</button>
-        <button type="button" class={"seg-opt" + (mode === "day" ? " on" : "")} onclick={() => setMode("day")}>Day</button>
+        <button type="button" class={"seg-opt" + (mode === "month" ? " on" : "")} onclick={() => setMode("month")}>月</button>
+        <button type="button" class={"seg-opt" + (mode === "week" ? " on" : "")} onclick={() => setMode("week")}>周</button>
+        <button type="button" class={"seg-opt" + (mode === "day" ? " on" : "")} onclick={() => setMode("day")}>日</button>
       </div>
       <div class="picker-wrap">
         <Picker
@@ -469,12 +469,12 @@
           onChange={(id) => (filterSubjectId = id)}
           options={subjectOptions}
           icon="book"
-          placeholder="All subjects"
+          placeholder="全部科目"
         />
       </div>
       <button class="btn btn--primary btn--sm" type="button" onclick={() => openCreate(addTarget())}>
         <Icon name="plus" size={12} />
-        <span>New</span>
+        <span>新建</span>
       </button>
     </div>
   </div>
@@ -539,7 +539,7 @@
     </div>
 
     {#if !loading && events.length === 0}
-      <div class="cal-empty">No events — click a day to view or add one.</div>
+      <div class="cal-empty">没有日程 — 点某一天查看或新建。</div>
     {/if}
 
   {:else if mode === "week"}
@@ -563,7 +563,7 @@
       <!-- all-day strip (only when present) -->
       {#if weekHasAllDay}
         <div class="tg-allday">
-          <div class="tg-gutter-lbl">All day</div>
+          <div class="tg-gutter-lbl">全天</div>
           {#each weekCols as c (c.date.getTime())}
             <div class={"tg-allday-col" + (c.weekend ? " weekend" : "")}>
               {#each c.allDay as e (e.id)}
@@ -642,7 +642,7 @@
       <!-- all-day strip -->
       {#if dayAllDay.length > 0}
         <div class="tg-allday day-allday">
-          <div class="tg-gutter-lbl">All day</div>
+          <div class="tg-gutter-lbl">全天</div>
           <div class="day-allday-list">
             {#each dayAllDay as e (e.id)}
               <button

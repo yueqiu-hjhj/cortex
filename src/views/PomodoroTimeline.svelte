@@ -116,7 +116,7 @@
       <h1 class="pt-title">今天学了什么</h1>
     </div>
     <div class="pt-head-stats">
-      <span class="kpi"><b>{totalMin}</b><i>min</i></span>
+      <span class="kpi"><b>{totalMin}</b><i>分钟</i></span>
       <span class="kpi"><b>{focusCount}</b><i>段</i></span>
       <span class="kpi"><b>{app.pomo.completedSessions}</b><i>本会话</i></span>
     </div>
@@ -171,7 +171,7 @@
 
         <!-- empty state -->
         {#if loaded && segs.length === 0 && !liveSeg}
-          <div class="pt-tl-empty">今天还没有时间块 — 点下方 Start 开始第一个 Focus。</div>
+          <div class="pt-tl-empty">今天还没有时间块 — 点下方「开始」进入第一个专注段。</div>
         {/if}
       </div>
     </div>
@@ -235,7 +235,7 @@
       </button>
       {#if app.subjects.length}
         <div class="pt-live-subject">
-          <span class="eyebrow">Bind to</span>
+          <span class="eyebrow">绑定到</span>
           <select
             value={activeSubjectId ?? ""}
             onchange={(e) => {

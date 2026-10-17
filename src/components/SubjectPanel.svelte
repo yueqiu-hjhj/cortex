@@ -296,7 +296,7 @@
             {subj.topics.length === 1 ? "topic" : "topics"}
           </div>
         </div>
-        <button class="btn btn--sm btn--ghost" onclick={editSubject}><Icon name="pencil" size={12} /> Edit</button>
+        <button class="btn btn--sm btn--ghost" onclick={editSubject}><Icon name="pencil" size={12} /> 编辑</button>
         <button class="btn btn--icon btn--sm btn--ghost" title="Close" onclick={() => app.closeSubjectPanel()}>
           <Icon name="x" size={14} />
         </button>
@@ -306,7 +306,7 @@
         <!-- University portal (Moodle) -->
         <section class="sp-card">
           <div class="sp-card-h">
-            <Icon name="link" size={14} /><span>University portal</span>
+            <Icon name="link" size={14} /><span>学校门户</span>
             <div class="grow"></div>
             {#if mdStatus.configured && linkedCourse}
               <span class="sp-faint mono sm">synced {relMs(mdStatus.last_sync)}</span>
@@ -318,19 +318,19 @@
 
           {#if !mdStatus.configured}
             <div class="sp-empty">
-              <p class="sp-faint">Connect your Moodle portal to pull grades, deadlines and announcements into this subject.</p>
+              <p class="sp-faint">连接 Moodle 门户，把成绩、截止日和公告拉进这个科目。</p>
               <button class="btn btn--sm btn--primary" onclick={() => { app.closeSubjectPanel(); app.openSettings("experimental"); }}>
                 <Icon name="settings" size={12} /> Open Moodle settings
               </button>
             </div>
           {:else if !linkedCourse}
             <div class="sp-empty">
-              <p class="sp-faint">This subject isn't linked to a Moodle course yet.</p>
+              <p class="sp-faint">这个科目还没有关联 Moodle 课程。</p>
               <div class="sp-link-row">
                 <div style:flex="1">
                   <Picker value="" onChange={linkCourse} options={courseOptions} placeholder={courseOptions.length ? "Link a Moodle course…" : "No courses — sync in Settings first"} />
                 </div>
-                <button class="btn btn--sm" onclick={autoMatch} disabled={linking}><Icon name="bolt" size={12} /> Auto-match</button>
+                <button class="btn btn--sm" onclick={autoMatch} disabled={linking}><Icon name="bolt" size={12} /> 自动匹配</button>
               </div>
             </div>
           {:else}
@@ -342,12 +342,12 @@
                   <Icon name="external" size={12} /> Open in Moodle
                 </button>
               {/if}
-              <button class="sp-unlink" onclick={unlinkCourse} title="Unlink course">unlink</button>
+              <button class="sp-unlink" onclick={unlinkCourse} title="解除关联">解除</button>
             </div>
             <div class="sp-grid">
               <div class="sp-sub-card">
-                <div class="sp-sub-h mono"><Icon name="chart" size={12} /> Grades <span class="sp-faint">· {courseGrades.length}</span></div>
-                {#if courseGrades.length === 0}<p class="sp-faint sm">No grades synced.</p>{:else}
+                <div class="sp-sub-h mono"><Icon name="chart" size={12} /> 成绩 <span class="sp-faint">· {courseGrades.length}</span></div>
+                {#if courseGrades.length === 0}<p class="sp-faint sm">还没有同步成绩。</p>{:else}
                   <ul class="sp-list">
                     {#each courseGrades as g (g.course_id + g.item_name)}
                       <li><span class="sp-li-name" title={g.item_name}>{g.item_name}</span><span class="sp-li-val mono">{g.percentage || g.grade || "—"}</span></li>
@@ -356,8 +356,8 @@
                 {/if}
               </div>
               <div class="sp-sub-card">
-                <div class="sp-sub-h mono"><Icon name="calendar" size={12} /> Deadlines <span class="sp-faint">· {courseDeadlines.length}</span></div>
-                {#if courseDeadlines.length === 0}<p class="sp-faint sm">Nothing due.</p>{:else}
+                <div class="sp-sub-h mono"><Icon name="calendar" size={12} /> 截止日 <span class="sp-faint">· {courseDeadlines.length}</span></div>
+                {#if courseDeadlines.length === 0}<p class="sp-faint sm">没有临近截止。</p>{:else}
                   <ul class="sp-list">
                     {#each courseDeadlines.slice(0, 8) as d (d.id)}
                       <li>
@@ -371,8 +371,8 @@
                 {/if}
               </div>
               <div class="sp-sub-card">
-                <div class="sp-sub-h mono"><Icon name="chat" size={12} /> Announcements <span class="sp-faint">· {courseAnnouncements.length}</span></div>
-                {#if courseAnnouncements.length === 0}<p class="sp-faint sm">No announcements.</p>{:else}
+                <div class="sp-sub-h mono"><Icon name="chat" size={12} /> 公告 <span class="sp-faint">· {courseAnnouncements.length}</span></div>
+                {#if courseAnnouncements.length === 0}<p class="sp-faint sm">没有公告。</p>{:else}
                   <ul class="sp-list">
                     {#each courseAnnouncements.slice(0, 8) as a (a.id)}
                       <li>
@@ -391,15 +391,15 @@
 
         <!-- Calendar matching -->
         <section class="sp-card">
-          <div class="sp-card-h"><Icon name="calendar" size={14} /><span>Calendar matching</span></div>
-          <input class="input mono" placeholder="keywords, e.g. GenLing, GL178" bind:value={aliasInput} onblur={saveAliases} />
+          <div class="sp-card-h"><Icon name="calendar" size={14} /><span>日历匹配</span></div>
+          <input class="input mono" placeholder="关键词，例如 GenLing, GL178" bind:value={aliasInput} onblur={saveAliases} />
           <p class="sp-faint sm" style="margin:8px 0 0">Comma-separated terms that appear in your timetable events for this subject — lectures with these in the title auto-file here (no AI). Saved on blur; re-files your calendar instantly.</p>
         </section>
 
         <!-- Topics -->
         <section class="sp-card">
           <div class="sp-card-h">
-            <Icon name="grid" size={14} /><span>Topics</span>
+            <Icon name="grid" size={14} /><span>主题</span>
             <div class="grow"></div>
             <button class="btn btn--sm btn--ghost" onclick={addTopic}><Icon name="plus" size={12} /> Add topic</button>
           </div>

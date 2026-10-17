@@ -244,15 +244,15 @@
     <!-- Assignments -->
     <section class="cit-section">
       <div class="cit-head">
-        <h2 class="cit-h read"><Icon name="calendar" size={15} /> Assignments</h2>
+        <h2 class="cit-h read"><Icon name="calendar" size={15} /> 作业与截止日</h2>
         {#if assignments.length}
           <span class="faint mono cit-summary">
             {assignments.length} {assignments.length === 1 ? "assignment" : "assignments"}{#if overdueCount} · {overdueCount} overdue{/if}
           </span>
         {/if}
         <div class="cit-view-seg mono" role="group" aria-label="Assignments view">
-          <button class={aView === "board" ? "on" : ""} onclick={() => (aView = "board")}>Board</button>
-          <button class={aView === "list" ? "on" : ""} onclick={() => (aView = "list")}>List</button>
+          <button class={aView === "board" ? "on" : ""} onclick={() => (aView = "board")}>看板</button>
+          <button class={aView === "list" ? "on" : ""} onclick={() => (aView = "list")}>列表</button>
         </div>
       </div>
 
@@ -264,7 +264,7 @@
             {/each}
           </div>
           <input class="input" placeholder="e.g. Essay 2, Capstone, Midterm…" bind:value={aTitle} />
-          <div class="cit-date"><DatePicker value={aDate} onChange={(v) => (aDate = v)} placeholder="Due date" /></div>
+          <div class="cit-date"><DatePicker value={aDate} onChange={(v) => (aDate = v)} placeholder="截止日期" /></div>
         </div>
         <div class="cit-assign-row2">
           <div class="cit-prio-seg mono" role="group" aria-label="Priority">
@@ -285,7 +285,7 @@
         </div>
         {#if (app.activeSubject?.topics ?? []).length}
           <div class="cit-topic-pick">
-            <span class="onb-label mono">TOPICS COVERED</span>
+            <span class="onb-label mono">涉及主题</span>
             <div class="cit-topic-chips">
               {#each app.activeSubject?.topics ?? [] as t (t.id)}
                 {@const on = aTopics.includes(t.id)}
@@ -302,7 +302,7 @@
       {#if aView === "board"}
         <div class="cit-board-wrap"><BoardView /></div>
       {:else if assignments.length === 0}
-        <p class="mono faint cit-empty">No upcoming assignments.</p>
+        <p class="mono faint cit-empty">没有临近的作业。</p>
       {:else}
         <ul class="cit-deadlines">
           {#each assignments as e (e.id)}
@@ -373,7 +373,7 @@
     <!-- References -->
     <section class="cit-section">
       <div class="cit-head">
-        <h2 class="cit-h read"><Icon name="book" size={15} /> References <span class="faint mono">{refs.length}</span></h2>
+        <h2 class="cit-h read"><Icon name="book" size={15} /> 参考文献 <span class="faint mono">{refs.length}</span></h2>
         <div class="grow"></div>
         <div class="cit-style-toggle mono">
           <button class={style === "harvard" ? "on" : ""} onclick={() => (style = "harvard")}>Harvard</button>
@@ -383,7 +383,7 @@
         <button class="btn btn--sm" disabled={refs.length === 0} onclick={copyAll} title="Copy the full bibliography">
           <Icon name="doc" size={12} /> Copy all
         </button>
-        <button class="btn btn--sm btn--primary" onclick={startNew}><Icon name="plus" size={12} /> Add</button>
+        <button class="btn btn--sm btn--primary" onclick={startNew}><Icon name="plus" size={12} /> 添加</button>
       </div>
 
       {#if editing === "new"}
@@ -391,7 +391,7 @@
       {/if}
 
       {#if refs.length === 0 && editing !== "new"}
-        <p class="mono faint cit-empty">No references yet. Add your sources to build a bibliography.</p>
+        <p class="mono faint cit-empty">还没有参考文献。添加资料即可生成参考文献列表。</p>
       {:else}
         <ul class="cit-list">
           {#each refs as r (r.id)}
@@ -406,9 +406,9 @@
                     {#if r.url}
                       <a class="btn btn--icon btn--sm btn--ghost" href={r.url} target="_blank" rel="noreferrer" title="Open link"><Icon name="external" size={12} /></a>
                     {/if}
-                    <button class="btn btn--icon btn--sm btn--ghost" title="Copy" aria-label="Copy citation" onclick={() => copyOne(r)}><Icon name="doc" size={12} /></button>
-                    <button class="btn btn--icon btn--sm btn--ghost" title="Edit" aria-label="Edit" onclick={() => startEdit(r)}><Icon name="pencil" size={12} /></button>
-                    <button class="btn btn--icon btn--sm btn--ghost" title="Delete" aria-label="Delete" onclick={() => remove(r)}><Icon name="x" size={12} /></button>
+                    <button class="btn btn--icon btn--sm btn--ghost" title="复制" aria-label="复制引用" onclick={() => copyOne(r)}><Icon name="doc" size={12} /></button>
+                    <button class="btn btn--icon btn--sm btn--ghost" title="编辑" aria-label="编辑" onclick={() => startEdit(r)}><Icon name="pencil" size={12} /></button>
+                    <button class="btn btn--icon btn--sm btn--ghost" title="删除" aria-label="删除" onclick={() => remove(r)}><Icon name="x" size={12} /></button>
                   </div>
                 </div>
                 {#if r.notes}<div class="cit-notes mono faint">{r.notes}</div>{/if}
@@ -425,7 +425,7 @@
   <div class="cit-form">
     <div class="cit-form-grid">
       <div class="cit-field cit-field--type">
-        <span class="onb-label mono">TYPE</span>
+        <span class="onb-label mono">类型</span>
         <Picker
           value={f.ctype}
           onChange={(id) => (f.ctype = id)}
@@ -434,19 +434,19 @@
         />
       </div>
       <label class="cit-field cit-field--wide">
-        <span class="onb-label mono">TITLE</span>
+        <span class="onb-label mono">标题</span>
         <input class="input" bind:value={f.title} placeholder="Title of the work" />
       </label>
       <label class="cit-field">
-        <span class="onb-label mono">AUTHORS</span>
+        <span class="onb-label mono">作者</span>
         <input class="input" bind:value={f.authors} placeholder="Last, F.; Last, F." />
       </label>
       <label class="cit-field">
-        <span class="onb-label mono">YEAR</span>
+        <span class="onb-label mono">年份</span>
         <input class="input" bind:value={f.year} placeholder="2024" />
       </label>
       <label class="cit-field">
-        <span class="onb-label mono">CONTAINER</span>
+        <span class="onb-label mono">来源刊物</span>
         <input class="input" bind:value={f.container} placeholder="Journal / publisher / site" />
       </label>
       <label class="cit-field">
@@ -454,17 +454,17 @@
         <input class="input" bind:value={f.doi} placeholder="10.xxxx/…" />
       </label>
       <label class="cit-field cit-field--wide">
-        <span class="onb-label mono">URL</span>
+        <span class="onb-label mono">链接</span>
         <input class="input" bind:value={f.url} placeholder="https://…" />
       </label>
       <label class="cit-field cit-field--wide">
-        <span class="onb-label mono">NOTES</span>
+        <span class="onb-label mono">备注</span>
         <input class="input" bind:value={f.notes} placeholder="Optional note" />
       </label>
     </div>
     <div class="cit-form-foot">
-      <button class="btn btn--ghost btn--sm" onclick={cancel}>Cancel</button>
-      <button class="btn btn--primary btn--sm" onclick={saveForm}><Icon name="check" size={12} /> Save</button>
+      <button class="btn btn--ghost btn--sm" onclick={cancel}>取消</button>
+      <button class="btn btn--primary btn--sm" onclick={saveForm}><Icon name="check" size={12} /> 保存</button>
     </div>
   </div>
 {/snippet}

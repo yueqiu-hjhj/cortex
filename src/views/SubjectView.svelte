@@ -13,12 +13,12 @@
   import { jobs } from "../lib/jobs.svelte";
 
   const TABS = [
-    { id: "overview", label: "Overview", icon: "graph" },
-    { id: "cheatsheet", label: "Cheatsheet", icon: "book" },
-    { id: "sources", label: "Sources", icon: "doc" },
-    { id: "chats", label: "Chats", icon: "chat" },
-    { id: "materials", label: "Materials", icon: "grid" },
-    { id: "citations", label: "Planner", icon: "cards" },
+    { id: "overview", label: "概览", icon: "graph" },
+    { id: "cheatsheet", label: "速查表", icon: "book" },
+    { id: "sources", label: "资料", icon: "doc" },
+    { id: "chats", label: "对话", icon: "chat" },
+    { id: "materials", label: "学习材料", icon: "grid" },
+    { id: "citations", label: "规划", icon: "cards" },
   ] as const;
 
   // Collapsed tab menu (narrow widths / touch): one trigger opens a popover of all
@@ -110,7 +110,7 @@
   }
 
   async function addTopic() {
-    const name = await app.prompt({ title: "Add topic", label: "Topic name", placeholder: "e.g. Determinism" });
+    const name = await app.prompt({ title: "新建主题", label: "主题名称", placeholder: "例如：决定论" });
     if (name) {
       await app.createTopic(name); // adds to active subject + toasts + refreshes
       loadSources();
@@ -158,7 +158,7 @@
   }
   const moveTargets = $derived([
     ...(subj?.topics ?? []).map((t) => ({ id: t.id, label: "→ " + t.name })),
-    { id: "__none__", label: "→ no topic" },
+    { id: "__none__", label: "→ 不归入主题" },
   ]);
   async function bulkDelete() {
     const n = selIds.length;
@@ -321,7 +321,7 @@
                 <button class="btn btn--sm sv-delete" onclick={bulkDelete}>
                   <Icon name="x" size={12} /> Delete
                 </button>
-                <button class="btn btn--sm btn--ghost" onclick={clearSel}>Clear</button>
+                <button class="btn btn--sm btn--ghost" onclick={clearSel}>清除</button>
               </div>
             {/if}
 
@@ -428,8 +428,8 @@
                 style:color="var(--fg-faint)"
               >
                 <Icon name="doc" size={26} color="var(--fg-faint)" />
-                <h1 class="read" style:font-size="var(--r-xl)" style:color="var(--fg-bright)" style:font-weight="500">No sources yet</h1>
-                <p class="mono muted">Add a lecture, PDF, link, recording or photo to start building this subject.</p>
+                <h1 class="read" style:font-size="var(--r-xl)" style:color="var(--fg-bright)" style:font-weight="500">还没有资料</h1>
+                <p class="mono muted">添加讲义、PDF、网页、录音或照片，开始建立这个科目。</p>
                 <button class="btn btn--primary" onclick={() => app.setView("add-source")}>
                   <Icon name="plus" size={13} /> Add source
                 </button>
@@ -456,13 +456,13 @@
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:62vh;padding:48px 32px;text-align:center;color:var(--fg-faint)">
       <Icon name="diamond" size={30} color="var(--fg-faint)" />
       {#if app.subjects.length === 0}
-        <p class="read" style="font-size:var(--r-lg);color:var(--fg-bright);margin:4px 0 0">No subjects yet</p>
-        <p style="max-width:360px;margin:0">Add your first subject to start building cheatsheets, flashcards and more.</p>
+        <p class="read" style="font-size:var(--r-lg);color:var(--fg-bright);margin:4px 0 0">还没有科目</p>
+        <p style="max-width:360px;margin:0">新建第一个科目，开始生成速查表、闪卡等学习材料。</p>
         <button class="btn btn--primary btn--sm" style="margin-top:6px" onclick={() => app.setView("add-subject")}>
           <Icon name="plus" size={13} /> New subject
         </button>
       {:else}
-        <p style="margin:0">Select a subject from the sidebar to get started.</p>
+        <p style="margin:0">从左侧选择一个科目开始。</p>
       {/if}
     </div>
   </div>

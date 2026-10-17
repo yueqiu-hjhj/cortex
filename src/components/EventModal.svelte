@@ -277,14 +277,14 @@
       bind:this={firstInput}
       bind:value={title}
       class="input ev-title-input"
-      placeholder="Add a title…"
+      placeholder="添加标题…"
     />
 
     <!-- WHEN block: date + all-day toggle, then a start–end time row. -->
     <div class="ev-when">
       <div class="ev-when-row">
         <div class="ev-date">
-          <DatePicker value={dateVal} onChange={(v) => (dateVal = dateOf(v))} withTime={false} placeholder="Pick a date" />
+          <DatePicker value={dateVal} onChange={(v) => (dateVal = dateOf(v))} withTime={false} placeholder="选择日期" />
         </div>
         <button
           type="button"
@@ -296,7 +296,7 @@
         >
           <span class="st-knob"></span>
         </button>
-        <span class="ev-allday-lbl">All day</span>
+        <span class="ev-allday-lbl">全天</span>
       </div>
 
       {#if !allDay}
@@ -304,7 +304,7 @@
           <input class="input ev-time" type="time" bind:value={startTime} aria-label="Start time" />
           <span class="ev-time-dash">→</span>
           <input class="input ev-time" type="time" bind:value={endTime} aria-label="End time" />
-          <span class="ev-time-opt">end optional</span>
+          <span class="ev-time-opt">结束时间可选</span>
         </div>
       {/if}
     </div>
@@ -312,9 +312,9 @@
     <!-- KIND — segmented control, active accent matches the kind color. -->
     <div class="ev-seg-block" style:--kind-accent={kindColor(kind)}>
       <div class="seg ev-kind-seg" role="group" aria-label="Type">
-        <button type="button" class={"seg-opt" + (kind === "event" ? " on" : "")} onclick={() => (kind = "event")}>Event</button>
-        <button type="button" class={"seg-opt" + (kind === "task" ? " on" : "")} onclick={() => (kind = "task")}>Task</button>
-        <button type="button" class={"seg-opt" + (isDeadline ? " on" : "")} onclick={setDeadline}>Deadline</button>
+        <button type="button" class={"seg-opt" + (kind === "event" ? " on" : "")} onclick={() => (kind = "event")}>日程</button>
+        <button type="button" class={"seg-opt" + (kind === "task" ? " on" : "")} onclick={() => (kind = "task")}>任务</button>
+        <button type="button" class={"seg-opt" + (isDeadline ? " on" : "")} onclick={setDeadline}>截止日</button>
       </div>
       {#if isDeadline}
         <div class="seg ev-kind-seg ev-kind-sub" role="group" aria-label="Deadline type">
@@ -343,37 +343,37 @@
     {#if showDetails}
       <div class="ev-details">
         <label class="ev-field">
-          <span class="ev-lbl">Location</span>
-          <input bind:value={location} class="input" placeholder="Room, link, place…" />
+          <span class="ev-lbl">地点</span>
+          <input bind:value={location} class="input" placeholder="教室、链接、地点…" />
         </label>
 
         <div class="ev-field">
-          <span class="ev-lbl">Subject</span>
+          <span class="ev-lbl">科目</span>
           <Picker
             value={subjectId}
             onChange={(id) => (subjectId = id)}
             options={subjectOptions}
-            placeholder="— no subject —"
+            placeholder="— 不属于科目 —"
           />
         </div>
 
         <div class="ev-field">
-          <span class="ev-lbl">Reminder</span>
+          <span class="ev-lbl">提醒</span>
           <Picker
             value={reminder}
             onChange={(id) => (reminder = id)}
             options={REMINDER_OPTS}
-            placeholder="None"
+            placeholder="不提醒"
           />
         </div>
 
         <label class="ev-field">
-          <span class="ev-lbl">Tags <span class="ev-opt">{isDeadline ? "— topics with these tags become this deadline's checklist" : "(optional)"}</span></span>
-          <input bind:value={tagsText} class="input" placeholder="e.g. A2, midterm" />
+          <span class="ev-lbl">标签 <span class="ev-opt">{isDeadline ? "— 带这些标签的主题会成为本次截止日的清单" : "（可选）"}</span></span>
+          <input bind:value={tagsText} class="input" placeholder="例如：作业2, 期中" />
         </label>
 
         <div class="ev-field">
-          <span class="ev-lbl">Color</span>
+          <span class="ev-lbl">颜色</span>
           <div class="ev-colors">
             {#each SUBJECT_COLORS as c}
               <button

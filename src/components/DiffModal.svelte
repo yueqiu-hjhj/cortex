@@ -260,7 +260,7 @@
       <!-- Header -->
       <header class="diff-head">
         <div>
-          <div class="eyebrow">Cheatsheet review</div>
+          <div class="eyebrow">速查表审阅</div>
           <div class="diff-title mono">
             <span class="badge badge--web" style="margin-left: 0;">
               <span class="dot"></span>{sourceLabel}
@@ -296,30 +296,30 @@
         <!-- ── DRAFT CHANGES (existing approve/reject flow, unchanged) ── -->
         <!-- Legend -->
         <div class="diff-legend mono">
-          <span><i class="lg add"></i> added</span>
-          <span><i class="lg del"></i> removed</span>
+          <span><i class="lg add"></i> 新增</span>
+          <span><i class="lg del"></i> 删除</span>
           <span class="diff-keys">
-            <span class="kbd">j</span><span class="kbd">k</span> move ·
-            <span class="kbd">a</span> accept ·
-            <span class="kbd">x</span> reject ·
-            <span class="kbd">A</span> all ·
-            <span class="kbd">s</span> view
+            <span class="kbd">j</span><span class="kbd">k</span> 移动 ·
+            <span class="kbd">a</span> 接受 ·
+            <span class="kbd">x</span> 拒绝 ·
+            <span class="kbd">A</span> 全部 ·
+            <span class="kbd">s</span> 视图
           </span>
           <div class="grow"></div>
           <div class="seg-toggle" title="Toggle with s">
-            <button class={view === "inline" ? "on" : ""} onclick={() => (view = "inline")}>Inline</button>
-            <button class={view === "split" ? "on" : ""} onclick={() => (view = "split")}>Side-by-side</button>
+            <button class={view === "inline" ? "on" : ""} onclick={() => (view = "inline")}>行内</button>
+            <button class={view === "split" ? "on" : ""} onclick={() => (view = "split")}>并排</button>
           </div>
         </div>
 
         <!-- Diff body -->
         <div class="diff-body" bind:this={bodyEl}>
           {#if loading}
-            <div class="mono faint" style="display:flex;align-items:center;justify-content:center;min-height:200px;">Loading draft…</div>
+            <div class="mono faint" style="display:flex;align-items:center;justify-content:center;min-height:200px;">正在加载草稿…</div>
           {:else if !hasSheet}
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:240px;text-align:center;padding:24px;">
               <Icon name="diamond" size={26} color="var(--fg3)" />
-              <div class="read" style="font-size:18px;color:var(--fg-bright);">No cheatsheet yet</div>
+              <div class="read" style="font-size:18px;color:var(--fg-bright);">还没有速查表</div>
               <p class="mono faint" style="max-width:360px;line-height:1.5;">
                 {#if app.activeSubjectId}
                   Generate a cheatsheet for this subject first — proposed changes
@@ -332,10 +332,10 @@
           {:else if sections.length === 0}
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:240px;text-align:center;padding:24px;">
               <Icon name="check" size={26} color="var(--ok)" />
-              <div class="read" style="font-size:18px;color:var(--fg-bright);">No pending changes</div>
+              <div class="read" style="font-size:18px;color:var(--fg-bright);">没有待审改动</div>
               <p class="mono faint" style="max-width:360px;line-height:1.5;">
                 Nothing is awaiting review for this subject. Regenerate the cheatsheet
-                to propose additions, or browse <button class="diff-linkbtn" onclick={() => (tab = "history")}>History</button>.
+                to propose additions, or browse <button class="diff-linkbtn" onclick={() => (tab = "history")}>历史</button>.
               </p>
             </div>
           {:else}

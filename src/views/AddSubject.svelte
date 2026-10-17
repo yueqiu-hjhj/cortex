@@ -52,9 +52,9 @@
         </button>
       {/if}
       <div>
-        <div class="eyebrow">New subject</div>
-        <h1 class="addpage-title">Create a subject</h1>
-        <div class="mono faint" style="font-size:var(--t-xs)">holds topics, sources and one living cheatsheet</div>
+        <div class="eyebrow">新建科目</div>
+        <h1 class="addpage-title">创建一个科目</h1>
+        <div class="mono faint" style="font-size:var(--t-xs)">容纳主题、资料，以及一份持续更新的速查表</div>
       </div>
     </div>
 
@@ -64,27 +64,27 @@
       </span>
       <div>
         <div class="read" style="font-size:var(--r-lg);color:var(--fg-bright)">{name || "Untitled subject"}</div>
-        <div class="mono faint" style="font-size:var(--t-2xs)">{code || "no code"} · {topics.filter(t => t.trim()).length} topics</div>
+        <div class="mono faint" style="font-size:var(--t-2xs)">{code || "无课程代码"} · {topics.filter(t => t.trim()).length} topics</div>
       </div>
     </div>
 
     <div class="addsubj-form">
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="onb-label mono">SUBJECT NAME</label>
+        <label class="onb-label mono">科目名称</label>
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="input" autofocus bind:value={name} placeholder="e.g. Algorithms" />
+        <input class="input" autofocus bind:value={name} placeholder="例如：算法导论" />
       </div>
 
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="onb-label mono">COURSE CODE <span class="faint">optional</span></label>
+        <label class="onb-label mono">课程代码 <span class="faint">可选</span></label>
         <input class="input mono" bind:value={code} placeholder="CS-3490" />
       </div>
 
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="onb-label mono">COLOR</label>
+        <label class="onb-label mono">颜色</label>
         <div class="color-row">
           {#each colors as c}
             <button
@@ -102,13 +102,13 @@
 
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="onb-label mono">GLYPH</label>
+        <label class="onb-label mono">图标字符</label>
         <EmojiPicker value={glyph} onPick={(e) => (glyph = e)} />
       </div>
 
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="onb-label mono">FIRST TOPICS <span class="faint">optional — add lectures into these</span></label>
+        <label class="onb-label mono">初始主题 <span class="faint">可选 — 之后把资料放进去</span></label>
         <div class="topic-inputs">
           {#each topics as t, i}
             <input
@@ -123,7 +123,7 @@
     </div>
 
     <div class="add-foot">
-      <button class="btn btn--ghost" onclick={() => app.setView("dashboard")}>Cancel</button>
+      <button class="btn btn--ghost" onclick={() => app.setView("dashboard")}>取消</button>
       <button class="btn btn--primary" disabled={!ready} onclick={create}>
         <Icon name="check" size={13} /> Create subject
       </button>

@@ -234,28 +234,28 @@
     <!-- Setup mirrors a Settings tab: set-pane shell, set-head, set-groups + set-cards. -->
     <div class="set-pane">
       <header class="set-head">
-        <div class="eyebrow">Exam mode</div>
-        <h1 class="set-title">Sit a timed exam</h1>
+        <div class="eyebrow">考试模式</div>
+        <h1 class="set-title">开始一场限时考试</h1>
         <p class="set-sub">Generate a timed MCQ + written exam from {app.activeSubject?.name ?? "your subject"} and have it graded instantly.</p>
       </header>
 
       {#if !app.activeSubject}
         <div class="set-card">
-          <div class="set-row"><div class="set-row-l"><div class="set-row-d">Open a subject to create an exam.</div></div></div>
+          <div class="set-row"><div class="set-row-l"><div class="set-row-d">先打开一个科目才能创建考试。</div></div></div>
         </div>
       {:else}
         <!-- Topics: small dashed tag-chip-add chips with a check when selected, like
              Settings → Profile → "Explain with". -->
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Topics</h3>
-            <p class="set-group-d">Leave all unselected to cover the whole subject.</p>
+            <h3 class="set-group-t">主题</h3>
+            <p class="set-group-d">不选任何主题则覆盖整个科目。</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
               <div class="set-row-r">
                 {#if topics.length === 0}
-                  <div class="set-row-d">No topics yet — the exam will use all of this subject's sources.</div>
+                  <div class="set-row-d">还没有主题 — 考试会使用这个科目的全部资料。</div>
                 {:else}
                   <div class="tag-suggest" style="margin-top:0">
                     {#each topics as t (t.id)}
@@ -277,12 +277,12 @@
 
         <!-- Format: seg duration + two stepper rows, exactly the Settings pomodoro pattern. -->
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Format</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">形式</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Duration</div>
-                <div class="set-row-d">How long the countdown runs.</div>
+                <div class="set-row-t">时长</div>
+                <div class="set-row-d">倒计时长度。</div>
               </div>
               <div class="set-row-r">
                 <div class="seg">
@@ -295,28 +295,28 @@
 
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Multiple choice</div>
-                <div class="set-row-d">One mark each.</div>
+                <div class="set-row-t">选择题</div>
+                <div class="set-row-d">每题 1 分。</div>
               </div>
               <div class="set-row-r">
                 <div class="exam-step">
                   <button class="btn btn--icon btn--sm" onclick={() => clampMcq(mcqCount - 1)} disabled={mcqCount <= 0} aria-label="fewer multiple choice questions">−</button>
                   <span class="mono exam-step-v">{mcqCount}</span>
-                  <button class="btn btn--icon btn--sm" onclick={() => clampMcq(mcqCount + 1)} disabled={mcqCount >= 30} aria-label="more multiple choice questions">+</button>
+                  <button class="btn btn--icon btn--sm" onclick={() => clampMcq(mcqCount + 1)} disabled={mcqCount >= 30} aria-label="增加选择题">+</button>
                 </div>
               </div>
             </div>
 
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Written</div>
-                <div class="set-row-d">Two to five marks each, graded by the model.</div>
+                <div class="set-row-t">主观题</div>
+                <div class="set-row-d">每题 2–5 分，由模型评分。</div>
               </div>
               <div class="set-row-r">
                 <div class="exam-step">
                   <button class="btn btn--icon btn--sm" onclick={() => clampWritten(writtenCount - 1)} disabled={writtenCount <= 0} aria-label="fewer written questions">−</button>
                   <span class="mono exam-step-v">{writtenCount}</span>
-                  <button class="btn btn--icon btn--sm" onclick={() => clampWritten(writtenCount + 1)} disabled={writtenCount >= 15} aria-label="more written questions">+</button>
+                  <button class="btn btn--icon btn--sm" onclick={() => clampWritten(writtenCount + 1)} disabled={writtenCount >= 15} aria-label="增加主观题">+</button>
                 </div>
               </div>
             </div>
@@ -333,7 +333,7 @@
 
         {#if pastExams.length > 0}
           <section class="set-group">
-            <div class="set-group-h"><h3 class="set-group-t">Past exams</h3></div>
+            <div class="set-group-h"><h3 class="set-group-t">历史考试</h3></div>
             <div class="set-card">
               {#each pastExams as e (e.id)}
                 <div
@@ -372,7 +372,7 @@
       <div class="exam-gen-card">
         <span class="is-spin"></span>
         <div class="exam-gen-text">
-          <span class="mono exam-gen-label">Writing your exam…</span>
+          <span class="mono exam-gen-label">正在出卷…</span>
           <span class="mono faint exam-gen-sub">{mcqCount} multiple-choice · {writtenCount} written</span>
         </div>
       </div>
@@ -431,7 +431,7 @@
   {:else if screen === "results"}
     <div class="set-pane">
       <header class="set-head">
-        <div class="eyebrow">Results</div>
+        <div class="eyebrow">成绩</div>
         <h1 class="set-title">{exam?.title}</h1>
         {#if results?.graded_by}
           <p class="set-sub mono">Written answers graded by {results.graded_by} — double-check anything that looks off.</p>
@@ -441,24 +441,24 @@
       <!-- Score as an AnalyticsView-style stat card row. -->
       <div class="exam-stats">
         <div class="exam-stat">
-          <div class="exam-stat-k mono">Score</div>
+          <div class="exam-stat-k mono">得分</div>
           <div class="exam-stat-v">{Math.round(scorePct)}<span class="exam-stat-u">%</span></div>
         </div>
         {#if results}
           <div class="exam-stat">
-            <div class="exam-stat-k mono">Marks earned</div>
+            <div class="exam-stat-k mono">已得分值</div>
             <div class="exam-stat-v">{results.earned ?? 0}<span class="exam-stat-u"> / {results.total ?? 0}</span></div>
           </div>
           <div class="exam-stat">
-            <div class="exam-stat-k mono">Questions</div>
+            <div class="exam-stat-k mono">题数</div>
             <div class="exam-stat-v">{questions.length}</div>
           </div>
         {/if}
       </div>
 
       <div class="exam-cta">
-        <button class="btn btn--primary" onclick={startNew}><Icon name="bolt" size={13} /> Retake</button>
-        <button class="btn" onclick={backToSetup}><Icon name="book" size={13} /> New exam</button>
+        <button class="btn btn--primary" onclick={startNew}><Icon name="bolt" size={13} /> 再考一次</button>
+        <button class="btn" onclick={backToSetup}><Icon name="book" size={13} /> 新考试</button>
         <button class="btn" onclick={doRemark} disabled={remarking} title="Re-grade these answers with the same rubric — useful when grading failed or misread an answer">
           {#if remarking}<span class="is-spin" style:width="12px" style:height="12px"></span>{:else}<Icon name="refresh" size={13} />{/if}
           Remark
@@ -468,7 +468,7 @@
       {#if weakTopics.length > 0}
         <!-- Weak-topic callout: a set-card with a warn accent. -->
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Topics to revise</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">需要复习的主题</h3></div>
           <div class="set-card exam-weak">
             <div class="set-row stacked">
               <div class="set-row-r">
@@ -485,7 +485,7 @@
 
       <!-- Per-question review reuses Quiz.svelte's answered-state classes. -->
       <section class="set-group">
-        <div class="set-group-h"><h3 class="set-group-t">Review</h3></div>
+        <div class="set-group-h"><h3 class="set-group-t">逐题回顾</h3></div>
         <div class="exam-review">
           {#each reviewItems as { q, r }, idx (q.id)}
             {@const correct = q.type === "mcq" ? r?.correct : (r?.score ?? 0) >= q.marks}
@@ -507,14 +507,14 @@
                     <div class="quiz-opt{isAnswer ? ' correct' : ''}{isPick && !isAnswer ? ' wrong' : ''}">
                       <span class="quiz-key mono">{String.fromCharCode(65 + oi)}</span>
                       <span class="read">{opt}</span>
-                      {#if isPick}<span class="badge">Your answer</span>{/if}
+                      {#if isPick}<span class="badge">你的答案</span>{/if}
                       {#if isAnswer}<Icon name="check" size={13} color="var(--ok)" />{/if}
                     </div>
                   {/each}
                 </div>
               {:else}
                 <div class="exam-rev-written">
-                  <span class="mono faint exam-rev-label">Your answer</span>
+                  <span class="mono faint exam-rev-label">你的答案</span>
                   <p class="read exam-rev-yours">{r?.your_text || "(blank)"}</p>
                 </div>
               {/if}

@@ -6,14 +6,14 @@
 
   // ── Material type definitions ──────────────────────────────
   const GEN_TYPES = [
-    { id: "flashcards", label: "Flashcards",      ico: "cards", desc: "Spaced-repetition deck",    color: "var(--accent)"      },
-    { id: "quiz",       label: "Quiz",             ico: "check", desc: "MCQ · short answer · cloze", color: "var(--info)"        },
-    { id: "audio",      label: "Audio overview",   ico: "music", desc: "Two-host podcast",           color: "var(--mode-select)" },
-    { id: "slideshow",  label: "Slides",           ico: "grid",  desc: "Presentation slide deck",     color: "var(--warn)"        },
-    { id: "infographic",label: "Infographic",      ico: "grid",  desc: "One-poster summary",         color: "var(--ok)"          },
-    { id: "mindmap",    label: "Mind map",          ico: "link",  desc: "Concept map of the topic",    color: "var(--info)"        },
-    { id: "matrix",     label: "Comparison matrix", ico: "grid",  desc: "Side-by-side concept table",  color: "var(--mode-select)" },
-    { id: "guide",      label: "Study guide",       ico: "cards", desc: "Key points · pitfalls · self-test", color: "var(--ok)" },
+    { id: "flashcards", label: "闪卡",      ico: "cards", desc: "间隔重复抽认卡",    color: "var(--accent)"      },
+    { id: "quiz",       label: "测验",             ico: "check", desc: "单选 · 简答 · 填空", color: "var(--info)"        },
+    { id: "audio",      label: "音频概览",   ico: "music", desc: "双人播客式讲解",           color: "var(--mode-select)" },
+    { id: "slideshow",  label: "幻灯片",           ico: "grid",  desc: "演示大纲",     color: "var(--warn)"        },
+    { id: "infographic",label: "信息图",      ico: "grid",  desc: "一页纸摘要海报",         color: "var(--ok)"          },
+    { id: "mindmap",    label: "思维导图",          ico: "link",  desc: "主题的概念结构",    color: "var(--info)"        },
+    { id: "matrix",     label: "对比矩阵", ico: "grid",  desc: "概念并排对照表",  color: "var(--mode-select)" },
+    { id: "guide",      label: "学习指南",       ico: "cards", desc: "要点 · 易错点 · 自测", color: "var(--ok)" },
   ] as const;
 
   const srcLabel: Record<string, string> = {
@@ -150,8 +150,8 @@
       <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={14} /></span>
     </button>
     <div>
-      <div class="eyebrow">Generate material</div>
-      <h1 class="addpage-title">New study material</h1>
+      <div class="eyebrow">生成学习材料</div>
+      <h1 class="addpage-title">新建学习材料</h1>
       <div class="mono faint" style="font-size: var(--t-xs)">
         from {app.activeSubject?.name ?? "your subject"} · pick a format and sources
       </div>
@@ -162,7 +162,7 @@
     <!-- LEFT — format, count, details -->
     <div class="gm2-left">
       <div class="gm2-block">
-        <div class="onb-label mono">FORMAT</div>
+        <div class="onb-label mono">格式</div>
         <div class="gm2-formats">
           {#each GEN_TYPES as t (t.id)}
             <button class="gm2-format{type === t.id ? ' on' : ''}" onclick={() => (type = t.id)}>
@@ -184,7 +184,7 @@
             <div class="gm2-step">
               <button class="btn btn--icon btn--sm" onclick={() => setCount(countValue - 1)} aria-label="fewer" disabled={countValue <= countLimit.min}>−</button>
               <span class="mono gm2-step-v">{countValue}</span>
-              <button class="btn btn--icon btn--sm" onclick={() => setCount(countValue + 1)} aria-label="more" disabled={countValue >= countLimit.max}>+</button>
+              <button class="btn btn--icon btn--sm" onclick={() => setCount(countValue + 1)} aria-label="增加" disabled={countValue >= countLimit.max}>+</button>
             </div>
             <div class="seg gm2-count-presets">
               {#each [Math.round(countLimit.def / 2), countLimit.def, Math.min(countLimit.max, countLimit.def * 2)] as p}
@@ -198,12 +198,12 @@
       <div class="gm2-block">
         <div class="field">
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">TITLE <span class="gm2-label-hint">auto-suggested</span></label>
+          <label class="onb-label mono">标题 <span class="gm2-label-hint">自动建议</span></label>
           <input class="input" bind:value={title} placeholder={suggested || "Select sources first…"} />
         </div>
         <div class="field">
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">CUSTOM INSTRUCTIONS <span class="gm2-label-hint">optional</span></label>
+          <label class="onb-label mono">自定义要求 <span class="gm2-label-hint">可选</span></label>
           <textarea
             class="input set-textarea"
             bind:value={customPrompt}
@@ -214,7 +214,7 @@
         <div class="gm-autotag">
           <div class="gm-autotag-l">
             <Icon name="lock" size={13} color="var(--fg-faint)" />
-            <span class="mono">Auto-filed under topic</span>
+            <span class="mono">自动归入主题</span>
           </div>
           {#if autoTopic}
             <div class="gm-autotag-r">
@@ -222,7 +222,7 @@
               {#if multi}<span class="mono faint">spans {topicNames.length} topics</span>{/if}
             </div>
           {:else}
-            <span class="mono faint">select sources to assign a topic</span>
+            <span class="mono faint">选择资料后可指定主题</span>
           {/if}
         </div>
       </div>
@@ -231,12 +231,12 @@
     <!-- RIGHT — source selection (scrolls within the panel) -->
     <div class="gm2-right">
       <div class="gm2-right-head">
-        <span class="onb-label mono" style="margin:0">SOURCES</span>
+        <span class="onb-label mono" style="margin:0">资料</span>
         <span class="faint mono">{sel.length} selected</span>
       </div>
       <div class="gm2-panel">
         {#if subjectTopics.length === 0}
-          <p class="mono faint" style="font-size: var(--t-sm); padding: 8px;">No sources found for this subject. Add sources first.</p>
+          <p class="mono faint" style="font-size: var(--t-sm); padding: 8px;">这个科目还没有资料，请先添加资料。</p>
         {:else}
           <div class="gm-sources">
             {#each subjectTopics as topic (topic.id)}
@@ -276,9 +276,9 @@
 
   <!-- Sticky footer — always visible, no scrolling to reach Generate -->
   <div class="add-foot gm2-foot">
-    <button class="btn btn--ghost" onclick={cancel}>Cancel</button>
+    <button class="btn btn--ghost" onclick={cancel}>取消</button>
     <button class="btn btn--primary" disabled={!ready} onclick={generate}>
-      <Icon name="bolt" size={13} /> Generate {tm.label.toLowerCase()}
+      <Icon name="bolt" size={13} /> 生成{tm.label}
     </button>
   </div>
 </div>

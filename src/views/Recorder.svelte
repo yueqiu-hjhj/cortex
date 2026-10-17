@@ -198,7 +198,7 @@
 
       <div class="rev-body">
         <div class="field">
-          <span class="onb-label mono">NAME <span class="faint">how this source is titled</span></span>
+          <span class="onb-label mono">名称 <span class="faint">这份资料的标题</span></span>
           <!-- svelte-ignore a11y_autofocus -->
           <input
             class="input"
@@ -209,7 +209,7 @@
         </div>
 
         <div class="field" style:margin-top="16px">
-          <span class="onb-label mono">SUBJECT <span class="faint">which course this lecture belongs to</span></span>
+          <span class="onb-label mono">科目 <span class="faint">这堂课属于哪门课</span></span>
           <Picker
             value={rec.reviewSubjectId}
             onChange={(id) => rec.setReviewSubject(id)}
@@ -219,7 +219,7 @@
         </div>
 
         <div class="field" style:margin-top="16px">
-          <span class="onb-label mono">TOPIC <span class="faint">where this recording lives</span></span>
+          <span class="onb-label mono">主题 <span class="faint">录音归到哪里</span></span>
           <Picker
             value={rec.reviewTopicId}
             onChange={(id) => (rec.reviewTopicId = id)}
@@ -230,7 +230,7 @@
 
         <div class="rev-speakers" style:margin-top="16px">
           <div class="rev-speakers-l">
-            <span class="onb-label mono">MULTIPLE PEOPLE SPEAKING</span>
+            <span class="onb-label mono">多人发言</span>
             <span class="rev-speakers-d">Label the transcript by voice — “Speaker 1 / Speaker 2” (homelab WhisperX or a diarizing cloud model).</span>
           </div>
           <button
@@ -252,7 +252,7 @@
 
         {#if rec.reviewTranscript.trim()}
           <div class="field" style:margin-top="14px">
-            <span class="onb-label mono">TRANSCRIPT PREVIEW <span class="faint">re-transcribed precisely on save</span></span>
+            <span class="onb-label mono">转写预览 <span class="faint">保存时会重新精确转写</span></span>
             <div class="rev-transcript read">{rec.reviewTranscript}</div>
           </div>
         {/if}
@@ -263,9 +263,9 @@
       </div>
 
       <div class="rev-actions">
-        <button class="btn btn--ghost rev-discard" onclick={() => rec.discardReview()}>Discard</button>
+        <button class="btn btn--ghost rev-discard" onclick={() => rec.discardReview()}>丢弃</button>
         <span class="grow"></span>
-        <button class="btn btn--primary" onclick={() => rec.confirmSave()}>Save recording</button>
+        <button class="btn btn--primary" onclick={() => rec.confirmSave()}>保存录音</button>
       </div>
 
       <div class="rev-hint mono faint">
@@ -302,8 +302,8 @@
         <button class="btn btn--icon" onclick={() => rec.togglePause()} title={rec.paused ? "Resume" : "Pause"}>
           {#if rec.paused}<Icon name="play" size={15} />{:else}<Icon name="pause" size={15} />{/if}
         </button>
-        <button class="rec-btn rec-btn--stop" onclick={() => rec.stop()} title="Stop & save"><span class="rec-stop-sq"></span></button>
-        <button class="btn btn--icon" onclick={() => rec.tagMoment()} title="Tag moment (m)"><Icon name="bolt" size={15} color="var(--warn)" /></button>
+        <button class="rec-btn rec-btn--stop" onclick={() => rec.stop()} title="停止并保存"><span class="rec-stop-sq"></span></button>
+        <button class="btn btn--icon" onclick={() => rec.tagMoment()} title="标记时间点 (m)"><Icon name="bolt" size={15} color="var(--warn)" /></button>
       {/if}
     </div>
 
@@ -344,10 +344,10 @@
     {#if isMobile}
       <div style:display="flex" style:gap="10px" style:margin-top="18px">
         {#if rec.recording}
-          <button class="btn btn--ghost btn--sm" onclick={discard}>Discard</button>
+          <button class="btn btn--ghost btn--sm" onclick={discard}>丢弃</button>
           <button class="btn btn--ghost btn--sm" onclick={leave}>Hide (keeps recording)</button>
         {:else}
-          <button class="btn btn--ghost btn--sm" onclick={leave}>Close</button>
+          <button class="btn btn--ghost btn--sm" onclick={leave}>关闭</button>
         {/if}
       </div>
     {/if}
@@ -358,14 +358,14 @@
   {#if !isMobile}
   <aside class="rec-transcript">
     <div class="rt-head">
-      <span class="rt-eyebrow mono">LIVE TRANSCRIPT</span>
+      <span class="rt-eyebrow mono">实时转写</span>
       <span class="grow"></span>
       {#if rec.status === "transcribing"}
-        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>processing</span>
+        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>处理中</span>
       {:else if rec.live && rec.liveTranscriptOn && rec.liveUpdating}
-        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>transcribing…</span>
+        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>转写中…</span>
       {:else if rec.live && rec.liveTranscriptOn}
-        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>listening</span>
+        <span class="status-pill status-pill--draft"><span class="dot dot--pulse"></span>正在听</span>
       {/if}
       <!-- Closing the panel also stops live transcription; "t" toggles it. -->
       <button class="btn btn--icon btn--sm btn--ghost rt-collapse" title="Close transcript (t)" onclick={() => rec.toggleTranscriptPanel()}>
@@ -388,12 +388,12 @@
             {rec.liveFinal}<span class="rt-interim">{rec.liveInterim}</span>
           </p>
         {:else}
-          <div class="rt-listening mono faint"><span class="rt-shimmer">Listening</span><span class="rt-ell"></span></div>
+          <div class="rt-listening mono faint"><span class="rt-shimmer">正在听</span><span class="rt-ell"></span></div>
         {/if}
       {:else if rec.recording && rec.whisperMissing}
         <!-- Backend fallback tried, came back empty: no Whisper installed. Be honest. -->
         <div class="rt-note rt-note--warn mono">
-          <span class="rt-note-title">Live transcript needs Whisper</span>
+          <span class="rt-note-title">实时转写需要 Whisper</span>
           No Whisper backend answered. Configure a homelab Whisper server in Settings, or install
           faster-whisper locally — the recording is still saved and transcribed when you stop.
         </div>
@@ -402,7 +402,7 @@
         {#if rec.liveBackendText.trim()}
           <p class="rt-live read">{rec.liveBackendText}</p>
         {:else}
-          <div class="rt-listening mono faint"><span class="rt-shimmer">Listening</span><span class="rt-ell"></span></div>
+          <div class="rt-listening mono faint"><span class="rt-shimmer">正在听</span><span class="rt-ell"></span></div>
         {/if}
       {:else}
         <div class="rt-empty mono faint">
@@ -413,9 +413,9 @@
       {/if}
     </div>
     {#if rec.recording}
-      <button class="btn btn--ghost btn--sm rt-close" onclick={discard}>Discard recording</button>
+      <button class="btn btn--ghost btn--sm rt-close" onclick={discard}>丢弃录音</button>
     {:else}
-      <button class="btn btn--ghost btn--sm rt-close" onclick={leave}>Close</button>
+      <button class="btn btn--ghost btn--sm rt-close" onclick={leave}>关闭</button>
     {/if}
   </aside>
 

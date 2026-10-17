@@ -543,7 +543,7 @@
         <Icon name="chevron" size={11} style="transform:rotate(90deg);opacity:.55;margin-left:2px" />
       </button>
     {:else}
-      <span class="faint" style="font-size:12px">No subject open</span>
+      <span class="faint" style="font-size:12px">未打开科目</span>
     {/if}
 
     <div class="grow"></div>
@@ -554,7 +554,7 @@
           onChange={setChatModel}
           options={modelOptions}
           icon="bolt"
-          placeholder="Model"
+          placeholder="模型"
           loading={orLoading && orModels.length === 0}
           onOpen={ensureOrModels}
         />
@@ -585,15 +585,15 @@
         <div class="ces-ico">
           <Icon name="diamond" size={22} color="var(--fg3)" />
         </div>
-        <div class="ces-title">Open a subject to start chatting</div>
-        <div class="ces-sub">Ask questions grounded in your sources.</div>
+        <div class="ces-title">打开一个科目开始对话</div>
+        <div class="ces-sub">基于你的资料提问。</div>
       </div>
     {:else}
       {#if messages.length === 0 && streaming === null}
         <div class="chat-empty-state" style="min-height:48vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;">
           <div class="ces-ico"><Icon name="chat" size={22} color="var(--fg3)" /></div>
           <div class="ces-title">Ask anything about {scopeName}</div>
-          <div class="ces-sub">Press <span class="kbd">i</span> to start · <span class="kbd">s</span> to change scope</div>
+          <div class="ces-sub">按 <span class="kbd">i</span> 开始 · <span class="kbd">s</span> 切换范围</div>
         </div>
       {/if}
 
@@ -618,10 +618,10 @@
                   aria-expanded={!!evidenceOpen[i]}
                 >
                   <Icon name={evidenceOpen[i] ? "x" : "book"} size={11} />
-                  <span class="mono">Evidence</span>
+                  <span class="mono">证据</span>
                   <span class="evidence-count mono">{citedCount}/{cites.length} cited</span>
                   {#if isUncited}
-                    <span class="evidence-warning">No inline citation</span>
+                    <span class="evidence-warning">没有行内引用</span>
                   {/if}
                   <span class="evidence-caret">{evidenceOpen[i] ? "▾" : "▸"}</span>
                 </button>
@@ -648,7 +648,7 @@
                       retrieved {cites.length} chunk{cites.length === 1 ? "" : "s"}
                       from {new Set(cites.map((c) => c.source_id)).size} source{new Set(cites.map((c) => c.source_id)).size === 1 ? "" : "s"}
                       · {citedCount} cited inline
-                      {#if isUncited}· <span class="trace-warn">no source linked in answer</span>{/if}
+                      {#if isUncited}· <span class="trace-warn">回答未关联任何来源</span>{/if}
                     </div>
                   </div>
                 {/if}
@@ -690,7 +690,7 @@
   <div class="chat-compose">
     {#if suggestions.length && streaming === null}
       <div class="chat-suggest">
-        <span class="cs-label mono">Next</span>
+        <span class="cs-label mono">接下来</span>
         {#each suggestions as s}
           <button type="button" class="suggest-chip" title={s} onclick={() => send(s)}>{s}</button>
         {/each}
@@ -739,10 +739,10 @@
       {/if}
     </div>
     <div class="compose-hint">
-      <span><span class="kbd">i</span> insert</span>
-      <span><span class="kbd">⏎</span> send</span>
-      <span><span class="kbd">⎋</span> normal</span>
-      <span><span class="kbd">s</span> scope</span>
+      <span><span class="kbd">i</span> 输入</span>
+      <span><span class="kbd">⏎</span> 发送</span>
+      <span><span class="kbd">⎋</span> 普通模式</span>
+      <span><span class="kbd">s</span> 范围</span>
     </div>
   </div>
 
@@ -763,7 +763,7 @@
         use:autofocus
       >
         <div class="scopesw-head">
-          <span class="scopesw-title mono">Switch chat scope</span>
+          <span class="scopesw-title mono">切换对话范围</span>
           <span class="kbd">esc</span>
         </div>
         <div class="scopesw-list" role="listbox" aria-label="chat scope options">
@@ -785,11 +785,11 @@
               {:else if o.kind === "tag"}
                 <span class="scopesw-hash mono">#</span>
                 <span class="scopesw-label">{o.tag}</span>
-                <span class="scopesw-kindtag mono">TAG</span>
+                <span class="scopesw-kindtag mono">标签</span>
               {:else if o.kind === "topic"}
                 <Icon name="chevron" size={11} color="var(--fg-faint)" />
                 <span class="scopesw-label">{o.label}</span>
-                <span class="scopesw-kindtag mono">TOPIC</span>
+                <span class="scopesw-kindtag mono">主题</span>
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
                 <span
@@ -814,9 +814,9 @@
           </button>
         {/if}
         <div class="scopesw-foot mono">
-          <span><span class="kbd">↑</span><span class="kbd">↓</span> move</span>
-          <span><span class="kbd">⏎</span> select · tick = multi</span>
-          <span><span class="kbd">esc</span> close</span>
+          <span><span class="kbd">↑</span><span class="kbd">↓</span> 移动</span>
+          <span><span class="kbd">⏎</span> 选择 · 勾选=多选</span>
+          <span><span class="kbd">esc</span> 关闭</span>
         </div>
       </div>
     </div>
@@ -827,7 +827,7 @@
     <div class="hist-overlay" role="presentation" onmousedown={() => (historyOpen = false)}>
       <div class="hist-panel" role="dialog" aria-modal="true" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
         <div class="hist-head">
-          <span class="hist-title">Chat history</span>
+          <span class="hist-title">对话历史</span>
           <div class="grow"></div>
           <button class="btn btn--sm btn--ghost" onclick={startNewConversation} title="New conversation">
             <Icon name="plus" size={12} /> New
@@ -837,7 +837,7 @@
           </button>
         </div>
         {#if threads.length === 0}
-          <div class="hist-empty mono faint">No past conversations yet.</div>
+          <div class="hist-empty mono faint">还没有历史对话。</div>
         {:else}
           <div class="hist-list">
             {#each threads as th}

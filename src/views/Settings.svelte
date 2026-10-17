@@ -42,17 +42,17 @@
 
   // ---- tab navigation ----
   const TABS = [
-    { id: "profile",    label: "Profile",       icon: "diamond" },
-    { id: "models",     label: "Models",        icon: "bolt" },
-    { id: "keys",       label: "API keys",      icon: "lock" },
-    { id: "appearance", label: "Appearance",    icon: "grid" },
-    { id: "keybinds",   label: "Keybinds",      icon: "cmd" },
-    { id: "homelab",    label: "Integrations",  icon: "globe" },
-    { id: "calendar",   label: "Google Calendar", icon: "globe" },
-    { id: "experimental", label: "Experimental", icon: "bolt" },
-    { id: "audio",      label: "Audio",         icon: "music" },
-    { id: "data",       label: "Data & privacy",icon: "doc" },
-    { id: "about",      label: "About",         icon: "diamond" },
+    { id: "profile",    label: "个人资料",       icon: "diamond" },
+    { id: "models",     label: "模型",        icon: "bolt" },
+    { id: "keys",       label: "API 密钥",      icon: "lock" },
+    { id: "appearance", label: "外观",    icon: "grid" },
+    { id: "keybinds",   label: "快捷键",      icon: "cmd" },
+    { id: "homelab",    label: "集成",  icon: "globe" },
+    { id: "calendar",   label: "Google 日历", icon: "globe" },
+    { id: "experimental", label: "实验功能", icon: "bolt" },
+    { id: "audio",      label: "音频",         icon: "music" },
+    { id: "data",       label: "数据与隐私",icon: "doc" },
+    { id: "about",      label: "关于",         icon: "diamond" },
   ] as const;
 
   // Mobile is a homelab-first portable view: drop the desktop-only Keybinds tab
@@ -1403,18 +1403,18 @@
         </header>
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Identity</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">身份</h3></div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Display name</div></div>
+              <div class="set-row-l"><div class="set-row-t">显示名称</div></div>
               <div class="set-row-r"><input class="input" bind:value={name} /></div>
             </div>
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Pronouns</div></div>
+              <div class="set-row-l"><div class="set-row-t">称呼代词</div></div>
               <div class="set-row-r"><input class="input" bind:value={pronouns} /></div>
             </div>
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Level</div></div>
+              <div class="set-row-l"><div class="set-row-t">学习阶段</div></div>
               <div class="set-row-r">
                 <Picker
                   value={level}
@@ -1429,7 +1429,7 @@
               </div>
             </div>
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Field of study</div></div>
+              <div class="set-row-l"><div class="set-row-t">专业方向</div></div>
               <div class="set-row-r"><input class="input" bind:value={field} /></div>
             </div>
           </div>
@@ -1437,18 +1437,18 @@
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">About you</h3>
+            <h3 class="set-group-t">关于你</h3>
             <p class="set-group-d">Context the AI uses to personalize explanations.</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
-              <div class="set-row-t">In your words</div>
+              <div class="set-row-t">用你的话描述</div>
               <textarea class="input set-textarea set-bio" bind:value={about} rows={6}></textarea>
             </div>
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Response style</div>
-                <div class="set-row-d">How much detail by default.</div>
+                <div class="set-row-t">回答风格</div>
+                <div class="set-row-d">默认输出多少细节。</div>
               </div>
               <div class="set-row-r">
                 <div class="seg">
@@ -1460,8 +1460,8 @@
             </div>
             <div class="set-row stacked">
               <div class="set-row-l">
-                <div class="set-row-t">Explain with</div>
-                <div class="set-row-d">Pick what helps you learn fastest.</div>
+                <div class="set-row-t">讲解方式</div>
+                <div class="set-row-d">选对你学习帮助最大的方式。</div>
               </div>
               <div class="set-row-r">
                 <div class="tag-suggest" style="margin-top:0">
@@ -1509,7 +1509,7 @@
             </div>
             {#if memories.length === 0}
               <div class="set-row">
-                <div class="set-row-l"><div class="set-row-d">No memories yet. Add a fact above and the AI will keep it in mind.</div></div>
+                <div class="set-row-l"><div class="set-row-d">还没有记忆。在上面添加一条事实，AI 就会记住。</div></div>
               </div>
             {:else}
               {#each memories as m (m.id)}
@@ -1614,7 +1614,7 @@ Notes: {about}</pre>
         </header>
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Providers</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">服务商</h3></div>
           <div class="set-card">
             {#each keyMeta as k}
               {@const isSet = !!keys[k.id as keyof typeof keys]}
@@ -1673,7 +1673,7 @@ Notes: {about}</pre>
         {#if ollamaAvailable}
         {@const ov = verify.ollama}
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Local models (Ollama)</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">本地模型（Ollama）</h3></div>
           <div class="set-card">
             <div class="set-row stacked">
               <div class="set-row-l">
@@ -1714,7 +1714,7 @@ Notes: {about}</pre>
              one-time download from HuggingFace; once Ready the app embeds without
              any external service. -->
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Local ONNX embeddings</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">本地 ONNX 向量</h3></div>
           <div class="set-card">
             <div class="set-row stacked">
               <div class="set-row-l">
@@ -1780,12 +1780,12 @@ Notes: {about}</pre>
         <!-- Follow-Omarchy mirrors the desktop's Omarchy palette — meaningless on a phone. -->
         {#if !isMobile}
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Theme</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">主题</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Follow Omarchy theme</div>
-                <div class="set-row-d">Mirror your desktop's current Omarchy palette on every launch. Picking a theme below turns this off.</div>
+                <div class="set-row-t">跟随 Omarchy 主题</div>
+                <div class="set-row-d">每次启动都镜像桌面的 Omarchy 配色。在下面选主题会关掉这个开关。</div>
               </div>
               <div class="set-row-r">
                 <button
@@ -1810,7 +1810,7 @@ Notes: {about}</pre>
         {/if}
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Manual theme</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">手动主题</h3></div>
           <div class="set-card">
             <div class="set-themes">
               {#each THEME_OPTS as t}
@@ -1836,12 +1836,12 @@ Notes: {about}</pre>
         </section>
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Reading</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">阅读</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Cheatsheet typeface</div>
-                <div class="set-row-d">The voice of everything you read to learn.</div>
+                <div class="set-row-t">速查表字体</div>
+                <div class="set-row-d">朗读学习内容用的音色。</div>
               </div>
               <div class="set-row-r">
                 <div class="seg">
@@ -1855,8 +1855,8 @@ Notes: {about}</pre>
             {#if !isMobile}
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Density</div>
-                <div class="set-row-d">Spacing throughout the app.</div>
+                <div class="set-row-t">界面密度</div>
+                <div class="set-row-d">整个应用的间距。</div>
               </div>
               <div class="set-row-r">
                 <div class="seg">
@@ -1873,12 +1873,12 @@ Notes: {about}</pre>
         <!-- Window / tray is a desktop-only concept — hidden on mobile. -->
         {#if !isMobile}
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Window</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">窗口</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Close to tray</div>
-                <div class="set-row-d">Closing the window keeps Cortex running in the tray — ingest, generation and music continue. Quit from the tray menu.</div>
+                <div class="set-row-t">关闭到托盘</div>
+                <div class="set-row-d">关闭窗口后 Cortex 继续在托盘运行 — 入库、生成、音乐都不中断。要退出请用托盘菜单。</div>
               </div>
               <div class="set-row-r">
                 <button type="button" class={"st-toggle" + (closeToTray ? " on" : "")} onclick={toggleCloseToTray} role="switch" aria-checked={closeToTray} aria-label="close to tray"><span class="st-knob"></span></button>
@@ -1888,12 +1888,12 @@ Notes: {about}</pre>
         </section>
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Display</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">显示</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">UI scale</div>
-                <div class="set-row-d">Make everything larger or smaller — helps on high-resolution displays.</div>
+                <div class="set-row-t">界面缩放</div>
+                <div class="set-row-d">整体放大或缩小 — 高分屏上很有用。</div>
               </div>
               <div class="set-row-r" style="min-width:120px">
                 <!-- Dropdown of presets (was a slider — the UI rescaling live under the
@@ -1931,8 +1931,8 @@ Notes: {about}</pre>
         <div class="set-card">
           <div class="set-row">
             <div class="set-row-l">
-              <div class="set-row-t">Preset</div>
-              <div class="set-row-d">Starting point for bindings.</div>
+              <div class="set-row-t">预设</div>
+              <div class="set-row-d">键位方案的起点。</div>
             </div>
             <div class="set-row-r">
               <div class="seg">
@@ -1982,7 +1982,7 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Leader menu (Space then…)</h3>
+            <h3 class="set-group-t">Leader 菜单（按 Space 再按…）</h3>
             <p class="set-group-d">Press <span class="kbd">Space</span> to open the leader menu, then a key. Fixed, mnemonic — they only fire while the menu is open.</p>
           </div>
           <div class="set-card set-binds">
@@ -1997,7 +1997,7 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">System</h3>
+            <h3 class="set-group-t">系统</h3>
             <p class="set-group-d">Built-in shortcuts that follow OS conventions and can't be rebound.</p>
           </div>
           <div class="set-card set-binds">
@@ -2046,8 +2046,8 @@ Notes: {about}</pre>
       {#snippet diagramsToggle()}
         <div class="set-row">
           <div class="set-row-l">
-            <div class="set-row-t">Illustrate with diagrams</div>
-            <div class="set-row-d">A relevant diagram per cheatsheet section + images in chat. On by default once SearXNG is connected.</div>
+            <div class="set-row-t">用图表说明</div>
+            <div class="set-row-d">每个速查表章节配一张相关示意图，对话里也会配图。连上 SearXNG 后默认开启。</div>
           </div>
           <div class="set-row-r">
             <button type="button" class={"st-toggle" + (webImages ? " on" : "")} onclick={() => setWebImages(!webImages)} disabled={!(searxng.trim() || hlBase.trim() || hlTailscale.trim() || hlPublic.trim())} role="switch" aria-checked={webImages} aria-label="diagrams"><span class="st-knob"></span></button>
@@ -2065,7 +2065,7 @@ Notes: {about}</pre>
         <!-- ═══ TRANSCRIPTION — outcome-first: pick WHERE audio becomes text ═══ -->
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Transcription</h3>
+            <h3 class="set-group-t">转写</h3>
             <p class="set-group-d">Where lecture recordings become text.</p>
           </div>
           <div class="set-card">
@@ -2076,18 +2076,18 @@ Notes: {about}</pre>
                 <button type="button" class={"seg-opt" + (transcriptionMode === "homelab" ? " on" : "")} onclick={() => setTranscriptionMode("homelab")}>My homelab</button>
               </div>
               {#if transcriptionMode === "local"}
-                <div class="set-row-d">Zero setup — Whisper runs on this machine, and the first transcription fetches its model automatically. Most private; slower on long lectures than the other two.</div>
+                <div class="set-row-d">零配置 — Whisper 跑在本机，首次转写会自动下载模型。最私密，但长讲座比另外两种慢。</div>
               {:else if transcriptionMode === "cloud"}
                 <div class="set-row-d">No server, no hosting — just an API key. Groq's free tier turns a whole lecture into text in seconds with <span class="mono">large-v3-turbo</span>.</div>
               {:else}
-                <div class="set-row-d">Runs on the WhisperX lecture server behind your Homelab URL (configured below) — built for hour-plus recordings, with speaker labels when the server has an HF token. Audio never leaves your machines.</div>
+                <div class="set-row-d">跑在 Homelab 地址后面的 WhisperX 服务上（在下方配置）— 为小时级录音设计，服务器配置 HF token 后还能区分说话人。音频不离开你的机器。</div>
               {/if}
             </div>
 
 
             {#if transcriptionMode === "cloud"}
               <div class="set-row stacked">
-                <div class="set-row-t">Provider</div>
+                <div class="set-row-t">服务商</div>
                 <div class="seg">
                   <button type="button" class={"seg-opt" + (whisperCloudProvider === "groq" ? " on" : "")} onclick={() => applyCloudPreset("groq")}>Groq <span class="faint">free</span></button>
                   <button type="button" class={"seg-opt" + (whisperCloudProvider === "openai" ? " on" : "")} onclick={() => applyCloudPreset("openai")}>OpenAI</button>
@@ -2096,13 +2096,13 @@ Notes: {about}</pre>
               </div>
               {#if whisperCloudProvider === "custom"}
                 <div class="set-row stacked">
-                  <div class="set-row-t">Endpoint URL</div>
+                  <div class="set-row-t">服务地址</div>
                   <input class="input mono" bind:value={whisperCloudUrl} onchange={saveCloudWhisper} onblur={saveCloudWhisper} placeholder="https://api.example.com/v1" />
                   <div class="set-row-d">Any OpenAI-compatible <span class="mono">/v1/audio/transcriptions</span> endpoint.</div>
                 </div>
               {/if}
               <div class="set-row stacked">
-                <div class="set-row-t">API key</div>
+                <div class="set-row-t">API 密钥</div>
                 <input class="input mono" type="password" bind:value={whisperApiKey} onchange={saveCloudWhisper} onblur={saveCloudWhisper} placeholder={whisperCloudProvider === "openai" ? "sk-…" : "gsk_…"} />
                 {#if whisperCloudProvider === "groq"}
                   <div class="set-row-d">Get one free — no card needed:
@@ -2111,16 +2111,16 @@ Notes: {about}</pre>
                 {/if}
               </div>
               <div class="set-row stacked">
-                <div class="set-row-t">Model</div>
+                <div class="set-row-t">模型</div>
                 <input class="input mono" bind:value={whisperCloudModel} onchange={saveCloudWhisper} onblur={saveCloudWhisper} placeholder="whisper-large-v3-turbo" />
               </div>
             {/if}
 
             {#if transcriptionMode === "homelab"}
               <div class="set-row stacked">
-                <div class="set-row-t">Model <span class="faint">legacy servers only</span></div>
+                <div class="set-row-t">模型 <span class="faint">legacy servers only</span></div>
                 <input class="input mono" bind:value={whisperModel} onchange={saveWhisperModel} onblur={saveWhisperModel} placeholder="deepdml/faster-whisper-large-v3-turbo-ct2" />
-                <div class="set-row-d">Only used by OpenAI-compatible servers (speaches). The WhisperX lecture server picks its model in <span class="mono">docker-compose</span> instead (<span class="mono">WHISPER_MODEL</span>, default <span class="mono">distil-large-v3</span>) — leave this blank there.</div>
+                <div class="set-row-d">仅 OpenAI 兼容服务（speaches）使用。WhisperX 讲座服务器在以下位置选择模型 <span class="mono">docker-compose</span> instead (<span class="mono">WHISPER_MODEL</span>, default <span class="mono">distil-large-v3</span>) — leave this blank there.</div>
               </div>
             {/if}
 
@@ -2142,7 +2142,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
-              <h3 class="set-group-t">Homelab URL</h3>
+              <h3 class="set-group-t">Homelab 地址</h3>
               <p class="set-group-d">One address for everything. Run the <span class="mono">homelab/</span> docker compose and point Cortex here — search, lecture transcription, instant sync, mobile ingest and local models are all reached off this single URL (Cortex adds <span class="mono">/searxng</span>, <span class="mono">/whisper</span>, <span class="mono">/sync</span>, <span class="mono">/syncd</span>, <span class="mono">/ingest</span>, <span class="mono">/ollama</span> for you). Add a Tailscale and/or public address and Cortex auto-picks the first reachable: <strong>local → Tailscale → public</strong>.</p>
             </div>
             {#if hlBase.trim()}
@@ -2152,21 +2152,21 @@ Notes: {about}</pre>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
-              <div class="set-row-t">Local URL</div>
+              <div class="set-row-t">本地地址</div>
               <input class="input mono" bind:value={hlBase} oninput={saveHomelabBasesSoon} onchange={saveHomelabBases} onblur={saveHomelabBases} placeholder="http://192.168.1.10:8080" />
               <div class="set-row-d">Your homelab's LAN address (the Caddy proxy port, default <span class="mono">8080</span>).</div>
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">Tailscale URL <span class="faint">optional</span></div>
+              <div class="set-row-t">Tailscale 地址 <span class="faint">optional</span></div>
               <input class="input mono" bind:value={hlTailscale} oninput={saveHomelabBasesSoon} onchange={saveHomelabBases} onblur={saveHomelabBases} placeholder="https://homelab.tailnet-xxxx.ts.net" />
-              <div class="set-row-d">Used when the local URL isn't reachable. Cortex swaps just the host (and port if you give one), keeping the service paths.</div>
+              <div class="set-row-d">本地地址不可达时使用。只替换主机（和端口），服务路径保持不变。</div>
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">Public URL <span class="faint">optional</span></div>
+              <div class="set-row-t">公网地址 <span class="faint">optional</span></div>
               <input class="input mono" bind:value={hlPublic} oninput={saveHomelabBasesSoon} onchange={saveHomelabBases} onblur={saveHomelabBases} placeholder="https://lab.example.com" />
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">Access token <span class="faint">optional — required for a public URL</span></div>
+              <div class="set-row-t">访问令牌 <span class="faint">optional — required for a public URL</span></div>
               <input class="input mono" type="password" bind:value={hlToken} onchange={saveHlToken} onblur={saveHlToken} placeholder="the CORTEX_TOKEN your proxy was started with" />
               <div class="set-row-d">Locks every homelab service behind a shared secret. Start the proxy with <span class="mono">CORTEX_TOKEN=… docker compose up -d</span> and paste the same value here — Cortex sends it automatically on every request (sync keeps its own WebDAV credentials).</div>
               {#if hlPublic.trim() && !hlToken.trim()}
@@ -2209,7 +2209,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
-              <h3 class="set-group-t">Dependencies</h3>
+              <h3 class="set-group-t">依赖组件</h3>
               <p class="set-group-d">External tools Cortex shells out to for ingest, OCR, transcription and media. Install whatever's missing with the one command below.</p>
             </div>
             <button class="btn btn--sm btn--ghost" onclick={loadDeps} disabled={depLoading}><Icon name="refresh" size={12} /> {depLoading ? "Checking…" : "Re-check"}</button>
@@ -2228,7 +2228,7 @@ Notes: {about}</pre>
               {/each}
               {#if depReport.install_command}
                 <div class="set-row stacked" style="margin-top:10px">
-                  <div class="set-row-t">Install missing <span class="faint">· {depReport.manager}</span></div>
+                  <div class="set-row-t">安装缺失的 <span class="faint">· {depReport.manager}</span></div>
                   <div class="row-inline">
                     <input class="input mono" readonly value={depReport.install_command} />
                     <button class="btn" onclick={copyDepCmd}><Icon name="doc" size={12} /> Copy</button>
@@ -2252,7 +2252,7 @@ Notes: {about}</pre>
              per-service URL overrides; everything rides the single Homelab URL above. -->
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Homelab features</h3>
+            <h3 class="set-group-t">Homelab 功能</h3>
             <p class="set-group-d">Optional features powered by the services behind your Homelab URL — they switch on the moment a Homelab URL is set.</p>
           </div>
           <div class="set-card">
@@ -2262,7 +2262,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
-              <h3 class="set-group-t">Live sync</h3>
+              <h3 class="set-group-t">实时同步</h3>
               <p class="set-group-d">Instant cross-device sync. Every change streams to your other devices as a tiny per-record delta over a WebSocket (the homelab's <span class="mono">/syncd</span> service) and shows up within about a second — newest edit wins, and nothing is deleted unless you actually deleted it. Source files and a full snapshot ride the <span class="mono">/sync</span> WebDAV vault, which also serves as the automatic fallback when <span class="mono">/syncd</span> isn't reachable.</p>
             </div>
             <span class="status-pill status-pill--{syncPill().cls}"><span class="dot"></span>{syncPill().label}</span>
@@ -2270,8 +2270,8 @@ Notes: {about}</pre>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Enable live sync</div>
-                <div class="set-row-d">Merges the remote vault in on launch (in the background — never blocks startup), then pushes your changes (debounced).</div>
+                <div class="set-row-t">启用实时同步</div>
+                <div class="set-row-d">启动时在后台合并远端仓库（不阻塞启动），然后把你的改动推上去（带防抖）。</div>
               </div>
               <div class="set-row-r">
                 <button type="button" class={"st-toggle" + (syncOn ? " on" : "")} onclick={toggleSync} disabled={!canSync} role="switch" aria-checked={syncOn} aria-label="live sync"><span class="st-knob"></span></button>
@@ -2293,11 +2293,11 @@ Notes: {about}</pre>
               {/if}
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">Username <span class="faint">optional</span></div>
+              <div class="set-row-t">用户名 <span class="faint">optional</span></div>
               <input class="input mono" bind:value={syncUser} oninput={saveSyncSoon} onchange={saveSync} onblur={saveSync} placeholder="cortex" />
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">Password <span class="faint">optional</span></div>
+              <div class="set-row-t">密码 <span class="faint">optional</span></div>
               <div class="row-inline">
                 <input class="input mono" type="password" bind:value={syncPass} oninput={saveSyncSoon} onchange={saveSync} onblur={saveSync} placeholder="••••••••" />
                 <button class="btn btn--primary" disabled={app.syncState === "syncing" || !canSync} onclick={() => app.syncManual()}>
@@ -2314,7 +2314,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
-              <h3 class="set-group-t">Encrypted backups</h3>
+              <h3 class="set-group-t">加密备份</h3>
               <p class="set-group-d">Snapshot the database, encrypt it with <span class="mono">age</span>, and upload with <span class="mono">rclone</span>. Nothing leaves the machine unencrypted.</p>
             </div>
             {#if backupInfo}
@@ -2326,12 +2326,12 @@ Notes: {about}</pre>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
-              <div class="set-row-t">age recipient (public key)</div>
+              <div class="set-row-t">age 收件人（公钥）</div>
               <input class="input mono" bind:value={ageRecipient} onchange={saveBackupConfig} onblur={saveBackupConfig} placeholder="age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p" />
               <div class="set-row-d">From <span class="mono">age-keygen</span>. Only this key's holder can decrypt the backups.</div>
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">rclone remote</div>
+              <div class="set-row-t">rclone 远程</div>
               <div class="row-inline">
                 <input class="input mono" bind:value={rcloneRemote} onchange={saveBackupConfig} onblur={saveBackupConfig} placeholder="homelab:cortex-backups" />
                 <button class="btn btn--primary" disabled={backingUp} onclick={runBackup}>
@@ -2361,10 +2361,10 @@ Notes: {about}</pre>
         <!-- Music is cut on mobile (no mpv/yt-dlp sidecars) — hide its settings. -->
         {#if !isMobile}
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Study music</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">学习音乐</h3></div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Default station</div></div>
+              <div class="set-row-l"><div class="set-row-t">默认电台</div></div>
               <div class="set-row-r">
                 <Picker
                   value={station}
@@ -2374,7 +2374,7 @@ Notes: {about}</pre>
               </div>
             </div>
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Autoplay on launch</div></div>
+              <div class="set-row-l"><div class="set-row-t">启动时自动播放</div></div>
               <div class="set-row-r">
                 <button type="button" class={"st-toggle" + (autoplay ? " on" : "")} onclick={() => (autoplay = !autoplay)} role="switch" aria-checked={autoplay} aria-label="autoplay"><span class="st-knob"></span></button>
               </div>
@@ -2388,12 +2388,12 @@ Notes: {about}</pre>
         {#if !isMobile}
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">YouTube streaming</h3>
+            <h3 class="set-group-t">YouTube 播放</h3>
             <p class="set-group-d">Paste a YouTube video or livestream URL in the music panel to stream it ad-free. Uses a headless <span class="mono">mpv</span> + <span class="mono">yt-dlp</span> (auto-downloaded on first use). Nothing is bundled — only the URL is saved.</p>
           </div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Tools</div></div>
+              <div class="set-row-l"><div class="set-row-t">工具</div></div>
               <div class="set-row-r">
                 {#if mediaTools}
                   <span class="mono" style="color:{mediaTools.mpv ? 'var(--ok)' : 'var(--danger,#e06c75)'}">
@@ -2425,7 +2425,7 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Focus timer</h3>
+            <h3 class="set-group-t">专注计时</h3>
             <p class="set-group-d">Pomodoro session lengths (applies app-wide).</p>
           </div>
           <div class="set-card">
@@ -2446,12 +2446,12 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Audio overview voices</h3>
+            <h3 class="set-group-t">音频概览音色</h3>
             <p class="set-group-d">The two hosts of generated podcasts.</p>
           </div>
           <div class="set-card">
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Host A</div></div>
+              <div class="set-row-l"><div class="set-row-t">主机 A</div></div>
               <div class="set-row-r">
                 <Picker
                   value={voiceA}
@@ -2461,7 +2461,7 @@ Notes: {about}</pre>
               </div>
             </div>
             <div class="set-row">
-              <div class="set-row-l"><div class="set-row-t">Host B</div></div>
+              <div class="set-row-l"><div class="set-row-t">主机 B</div></div>
               <div class="set-row-r">
                 <Picker
                   value={voiceB}
@@ -2485,12 +2485,12 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Status</h3>
+            <h3 class="set-group-t">状态</h3>
           </div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Connection</div>
+                <div class="set-row-t">连接</div>
                 <div class="set-row-d mono faint">
                   {#if gStatus?.connected}
                     Connected{gStatus.email ? " · " + gStatus.email : ""}
@@ -2522,7 +2522,7 @@ Notes: {about}</pre>
         {#if gStatus?.connected}
           <section class="set-group">
             <div class="set-group-h">
-              <h3 class="set-group-t">Calendars to sync</h3>
+              <h3 class="set-group-t">要同步的日历</h3>
               <p class="set-group-d">Pick which Google calendars to pull events from — tick your <strong>university / timetable</strong> calendar here so its classes, deadlines and exams land on the Cortex calendar.</p>
             </div>
             <div class="set-card">
@@ -2550,18 +2550,18 @@ Notes: {about}</pre>
 
         <section class="set-group">
           <div class="set-group-h">
-            <h3 class="set-group-t">Credentials</h3>
+            <h3 class="set-group-t">凭据</h3>
             <p class="set-group-d">Create an OAuth client of type “Desktop app” in Google Cloud → APIs &amp; Services → Credentials, enable the Calendar API, then paste the ID and secret here.</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
-              <div class="set-row-l"><div class="set-row-t">Client ID</div></div>
+              <div class="set-row-l"><div class="set-row-t">客户端 ID</div></div>
               <div class="set-row-r">
                 <input class="input mono" bind:value={gClientId} onblur={saveGoogleCreds} placeholder="…apps.googleusercontent.com" />
               </div>
             </div>
             <div class="set-row stacked">
-              <div class="set-row-l"><div class="set-row-t">Client secret</div></div>
+              <div class="set-row-l"><div class="set-row-t">客户端密钥</div></div>
               <div class="set-row-r">
                 <input class="input mono" type="password" bind:value={gClientSecret} onblur={saveGoogleCreds} placeholder="GOCSPX-…" />
               </div>
@@ -2582,7 +2582,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
-              <h3 class="set-group-t">University portal (Moodle)</h3>
+              <h3 class="set-group-t">学校门户（Moodle）</h3>
               <p class="set-group-d">Pull grades, assignments, deadlines and announcements from your Moodle portal into Cortex.</p>
             </div>
             <button class={"st-toggle" + (expMoodle ? " on" : "")} type="button" onclick={toggleExpMoodle} role="switch" aria-checked={expMoodle} aria-label="enable moodle"><span class="st-knob"></span></button>
@@ -2592,21 +2592,21 @@ Notes: {about}</pre>
             <div class="set-card">
               <div class="set-row">
                 <div class="set-row-l">
-                  <div class="set-row-t">Connection</div>
+                  <div class="set-row-t">连接</div>
                   <div class="set-row-d">{mdStatus.configured ? `Connected · last sync ${fmtSyncTime(mdStatus.last_sync)}` : "Not connected"}</div>
                 </div>
                 <span class="status-pill status-pill--{mdStatus.configured ? 'ready' : 'pending'}"><span class="dot"></span>{mdStatus.configured ? "Connected" : "Off"}</span>
               </div>
 
               <div class="set-row stacked">
-                <div class="set-row-t">Moodle site URL</div>
+                <div class="set-row-t">Moodle 站点地址</div>
                 <input class="input mono" bind:value={mdUrl} placeholder="https://moodle.your-school.edu" />
               </div>
 
               <div class="set-row">
                 <div class="set-row-l">
-                  <div class="set-row-t">Sign-in method</div>
-                  <div class="set-row-d">Many institutions use SSO (Microsoft/SAML), so username/password often won't work — paste a web-services token instead.</div>
+                  <div class="set-row-t">登录方式</div>
+                  <div class="set-row-d">很多学校用 SSO（Microsoft/SAML），用户名密码往往不可用 — 请改填 web services 令牌。</div>
                 </div>
                 <div class="set-row-r" style="gap:6px">
                   <button class={"btn btn--sm" + (mdAuthMode === 'token' ? ' btn--primary' : ' btn--ghost')} type="button" onclick={() => (mdAuthMode = 'token')}>Token</button>
@@ -2616,23 +2616,23 @@ Notes: {about}</pre>
 
               {#if mdAuthMode === 'password'}
                 <div class="set-row stacked">
-                  <div class="set-row-t">Username</div>
+                  <div class="set-row-t">用户名</div>
                   <input class="input mono" bind:value={mdUser} placeholder="student number" />
                 </div>
                 <div class="set-row stacked">
-                  <div class="set-row-t">Password</div>
+                  <div class="set-row-t">密码</div>
                   <input class="input mono" type="password" bind:value={mdPass} placeholder="••••••••" />
                 </div>
               {:else}
                 <div class="set-row stacked">
-                  <div class="set-row-t">Web-services token</div>
+                  <div class="set-row-t">Web services 令牌</div>
                   <input class="input mono" bind:value={mdToken} placeholder="paste your Moodle token" />
-                  <div class="set-row-d">Obtain it from the official Moodle app or a browser login. Stored locally; your password is never sent to Cortex.</div>
+                  <div class="set-row-d">可从官方 Moodle App 或浏览器登录获取。仅存本地，密码不会发送到任何地方。</div>
                 </div>
               {/if}
 
               <div class="set-row">
-                <div class="set-row-l"><div class="set-row-d">Connect, then sync to pull your data.</div></div>
+                <div class="set-row-l"><div class="set-row-d">先连接，再同步，把你的数据拉下来。</div></div>
                 <div class="set-row-r" style="gap:8px">
                   {#if mdStatus.configured}
                     <button class="btn btn--ghost btn--sm" type="button" onclick={mdDisconnect} disabled={mdBusy}>Disconnect</button>
@@ -2647,8 +2647,8 @@ Notes: {about}</pre>
               {#if mdStatus.configured}
                 <div class="set-row">
                   <div class="set-row-l">
-                    <div class="set-row-t">Link subjects to courses</div>
-                    <div class="set-row-d">Auto-match your Cortex subjects to Moodle courses by code/name.</div>
+                    <div class="set-row-t">把科目关联到课程</div>
+                    <div class="set-row-d">按课程代码/名称，自动把科目匹配到 Moodle 课程。</div>
                   </div>
                   <div class="set-row-r"><button class="btn btn--sm" type="button" onclick={mdAutolink}>Auto-link</button></div>
                 </div>
@@ -2656,7 +2656,7 @@ Notes: {about}</pre>
 
               {#if mdData.courses.length}
                 <div class="set-row stacked">
-                  <div class="set-row-t">Synced data</div>
+                  <div class="set-row-t">同步内容</div>
                   <div class="md-stats">
                     <span class="md-stat"><b>{mdData.courses.length}</b> courses</span>
                     <span class="md-stat"><b>{mdData.grades.length}</b> grades</span>
@@ -2696,11 +2696,11 @@ Notes: {about}</pre>
         </header>
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Storage</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">存储</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Database</div>
+                <div class="set-row-t">数据库</div>
                 <div class="set-row-d">~/.cortex/cortex.db</div>
               </div>
               <div class="set-row-r">
@@ -2715,8 +2715,8 @@ Notes: {about}</pre>
             </div>
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Vector index</div>
-                <div class="set-row-d">Local embeddings for retrieval</div>
+                <div class="set-row-t">向量索引</div>
+                <div class="set-row-d">用于检索的本地向量模型</div>
               </div>
               <div class="set-row-r">
                 <span class="mono faint">{stats ? `${stats.chunks} chunk${stats.chunks === 1 ? "" : "s"}` : "…"}</span>
@@ -2724,8 +2724,8 @@ Notes: {about}</pre>
             </div>
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Offline mode</div>
-                <div class="set-row-d">Block all network calls; Ollama only.</div>
+                <div class="set-row-t">离线模式</div>
+                <div class="set-row-d">阻断所有网络请求，只用 Ollama。</div>
               </div>
               <div class="set-row-r">
                 <button type="button" class={"st-toggle" + (offlineMode ? " on" : "")} onclick={toggleOffline} role="switch" aria-checked={offlineMode} aria-label="offline"><span class="st-knob"></span></button>
@@ -2737,7 +2737,7 @@ Notes: {about}</pre>
         {#if archivedSubjects.length}
           <section class="set-group">
             <div class="set-group-h">
-              <h3 class="set-group-t">Archived subjects</h3>
+              <h3 class="set-group-t">已归档科目</h3>
               <p class="set-group-d">Hidden from the app, kept for storage. Restore any time.</p>
             </div>
             <div class="set-card">
@@ -2763,7 +2763,7 @@ Notes: {about}</pre>
         {#if undoEntries.length || undoLoading || undoError}
           <section class="set-group">
             <div class="set-group-h">
-              <h3 class="set-group-t">Recycle bin</h3>
+              <h3 class="set-group-t">回收站</h3>
               <p class="set-group-d">Recently deleted subjects, topics, sources, notes and materials. Restore brings the rows (and their chunks/tags) back; entries auto-expire after 7 days.</p>
             </div>
             <div class="set-card">
@@ -2812,12 +2812,12 @@ Notes: {about}</pre>
 
 
         <section class="set-group">
-          <div class="set-group-h"><h3 class="set-group-t">Manage</h3></div>
+          <div class="set-group-h"><h3 class="set-group-t">管理</h3></div>
           <div class="set-card">
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Export everything</div>
-                <div class="set-row-d">Subjects, sources, cheatsheets → a portable archive.</div>
+                <div class="set-row-t">导出全部数据</div>
+                <div class="set-row-d">科目、资料、速查表 → 一个可携带的归档包。</div>
               </div>
               <div class="set-row-r">
                 <button class="btn" onclick={exportData}>
@@ -2828,8 +2828,8 @@ Notes: {about}</pre>
             </div>
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Optimize storage</div>
-                <div class="set-row-d">Reclaim unused disk space (VACUUM). Safe.</div>
+                <div class="set-row-t">优化存储</div>
+                <div class="set-row-d">回收未使用的磁盘空间（VACUUM），安全。</div>
               </div>
               <div class="set-row-r">
                 <button class="btn" onclick={clearCaches}>Optimize</button>
@@ -2837,8 +2837,8 @@ Notes: {about}</pre>
             </div>
             <div class="set-row">
               <div class="set-row-l">
-                <div class="set-row-t">Delete all data</div>
-                <div class="set-row-d">Irreversible. Wipes the local database.</div>
+                <div class="set-row-t">删除全部数据</div>
+                <div class="set-row-d">不可撤销，会清空本地数据库。</div>
               </div>
               <div class="set-row-r">
                 <button class="btn btn--danger" onclick={deleteEverything}>Delete…</button>
@@ -2859,13 +2859,13 @@ Notes: {about}</pre>
 
         <div class="set-card">
           <div class="set-row">
-            <div class="set-row-l"><div class="set-row-t">Version</div></div>
+            <div class="set-row-l"><div class="set-row-t">版本</div></div>
             <div class="set-row-r"><span class="mono faint">{appVersion || "…"}</span></div>
           </div>
           <div class="set-row">
             <div class="set-row-l">
-              <div class="set-row-t">Updates</div>
-              <div class="set-row-d">Check GitHub for a newer release and install it.</div>
+              <div class="set-row-t">更新</div>
+              <div class="set-row-d">检查 GitHub 上的新版本并安装。</div>
             </div>
             <div class="set-row-r">
               <button class="btn" onclick={() => app.checkForUpdates()} disabled={app.updateChecking}>
@@ -2875,8 +2875,8 @@ Notes: {about}</pre>
           </div>
           <div class="set-row">
             <div class="set-row-l">
-              <div class="set-row-t">Support Cortex</div>
-              <div class="set-row-d">Cortex is built by one student. If it saves you time, a coffee keeps the updates coming.</div>
+              <div class="set-row-t">支持 Cortex</div>
+              <div class="set-row-d">Cortex 由一个学生独立开发。如果它帮你省了时间，请作者喝杯咖啡就能让更新继续。</div>
             </div>
             <div class="set-row-r">
               <button class="btn" onclick={() => api.openExternal("https://ko-fi.com/aidanmcconnon")}>
@@ -2885,11 +2885,11 @@ Notes: {about}</pre>
             </div>
           </div>
           <div class="set-row">
-            <div class="set-row-l"><div class="set-row-t">Engine</div></div>
+            <div class="set-row-l"><div class="set-row-t">引擎</div></div>
             <div class="set-row-r"><span class="mono faint">Rust · Tauri · Svelte</span></div>
           </div>
           <div class="set-row">
-            <div class="set-row-l"><div class="set-row-t">Theme source</div></div>
+            <div class="set-row-l"><div class="set-row-t">主题来源</div></div>
             <div class="set-row-r">
               <span class="mono faint">
                 Omarchy · {THEME_LABELS[app.theme]}
@@ -2897,7 +2897,7 @@ Notes: {about}</pre>
             </div>
           </div>
           <div class="set-row">
-            <div class="set-row-l"><div class="set-row-t">License</div></div>
+            <div class="set-row-l"><div class="set-row-t">许可证</div></div>
             <div class="set-row-r"><span class="mono faint">Source-available · BYOK</span></div>
           </div>
         </div>

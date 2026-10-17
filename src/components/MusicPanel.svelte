@@ -57,8 +57,8 @@
     <div class="music-modal" role="presentation" onmousedown={e => e.stopPropagation()}>
       <header class="music-head">
         <div>
-          <div class="eyebrow">Study sound</div>
-          <div class="mh-title">Now playing</div>
+          <div class="eyebrow">学习音乐</div>
+          <div class="mh-title">正在播放</div>
         </div>
         <button class="btn btn--icon btn--sm btn--ghost" onclick={() => (app.musicOpen = false)}>
           <Icon name="x" size={12} />
@@ -115,7 +115,7 @@
       <div class="music-list">
         <!-- Favourites (built-in or custom), pinned to the top -->
         {#if favStations.length}
-          <div class="music-cat">★ Favourites</div>
+          <div class="music-cat">★ 收藏</div>
           {#each favStations as s (s.id)}
             <div
               class={"station" + (s.id === app.music.current ? " on" : "")}
@@ -140,7 +140,7 @@
 
         <!-- User-added YouTube / URL stations FIRST — drag to reorder -->
         {#if app.customStations.length}
-          <div class="music-cat">Your stations</div>
+          <div class="music-cat">你的电台</div>
         {/if}
         {#each app.customStations as s, i (s.id)}
           <div
@@ -172,7 +172,7 @@
         {/each}
 
         <!-- Built-in stations — songs first, then noises (mock.ts order) -->
-        <div class="music-cat">Stations</div>
+        <div class="music-cat">电台</div>
         {#each stations as s (s.id)}
           <div
             class={"station" + (s.id === app.music.current ? " on" : "")}
@@ -208,7 +208,7 @@
               onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitStation(); } }}
             />
             <div class="music-add-actions">
-              <button class="btn btn--sm btn--ghost" onclick={() => { adding = false; newName = ""; newUrl = ""; }}>Cancel</button>
+              <button class="btn btn--sm btn--ghost" onclick={() => { adding = false; newName = ""; newUrl = ""; }}>取消</button>
               <button class="btn btn--sm btn--primary" disabled={!looksLikeUrl(newUrl) || busy} onclick={submitStation}>
                 {busy ? "Adding…" : "Add station"}
               </button>

@@ -84,7 +84,7 @@
 <div class="sp">
   <header class="sp-head">
     <div>
-      <div class="eyebrow">Sprint planner</div>
+      <div class="eyebrow">冲刺规划</div>
       <h1 class="sp-title">自适应冲刺规划</h1>
       <p class="sp-sub mono">目标分 × 掌握度差距 × 剩余天数 × 每日投入{#if loading} · 重算中…{/if}</p>
     </div>

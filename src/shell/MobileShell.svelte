@@ -174,40 +174,40 @@
   );
 
   const NAV = [
-    { id: "today",       icon: "check",    label: "Today" },
-    { id: "plan",        icon: "calendar", label: "Plan" },
-    { id: "research",    icon: "reader",   label: "Research" },
-    { id: "dashboard",   icon: "home",     label: "Home" },
-    { id: "add-source",  icon: "doc",      label: "Add source" },
-    { id: "recorder",    icon: "record",   label: "Record lecture" },
-    { id: "calendar",    icon: "calendar", label: "Calendar" },
-    { id: "notes",       icon: "reader",   label: "Notes" },
-    { id: "neural-graph",icon: "graph",    label: "Neural Graph" },
-    { id: "mindmap",      icon: "link",     label: "Mind Map" },
-    { id: "pomodoro",    icon: "bolt",     label: "Pomodoro" },
-    { id: "review",      icon: "cards",    label: "Review today" },
-    { id: "glossary",    icon: "book",     label: "Glossary" },
-    { id: "analytics",   icon: "chart",    label: "Insights" },
-    { id: "add-subject", icon: "plus",     label: "New subject" },
-    { id: "settings",    icon: "settings", label: "Settings" },
+    { id: "today",       icon: "check",    label: "今天" },
+    { id: "plan",        icon: "calendar", label: "计划" },
+    { id: "research",    icon: "reader",   label: "研究" },
+    { id: "dashboard",   icon: "home",     label: "总览" },
+    { id: "add-source",  icon: "doc",      label: "添加资料" },
+    { id: "recorder",    icon: "record",   label: "录制讲座" },
+    { id: "calendar",    icon: "calendar", label: "日历" },
+    { id: "notes",       icon: "reader",   label: "笔记" },
+    { id: "neural-graph",icon: "graph",    label: "知识图谱" },
+    { id: "mindmap",      icon: "link",     label: "思维导图" },
+    { id: "pomodoro",    icon: "bolt",     label: "番茄钟" },
+    { id: "review",      icon: "cards",    label: "今日复习" },
+    { id: "glossary",    icon: "book",     label: "术语表" },
+    { id: "analytics",   icon: "chart",    label: "学习分析" },
+    { id: "add-subject", icon: "plus",     label: "新建科目" },
+    { id: "settings",    icon: "settings", label: "设置" },
   ] as const;
 </script>
 
 <div class="m-shell">
   <header class="m-header">
     {#if isDeep}
-      <button class="m-iconbtn" onclick={back} aria-label="Back">
+      <button class="m-iconbtn" onclick={back} aria-label="返回">
         <Icon name="chevron" size={18} style="transform:rotate(180deg)" />
       </button>
     {:else}
-      <button class="m-iconbtn" onclick={() => (drawerOpen = true)} aria-label="Menu">
+      <button class="m-iconbtn" onclick={() => (drawerOpen = true)} aria-label="菜单">
         <Icon name="menu" size={18} />
       </button>
     {/if}
     <!-- Static brand: the user knows which screen they're on, so we don't repeat it. -->
     <h1 class="page-title m-title"><img class="m-logo" src={logo} alt="" />Cortex</h1>
     <span class="m-spacer"></span>
-    <button class="m-iconbtn m-bell" onclick={() => app.toggleNotifications()} aria-label="Notifications">
+    <button class="m-iconbtn m-bell" onclick={() => app.toggleNotifications()} aria-label="通知">
       <Icon name="bell" size={18} />
       {#if app.unreadCount > 0}
         <span class="m-badge">{app.unreadCount > 99 ? "99+" : app.unreadCount}</span>
@@ -269,17 +269,17 @@
 
 <!-- Nav drawer: every destination (formerly split across the bottom bar + More). -->
 {#if drawerOpen}
-  <button class="m-drawer-back" aria-label="Close menu" onclick={() => (drawerOpen = false)}></button>
-  <nav class="m-drawer" aria-label="Menu">
+  <button class="m-drawer-back" aria-label="关闭菜单" onclick={() => (drawerOpen = false)}></button>
+  <nav class="m-drawer" aria-label="菜单">
     <div class="m-drawer-head">
       <span class="page-title m-drawer-brand"><img class="m-logo" src={logo} alt="" />Cortex</span>
-      <button class="m-iconbtn" onclick={() => (drawerOpen = false)} aria-label="Close menu"><Icon name="x" size={16} /></button>
+      <button class="m-iconbtn" onclick={() => (drawerOpen = false)} aria-label="关闭菜单"><Icon name="x" size={16} /></button>
     </div>
     <button class="m-row m-nav{activeNav === 'home' ? ' on' : ''}" onclick={() => go("dashboard")}>
-      <Icon name="home" size={18} /><span class="m-row-l">Home</span>
+      <Icon name="home" size={18} /><span class="m-row-l">总览</span>
     </button>
     <button class="m-row m-nav" onclick={openSearch}>
-      <Icon name="search" size={18} /><span class="m-row-l">Search</span>
+      <Icon name="search" size={18} /><span class="m-row-l">搜索</span>
     </button>
     {#each NAV.slice(1) as n (n.id)}
       <button class="m-row m-nav{activeNav === n.id ? ' on' : ''}" onclick={() => go(n.id)}>

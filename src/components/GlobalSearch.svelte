@@ -16,11 +16,11 @@
   let runId = 0; // drop stale responses when the user keeps typing
 
   const GROUPS: Record<string, { label: string; icon: string }> = {
-    chunk: { label: "Related content", icon: "search" },
-    source: { label: "Sources", icon: "doc" },
-    note: { label: "Notes", icon: "pencil" },
-    event: { label: "Calendar", icon: "calendar" },
-    material: { label: "Materials", icon: "grid" },
+    chunk: { label: "相关内容", icon: "search" },
+    source: { label: "资料", icon: "doc" },
+    note: { label: "笔记", icon: "pencil" },
+    event: { label: "日历", icon: "calendar" },
+    material: { label: "学习材料", icon: "grid" },
   };
   // Exact matches first — Enter must land on a predictable target; semantic
   // "related content" chunks trail at the bottom.
@@ -114,7 +114,7 @@
           bind:value={q}
           onkeydown={onKey}
           autofocus
-          placeholder="Search everything — notes, sources, transcripts, events…"
+          placeholder="全局搜索 — 笔记、资料、转写、日程…"
         />
         <span class="kbd">esc</span>
       </div>
@@ -122,7 +122,7 @@
       <div style:max-height="46vh" style:overflow-y="auto" style:overflow-x="hidden">
         {#if q.trim() && !searching && flat.length === 0}
           <div style:padding="22px" style:text-align="center" style:color="var(--fg-faint)" style:font-size="var(--t-sm)">
-            No matches
+            没有匹配
           </div>
         {:else if searching && flat.length === 0}
           <div style:padding="22px" style:text-align="center" style:color="var(--fg-faint)" style:font-size="var(--t-sm)">

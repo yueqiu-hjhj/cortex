@@ -43,7 +43,7 @@
           // jump to the section heading
           items.push({
             id: `csh-${t.id}-${sec.id}`,
-            group: "Cheatsheet",
+            group: "速查表",
             label: sec.title,
             kind: t.name,
             icon: "book",
@@ -54,7 +54,7 @@
             if (it.t.startsWith("__topic__")) return; // composed-only divider sentinel
             items.push({
               id: `csi-${t.id}-${sec.id}-${i}`,
-              group: "Cheatsheet",
+              group: "速查表",
               label: it.t,
               kind: `${t.name} · ${sec.title}`,
               icon: "book",
@@ -82,7 +82,7 @@
     ...cheatItems,
     ...app.subjects.map((s) => ({
       id: "subj-" + s.id,
-      group: "Subjects",
+      group: "科目",
       label: s.name,
       kind: s.code ?? "",
       icon: "diamond",
@@ -92,34 +92,34 @@
     ...app.subjects.flatMap((s) =>
       s.topics.map((t) => ({
         id: "topic-" + t.id,
-        group: "Topics",
+        group: "主题",
         label: t.name,
         kind: s.name,
         icon: "chevron",
         run: () => app.openTopicSheet(s.id, t.id),
       }))
     ),
-    { id: "a-record", group: "Actions", label: "Record lecture", kind: "command", icon: "record", hint: kh(keybinds.map.recorder), run: () => app.setView("recorder") },
-    { id: "a-source", group: "Actions", label: "Add source", kind: "command", icon: "plus", hint: kh(keybinds.map.leader) + " s", run: () => app.setView("add-source") },
-    { id: "a-diff", group: "Actions", label: "Review cheatsheet diff", kind: "command", icon: "book", hint: app.pending ? app.pending + " pending" : kh(keybinds.map.leader) + " d", run: () => app.reviewDiff() },
-    { id: "a-regen", group: "Actions", label: "Regenerate cheatsheet", kind: "command", icon: "refresh", run: () => app.regenCheatsheet() },
-    { id: "a-flash", group: "Actions", label: "Study flashcards", kind: "command", icon: "cards", run: () => { app.setView("subject"); app.setTab("materials"); } },
-    { id: "a-quiz", group: "Actions", label: "Generate quiz", kind: "command", icon: "check", run: () => { app.setView("subject"); app.setTab("materials"); } },
-    { id: "a-chat", group: "Actions", label: app.chatOpen ? "Hide chat panel" : "Show chat panel", kind: "command", icon: "chat", hint: kh(keybinds.map.toggleChat), run: () => app.toggleChat() },
-    { id: "a-music", group: "Actions", label: "Study sound…", kind: "command", icon: "music", hint: kh(keybinds.map.music), run: () => (app.musicOpen = true) },
-    { id: "a-pomo", group: "Actions", label: "Pomodoro timer", kind: "command", icon: "record", hint: "␣ p", run: () => (app.pomodoroOpen = true) },
-    { id: "a-newsubj", group: "Actions", label: "New subject", kind: "command", icon: "plus", hint: kh(keybinds.map.newSubject), run: () => app.setView("add-subject") },
-    { id: "v-dash", group: "Go to", label: "Dashboard", kind: "view", icon: "home", hint: "g " + kh(keybinds.map.dashboard), run: () => app.setView("dashboard") },
-    { id: "v-analytics", group: "Go to", label: "Study analytics", kind: "view", icon: "chart", run: () => app.setView("analytics") },
-    { id: "v-exam", group: "Go to", label: "Start exam", kind: "view", icon: "check", run: () => app.setView("exam") },
+    { id: "a-record", group: "操作", label: "录制讲座", kind: "command", icon: "record", hint: kh(keybinds.map.recorder), run: () => app.setView("recorder") },
+    { id: "a-source", group: "操作", label: "添加资料", kind: "command", icon: "plus", hint: kh(keybinds.map.leader) + " s", run: () => app.setView("add-source") },
+    { id: "a-diff", group: "操作", label: "查看速查表改动", kind: "command", icon: "book", hint: app.pending ? app.pending + " 处待审" : kh(keybinds.map.leader) + " d", run: () => app.reviewDiff() },
+    { id: "a-regen", group: "操作", label: "重新生成速查表", kind: "command", icon: "refresh", run: () => app.regenCheatsheet() },
+    { id: "a-flash", group: "操作", label: "复习闪卡", kind: "command", icon: "cards", run: () => { app.setView("subject"); app.setTab("materials"); } },
+    { id: "a-quiz", group: "操作", label: "生成测验", kind: "command", icon: "check", run: () => { app.setView("subject"); app.setTab("materials"); } },
+    { id: "a-chat", group: "操作", label: app.chatOpen ? "隐藏对话面板" : "打开对话面板", kind: "command", icon: "chat", hint: kh(keybinds.map.toggleChat), run: () => app.toggleChat() },
+    { id: "a-music", group: "操作", label: "学习音乐…", kind: "command", icon: "music", hint: kh(keybinds.map.music), run: () => (app.musicOpen = true) },
+    { id: "a-pomo", group: "操作", label: "番茄钟", kind: "command", icon: "record", hint: "␣ p", run: () => (app.pomodoroOpen = true) },
+    { id: "a-newsubj", group: "操作", label: "新建科目", kind: "command", icon: "plus", hint: kh(keybinds.map.newSubject), run: () => app.setView("add-subject") },
+    { id: "v-dash", group: "跳转", label: "总览", kind: "view", icon: "home", hint: "g " + kh(keybinds.map.dashboard), run: () => app.setView("dashboard") },
+    { id: "v-analytics", group: "跳转", label: "学习分析", kind: "view", icon: "chart", run: () => app.setView("analytics") },
+    { id: "v-exam", group: "跳转", label: "开始考试", kind: "view", icon: "check", run: () => app.setView("exam") },
 
-    { id: "v-sprint", group: "Go to", label: "Sprint planner", kind: "view", icon: "star", hint: "g " + kh(keybinds.map.leader) + " q", run: () => app.setView("sprint") },
-    { id: "v-literature", group: "Go to", label: "Literature reader", kind: "view", icon: "reader", hint: "g " + kh(keybinds.map.leader) + " l", run: () => app.setView("literature") },
-    { id: "v-vocabulary", group: "Go to", label: "Vocabulary workbench", kind: "view", icon: "cards", hint: "g " + kh(keybinds.map.leader) + " v", run: () => app.setView("vocabulary") },
-    { id: "s-settings", group: "Settings", label: "Open settings", kind: "setting", icon: "settings", run: () => app.setView("settings") },
-    { id: "s-keys", group: "Settings", label: "API keys & models", kind: "setting", icon: "lock", run: () => app.setView("settings") },
-    { id: "s-profile", group: "Settings", label: "Edit your profile", kind: "setting", icon: "diamond", run: () => app.setView("settings") },
-    { id: "s-theme", group: "Settings", label: "Cycle Omarchy theme", kind: "setting", icon: "settings", hint: "␣ t", run: () => app.cycleTheme() },
+    { id: "v-sprint", group: "跳转", label: "冲刺规划", kind: "view", icon: "star", hint: "g " + kh(keybinds.map.leader) + " q", run: () => app.setView("sprint") },
+    { id: "v-literature", group: "跳转", label: "文献阅读", kind: "view", icon: "reader", hint: "g " + kh(keybinds.map.leader) + " l", run: () => app.setView("literature") },
+    { id: "v-vocabulary", group: "跳转", label: "词汇本", kind: "view", icon: "cards", hint: "g " + kh(keybinds.map.leader) + " v", run: () => app.setView("vocabulary") },
+    { id: "s-settings", group: "设置", label: "打开设置", kind: "setting", icon: "settings", run: () => app.setView("settings") },
+    { id: "s-keys", group: "设置", label: "API 密钥与模型", kind: "setting", icon: "lock", run: () => app.setView("settings") },
+    { id: "s-profile", group: "设置", label: "编辑个人资料", kind: "setting", icon: "diamond", run: () => app.setView("settings") },
+    { id: "s-theme", group: "设置", label: "切换 Omarchy 主题", kind: "setting", icon: "settings", hint: "␣ t", run: () => app.cycleTheme() },
   ]);
 
   const filtered = $derived(
@@ -193,7 +193,7 @@
           bind:value={q}
           oninput={() => { sel = 0; }}
           onkeydown={onKey}
-          placeholder="Search actions, subjects, sources…"
+          placeholder="搜索操作、科目、资料…"
         />
         <span class="kbd">esc</span>
       </div>

@@ -35,7 +35,7 @@
   <button
     class="sb-seg sb-seg-btn"
     type="button"
-    title="Leader actions (Space)"
+    title="快捷操作 (Space)"
     onclick={() => (app.leaderOpen = true)}
   >
     <span class="sb-key">␣</span> actions
@@ -65,11 +65,11 @@
 
   <div class="sb-spacer"></div>
 
-  <button class="sb-seg sb-seg-btn" type="button" title="Keyboard shortcuts (?)" onclick={() => (app.helpOpen = true)}>
+  <button class="sb-seg sb-seg-btn" type="button" title="快捷键 (?)" onclick={() => (app.helpOpen = true)}>
     <span class="sb-key">?</span> help
   </button>
 
-  <button class="sb-seg sb-seg-btn" type="button" title="Command palette (:)" style:border-right="none" onclick={() => (app.cmdkOpen = true)}>
+  <button class="sb-seg sb-seg-btn" type="button" title="命令面板 (:)" style:border-right="none" onclick={() => (app.cmdkOpen = true)}>
     <span class="sb-key">:</span> command
   </button>
 </div>

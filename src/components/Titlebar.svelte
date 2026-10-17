@@ -39,13 +39,13 @@
   {#if platform === "mac"}
     <!-- macOS: traffic-light controls, left-aligned. -->
     <div class="tb-mac-ctl">
-      <button class="tl tl-close" onclick={close} aria-label="Close" title="Close">
+      <button class="tl tl-close" onclick={close} aria-label="关闭" title="关闭">
         <svg viewBox="0 0 8 8"><path d="M2 2 L6 6 M6 2 L2 6" /></svg>
       </button>
-      <button class="tl tl-min" onclick={minimize} aria-label="Minimize" title="Minimize">
+      <button class="tl tl-min" onclick={minimize} aria-label="最小化" title="最小化">
         <svg viewBox="0 0 8 8"><path d="M2 4 H6" /></svg>
       </button>
-      <button class="tl tl-max" onclick={toggleMax} aria-label="Zoom" title="Zoom">
+      <button class="tl tl-max" onclick={toggleMax} aria-label="最大化" title="最大化">
         <svg viewBox="0 0 8 8"><path d="M2.5 2.5 H5.5 V5.5 Z M5.5 5.5 H2.5 V2.5 Z" /></svg>
       </button>
     </div>
@@ -54,7 +54,7 @@
     <!-- Windows / Linux: title left, square controls right. -->
     <div class="tb-title win" data-tauri-drag-region>Cortex</div>
     <div class="tb-win-ctl">
-      <button class="wc" onclick={minimize} aria-label="Minimize" title="Minimize">
+      <button class="wc" onclick={minimize} aria-label="最小化" title="最小化">
         <svg viewBox="0 0 10 10"><path d="M1 5 H9" /></svg>
       </button>
       <button class="wc" onclick={toggleMax} aria-label={maximized ? "Restore" : "Maximize"} title={maximized ? "Restore" : "Maximize"}>
@@ -64,7 +64,7 @@
           <svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" /></svg>
         {/if}
       </button>
-      <button class="wc wc-close" onclick={close} aria-label="Close" title="Close">
+      <button class="wc wc-close" onclick={close} aria-label="关闭" title="关闭">
         <svg viewBox="0 0 10 10"><path d="M1.5 1.5 L8.5 8.5 M8.5 1.5 L1.5 8.5" /></svg>
       </button>
     </div>

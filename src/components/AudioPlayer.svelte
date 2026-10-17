@@ -259,7 +259,7 @@
 
     <!-- Title / hosts -->
     <div class="ao-meta">
-      <div class="eyebrow">Audio overview</div>
+      <div class="eyebrow">音频概览</div>
       <h1 class="ao-title read">{title}</h1>
       {#if speakers.length > 0}
         <div class="ao-hosts">
@@ -275,7 +275,7 @@
     </div>
 
     {#if segments.length === 0}
-      <p class="mono faint" style="font-size: var(--t-sm);">No audio script.</p>
+      <p class="mono faint" style="font-size: var(--t-sm);">还没有音频脚本。</p>
     {:else}
       {#if realMode}
         <!-- The real generated audio file; drives the timeline + transcript sync. -->
@@ -341,16 +341,16 @@
   <!-- ── Right: transcript ── -->
   <aside class="ao-transcript">
     <div class="ao-tr-head">
-      <span class="label">Transcript</span>
+      <span class="label">转写</span>
       {#if segments.length > 0}
         <span class="mono faint">{segments.length} turns · synced</span>
       {:else}
-        <span class="mono faint">no script</span>
+        <span class="mono faint">无脚本</span>
       {/if}
     </div>
     <div class="ao-tr-body" bind:this={bodyEl}>
       {#if segments.length === 0}
-        <p class="mono faint" style="padding: 16px; font-size: var(--t-sm);">No audio script.</p>
+        <p class="mono faint" style="padding: 16px; font-size: var(--t-sm);">还没有音频脚本。</p>
       {:else}
         {#each segments as seg, idx (idx)}
           {@const col = speakerColor(seg.speaker)}
