@@ -34,6 +34,35 @@
     load();
   });
 
+  // ── 计划 vs 实际 ──
+  // 计划的分钟来自 plan_blocks，实际分钟来自被勾选完成的块（完成时会写回
+  // work_items.actual_min）。两个数字都在同一个库里，所以这里是纯读。
+  let planVs = $state<api.PlanVsActual | null>(null);
+  const PLAN_WINDOW = 14;
+  function localDay(): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  async function loadPlanVs() {
+    try {
+      planVs = await api.planVsActual(localDay(), PLAN_WINDOW);
+    } catch {
+      planVs = null;
+    }
+  }
+  $effect(() => {
+    void app.view;
+    void loadPlanVs();
+  });
+  const planMax = $derived(
+    Math.max(1, ...(planVs?.days ?? []).map((d) => Math.max(d.planned_min, d.done_min)))
+  );
+  const hasPlan = $derived((planVs?.planned_min ?? 0) > 0);
+  function planDayNum(day: string): string {
+    return String(Number(day.split("-")[2]));
+  }
+
   // ── per-day time-series (study minutes + reviews/accuracy) ──
   const mpd = $derived(data?.minutes_per_day ?? []);
   const maxMin = $derived(Math.max(1, ...mpd.map((d) => d.minutes)));
@@ -270,19 +299,19 @@
   <div class="dash an">
     <header class="dash-head">
       <div>
-        <div class="eyebrow">Insights</div>
-        <h1 class="dash-title">Study analytics</h1>
+        <div class="eyebrow">学习分析</div>
+        <h1 class="dash-title">学习分析</h1>
       </div>
     </header>
 
     {#if loading}
-      <div class="an-note">Loading your study data…</div>
+      <div class="an-note">正在加载学习数据…</div>
     {:else if error}
       <div class="an-note an-note--err">Couldn't load analytics: {error}</div>
     {:else if isEmpty}
       <div class="an-empty">
         <div class="an-empty-glyph">📊</div>
-        <div class="an-empty-t read">No study data yet</div>
+        <div class="an-empty-t read">还没有学习数据</div>
         <div class="an-empty-d">
           Start a pomodoro or review some cards — your focus minutes, review
           accuracy and upcoming due cards will show up here.
@@ -292,13 +321,13 @@
       <!-- ── headline stat cards ── -->
       <div class="an-stats">
         <div class="an-stat">
-          <div class="an-stat-k mono">Streak</div>
+          <div class="an-stat-k mono">连续天数</div>
           <div class="an-stat-v">
             {streak}<span class="an-stat-u"> day{streak === 1 ? "" : "s"}</span>
           </div>
           <div class="an-stat-sub mono">
             {#if streak > 0 && !studiedToday}
-              <span class="an-stat-warn">at risk · study today</span>
+              <span class="an-stat-warn">快断了 · 今天学一会儿</span>
             {:else if longestStreak > streak}
               best {longestStreak}
             {:else}
@@ -307,22 +336,22 @@
           </div>
         </div>
         <div class="an-stat">
-          <div class="an-stat-k mono">Focus this week</div>
+          <div class="an-stat-k mono">本周专注</div>
           <div class="an-stat-v">{fmtMins(minutesWeek)}</div>
         </div>
         <div class="an-stat">
-          <div class="an-stat-k mono">Reviews this week</div>
+          <div class="an-stat-k mono">本周复习</div>
           <div class="an-stat-v">{reviewsWeek}</div>
         </div>
         <div class="an-stat">
-          <div class="an-stat-k mono">Accuracy this week</div>
+          <div class="an-stat-k mono">本周正确率</div>
           <div class="an-stat-v">{reviewsWeek > 0 ? pct(accuracyWeek) : "—"}</div>
         </div>
       </div>
 
       <!-- ── window selector ── -->
       <div class="an-rangebar">
-        <span class="an-range-lbl mono">Window</span>
+        <span class="an-range-lbl mono">区间</span>
         <div class="seg an-range">
           {#each RANGES as r}
             <button type="button" class={"seg-opt" + (range === r.d ? " on" : "")} onclick={() => (range = r.d)}>{r.label}</button>
@@ -333,7 +362,7 @@
       <!-- ── radial summary row (donuts + focus clock) ── -->
       <div class="an-radials">
         <section class="an-card an-radial">
-          <div class="an-card-h"><h3 class="an-card-t mono">Accuracy · 7d</h3></div>
+          <div class="an-card-h"><h3 class="an-card-t mono">正确率 · 7 天</h3></div>
           <svg class="an-donut" viewBox="0 0 120 120">
             <circle cx="60" cy="60" r="48" class="an-donut-bg" />
             <circle cx="60" cy="60" r="48" class="an-donut-fg" style:stroke="var(--ok)" stroke-dasharray={ringDash(accuracyWeek, 48)} transform="rotate(-90 60 60)" />
@@ -344,13 +373,13 @@
 
         {#if pomo}
           <section class="an-card an-radial">
-            <div class="an-card-h"><h3 class="an-card-t mono">When you focus</h3></div>
+            <div class="an-card-h"><h3 class="an-card-t mono">你的专注时段</h3></div>
             <svg class="an-clock" viewBox="0 0 120 120">
               <circle cx="60" cy="60" r="52" class="an-donut-bg" />
               {#each pomo.by_hour as min, h (h)}
                 {@const p1 = polar(60, 60, 16, h / 24)}
                 {@const p2 = polar(60, 60, 16 + (min > 0 ? Math.max(0.32, min / maxHour) : 0.07) * 38, h / 24)}
-                <line x1={p1[0]} y1={p1[1]} x2={p2[0]} y2={p2[1]} class="an-spoke" class:zero={min === 0} style:stroke={min > 0 ? accentColor : "var(--border)"}><title>{min > 0 ? fmtMins(min) : "no focus"} · {h}:00</title></line>
+                <line x1={p1[0]} y1={p1[1]} x2={p2[0]} y2={p2[1]} class="an-spoke" class:zero={min === 0} style:stroke={min > 0 ? accentColor : "var(--border)"}><title>{min > 0 ? fmtMins(min) : "无专注"} · {h}:00</title></line>
               {/each}
               <text x="60" y="64" class="an-clock-c mono">24h</text>
             </svg>
@@ -375,7 +404,7 @@
           {#each mpd as d, i (d.day)}
             <div class="an-ts-col">
               <div class="an-ts-track"><div class="an-ts-fill" style:height={pct(d.minutes / maxMin)} class:zero={d.minutes === 0}><title>{fmtMins(d.minutes)} · {d.day}</title></div></div>
-              {#if i % labelEvery === 0}<span class="an-ts-x mono">{dayNum(d.day)}</span>{/if}
+              {#if i % labelEvery === 0}<span class="an-ts-x mono">{planDayNum(d.day)}</span>{/if}
             </div>
           {/each}
         </div>
@@ -396,12 +425,41 @@
       <!-- ── pomodoro / focus sessions ── -->
       {#if pomo && pomo.focus_sessions > 0}
         <section class="an-card">
-          <div class="an-card-h"><h3 class="an-card-t mono">Focus sessions</h3><span class="an-card-sub mono">{fmtMins(pomo.focus_minutes)} focused</span></div>
+          <div class="an-card-h"><h3 class="an-card-t mono">专注记录</h3><span class="an-card-sub mono">{fmtMins(pomo.focus_minutes)} 已专注</span></div>
           <div class="an-pomo">
-            <div class="an-pomo-stat"><div class="an-pomo-v">{pomo.focus_sessions}</div><div class="an-pomo-k mono">sessions</div></div>
-            <div class="an-pomo-stat"><div class="an-pomo-v">{Math.round(pomo.avg_session_min)}<span class="an-stat-u">m</span></div><div class="an-pomo-k mono">avg length</div></div>
-            <div class="an-pomo-stat"><div class="an-pomo-v">{pomo.longest_session_min}<span class="an-stat-u">m</span></div><div class="an-pomo-k mono">longest</div></div>
-            <div class="an-pomo-stat"><div class="an-pomo-v">{fmtMins(pomo.break_minutes)}</div><div class="an-pomo-k mono">on breaks</div></div>
+            <div class="an-pomo-stat"><div class="an-pomo-v">{pomo.focus_sessions}</div><div class="an-pomo-k mono">段数</div></div>
+            <div class="an-pomo-stat"><div class="an-pomo-v">{Math.round(pomo.avg_session_min)}<span class="an-stat-u">m</span></div><div class="an-pomo-k mono">平均时长</div></div>
+            <div class="an-pomo-stat"><div class="an-pomo-v">{pomo.longest_session_min}<span class="an-stat-u">m</span></div><div class="an-pomo-k mono">最长</div></div>
+            <div class="an-pomo-stat"><div class="an-pomo-v">{fmtMins(pomo.break_minutes)}</div><div class="an-pomo-k mono">休息</div></div>
+          </div>
+        </section>
+      {/if}
+
+      <!-- ── 计划 vs 实际 ── -->
+      {#if planVs && hasPlan}
+        <section class="an-card">
+          <div class="an-card-h">
+            <h3 class="an-card-t mono">计划 vs 实际</h3>
+            <span class="an-card-sub mono">
+              近 {PLAN_WINDOW} 天完成率 {Math.round(planVs.adherence * 100)}% ·
+              {fmtMins(planVs.done_min)} / {fmtMins(planVs.planned_min)}
+            </span>
+          </div>
+          <div class="pva">
+            {#each planVs.days as d (d.day)}
+              <div class="pva-col" title="{d.day} · 计划 {fmtMins(d.planned_min)} · 完成 {fmtMins(d.done_min)}">
+                <div class="pva-bars">
+                  <div class="pva-bar planned" style:height="{Math.max(2, (d.planned_min / planMax) * 100)}%"></div>
+                  <div class="pva-bar done" style:height="{Math.max(2, (d.done_min / planMax) * 100)}%"></div>
+                </div>
+                <span class="pva-d mono">{dayNum(d.day)}</span>
+              </div>
+            {/each}
+          </div>
+          <div class="pva-legend">
+            <span><i class="sw planned"></i> 计划</span>
+            <span><i class="sw done"></i> 完成</span>
+            <span class="faint">估算 {fmtMins(planVs.estimate_min)} · 实际 {fmtMins(planVs.actual_min)}</span>
           </div>
         </section>
       {/if}
@@ -410,7 +468,7 @@
       {#if app.subjects.length}
         <section class="an-card">
           <div class="an-card-h">
-            <h3 class="an-card-t mono">Topic mastery</h3>
+            <h3 class="an-card-t mono">主题掌握度</h3>
             <div class="an-pills">
               {#each app.subjects as s (s.id)}
                 <button type="button" class={"an-pill" + (topicSubject === s.id ? " on" : "")} onclick={() => (topicSubject = s.id)} style:--pill={app.subjectColor(s)}>{s.name}</button>
@@ -441,7 +499,7 @@
               <div class="an-radar-note mono">distance from centre = {radarMetricLabel} · hover a point for detail</div>
             </div>
           {:else}
-            <p class="an-empty-d">Not enough topic activity yet — review cards across this subject's topics to grow the mastery radar.</p>
+            <p class="an-empty-d">主题活动还不够 — 复习这个科目各主题的卡片，掌握度雷达就会长出来。</p>
           {/if}
         </section>
       {/if}
@@ -449,7 +507,7 @@
       <!-- ── focus-hours contributions heatmap (last year) ── -->
       <section class="an-card hm-card">
         <div class="an-card-h">
-          <h3 class="an-card-t mono">Focus hours · last year</h3>
+          <h3 class="an-card-t mono">专注时长 · 近一年</h3>
           <span class="an-card-sub mono">{yearHours.toFixed(1)}h total</span>
         </div>
 
@@ -467,9 +525,9 @@
             <div class="hm-body">
               <!-- weekday labels (Mon/Wed/Fri) down the left, faint mono -->
               <div class="hm-wd">
-                <span class="hm-wd-l mono" style:grid-row="2">Mon</span>
-                <span class="hm-wd-l mono" style:grid-row="4">Wed</span>
-                <span class="hm-wd-l mono" style:grid-row="6">Fri</span>
+                <span class="hm-wd-l mono" style:grid-row="2">一</span>
+                <span class="hm-wd-l mono" style:grid-row="4">三</span>
+                <span class="hm-wd-l mono" style:grid-row="6">五</span>
               </div>
 
               <div class="hm-grid" role="img" aria-label="Focus hours over the last year">
@@ -502,7 +560,7 @@
         <!-- legend bottom-right + (when empty) the tracking hint bottom-left -->
         <div class="hm-foot">
           {#if heatmapEmpty}
-            <span class="hm-hint">No study time tracked yet — focused app time counts automatically now.</span>
+            <span class="hm-hint">还没有记录学习时间 — 现在应用内的专注时长会自动计入。</span>
           {:else}
             <span></span>
           {/if}
@@ -521,7 +579,7 @@
       <!-- ── due forecast (next 7 days) ── -->
       <section class="an-card">
         <div class="an-card-h">
-          <h3 class="an-card-t mono">Cards due · next 7 days</h3>
+          <h3 class="an-card-t mono">未来 7 天到期卡片</h3>
           <span class="an-card-sub mono">
             {forecast.reduce((a, d) => a + d.due, 0)} scheduled
           </span>
@@ -550,14 +608,14 @@
       {#if data.per_subject.length}
         <section class="an-card">
           <div class="an-card-h">
-            <h3 class="an-card-t mono">By subject</h3>
+            <h3 class="an-card-t mono">按科目</h3>
           </div>
           <div class="an-table">
             <div class="an-tr an-tr--head mono">
-              <span class="an-th an-th--name">Subject</span>
-              <span class="an-th">Focus</span>
-              <span class="an-th">Reviews</span>
-              <span class="an-th">Accuracy</span>
+              <span class="an-th an-th--name">科目</span>
+              <span class="an-th">专注</span>
+              <span class="an-th">复习</span>
+              <span class="an-th">正确率</span>
             </div>
             {#each data.per_subject as s (s.subject_id)}
               <div class="an-tr">
@@ -578,7 +636,7 @@
       {#if weakTopics.length}
         <section class="an-card">
           <div class="an-card-h">
-            <h3 class="an-card-t mono">Topics needing work</h3>
+            <h3 class="an-card-t mono">需要加强的主题</h3>
           <div class="an-podium">
             {#each weakTopics.slice(0, 3) as t, i (t.topic_id)}
               {@const w = Math.max(0.05, (t.reviews > 0 ? 1 - t.accuracy : 0) + (t.lapses > 0 ? t.lapses / (t.lapses + 3) : 0))}
@@ -606,7 +664,7 @@
               <div class="an-podium-more mono faint">+{weakTopics.length - 3} more below</div>
             {/if}
           </div>
-            <span class="an-card-sub mono">weakest first</span>
+            <span class="an-card-sub mono">最弱的在前</span>
           </div>
           <div class="an-weak">
             {#each weakTopics as t (t.topic_id)}
@@ -642,22 +700,22 @@
       <!-- ── FSRS memory state ── -->
       <section class="an-card">
         <div class="an-card-h">
-          <h3 class="an-card-t mono">Spaced-repetition memory</h3>
+          <h3 class="an-card-t mono">间隔重复记忆</h3>
         </div>
         <div class="an-fsrs">
           <div class="an-fsrs-stat">
             <div class="an-fsrs-v">{data.fsrs.cards}</div>
-            <div class="an-fsrs-k mono">cards scheduled</div>
+            <div class="an-fsrs-k mono">已排期卡片</div>
           </div>
           <div class="an-fsrs-stat">
             <div class="an-fsrs-v">
               {data.fsrs.cards > 0 ? data.fsrs.avg_stability.toFixed(1) : "—"}<span class="an-stat-u">{data.fsrs.cards > 0 ? " d" : ""}</span>
             </div>
-            <div class="an-fsrs-k mono">avg stability</div>
+            <div class="an-fsrs-k mono">平均稳定度</div>
           </div>
           <div class="an-fsrs-stat">
             <div class="an-fsrs-v">{data.fsrs.lapses}</div>
-            <div class="an-fsrs-k mono">lapses</div>
+            <div class="an-fsrs-k mono">遗忘次数</div>
           </div>
         </div>
       </section>
@@ -756,6 +814,65 @@
   .an-stat .faint { color: var(--fg-faint); }
 
   /* ── card frame shared by chart / forecast / table / fsrs ── */
+  .pva {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 110px;
+    padding: 8px 2px 0;
+  }
+  .pva-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    gap: 4px;
+  }
+  .pva-bars {
+    flex: 1;
+    width: 100%;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2px;
+  }
+  .pva-bar {
+    width: 42%;
+    border-radius: 2px 2px 0 0;
+  }
+  .pva-bar.planned {
+    background: var(--surface-3);
+  }
+  .pva-bar.done {
+    background: var(--accent-dim);
+  }
+  .pva-d {
+    font-size: 10px;
+    color: var(--fg-faint);
+  }
+  .pva-legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .pva-legend .sw {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+  .pva-legend .sw.planned {
+    background: var(--surface-3);
+  }
+  .pva-legend .sw.done {
+    background: var(--accent-dim);
+  }
+
   .an-card {
     background: var(--surface);
     border: 1px solid var(--border);

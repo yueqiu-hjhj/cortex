@@ -5845,3 +5845,14 @@ pub fn paper_import_bibtex(state: State<AppState>, text: String) -> Result<crate
     let c = state.db.lock().unwrap();
     crate::papers::import_bibtex(&c, &text)
 }
+
+/// Planned vs completed minutes per day, for the Insights "plan vs actual" card.
+#[tauri::command]
+pub fn plan_vs_actual(
+    state: State<AppState>,
+    start_day: String,
+    days: i64,
+) -> Result<crate::planner::PlanVsActual> {
+    let c = state.db.lock().unwrap();
+    crate::planner::plan_vs_actual(&c, &start_day, days)
+}

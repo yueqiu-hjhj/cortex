@@ -547,6 +547,7 @@ pub fn run() {
             commands::excerpt_delete,
             commands::paper_bibtex,
             commands::paper_import_bibtex,
+            commands::plan_vs_actual,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

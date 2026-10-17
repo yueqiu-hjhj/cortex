@@ -28,7 +28,7 @@ use crate::error::{Error, Result};
 use crate::workitems::{self, ItemInput, ItemQuery, PlanBlock};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MINUTES_PER_DAY: i64 = 1440;
 /// A sitting. Beyond ~90 minutes the marginal retention is negative, and the
@@ -503,6 +503,108 @@ pub fn board(conn: &Connection, start_day: &str, days: i64) -> Result<Vec<BlockR
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// --------------------------------------------------------- plan vs actual
+
+/// One day of "what the plan said" against "what actually happened".
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanDayStat {
+    pub day: String,
+    /// Minutes the plan allocated (sum of block lengths).
+    pub planned_min: i64,
+    /// Minutes from blocks that were ticked off.
+    pub done_min: i64,
+    pub planned_blocks: i64,
+    pub done_blocks: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanVsActual {
+    pub days: Vec<PlanDayStat>,
+    pub planned_min: i64,
+    pub done_min: i64,
+    /// done / planned, 0..1. 0 when nothing was planned (never divide by zero
+    /// into a fake "100% adherence").
+    pub adherence: f64,
+    /// Estimate vs actual for the items that were scheduled in the window — the
+    /// signal the planner needs to calibrate itself later.
+    pub estimate_min: i64,
+    pub actual_min: i64,
+}
+
+/// Planned vs completed minutes per day, plus estimate-vs-actual for the items
+/// that appeared in the window. Gaps are filled with zeros so the bar chart has
+/// one column per day instead of a sparse series.
+pub fn plan_vs_actual(conn: &Connection, start_day: &str, days: i64) -> Result<PlanVsActual> {
+    let start = workitems::parse_day(start_day)
+        .ok_or_else(|| Error::Other(format!("invalid start_day '{start_day}'")))?;
+    let days = days.clamp(1, 90);
+    let end_day = workitems::format_day(start + days - 1);
+
+    let mut by_day: HashMap<String, (i64, i64, i64, i64)> = HashMap::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT day, COALESCE(SUM(end_min - start_min), 0), \
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN end_min - start_min ELSE 0 END), 0), \
+                    COUNT(*), \
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) \
+             FROM plan_blocks WHERE day >= ?1 AND day <= ?2 GROUP BY day",
+        )?;
+        let rows = st.query_map(params![start_day, end_day], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ),
+            ))
+        })?;
+        for row in rows.flatten() {
+            by_day.insert(row.0, row.1);
+        }
+    }
+
+    let mut out = Vec::with_capacity(days as usize);
+    let (mut planned_total, mut done_total) = (0i64, 0i64);
+    for i in 0..days {
+        let day = workitems::format_day(start + i);
+        let (planned, done, pblocks, dblocks) = by_day.get(&day).copied().unwrap_or((0, 0, 0, 0));
+        planned_total += planned;
+        done_total += done;
+        out.push(PlanDayStat {
+            day,
+            planned_min: planned,
+            done_min: done,
+            planned_blocks: pblocks,
+            done_blocks: dblocks,
+        });
+    }
+
+    let (estimate_min, actual_min) = conn.query_row(
+        "SELECT COALESCE(SUM(w.estimate_min), 0), COALESCE(SUM(w.actual_min), 0) \
+         FROM work_items w WHERE w.id IN ( \
+             SELECT DISTINCT item_id FROM plan_blocks WHERE day >= ?1 AND day <= ?2)",
+        params![start_day, end_day],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+
+    let adherence = if planned_total > 0 {
+        (done_total as f64 / planned_total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    Ok(PlanVsActual {
+        days: out,
+        planned_min: planned_total,
+        done_min: done_total,
+        adherence,
+        estimate_min,
+        actual_min,
+    })
+}
+
 // -------------------------------------------------------------- rollover
 
 /// Mark yesterday's unstarted blocks as `moved`.
@@ -732,6 +834,65 @@ mod tests {
         create_item(&c, &habit).unwrap();
         let out = plan_week(&c, &request(3, 120)).unwrap();
         assert_eq!(out.blocks.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod adherence_tests {
+    use super::*;
+    use crate::db::AppState;
+    use crate::workitems::{self, ItemInput};
+
+    fn item(title: &str, estimate: i64) -> ItemInput {
+        ItemInput {
+            kind: None,
+            title: title.into(),
+            body: None,
+            status: None,
+            priority: None,
+            due_ms: None,
+            start_ms: None,
+            estimate_min: Some(estimate),
+            parent_id: None,
+            rrule: None,
+            subject_id: None,
+            topic_id: None,
+            goal_id: None,
+        }
+    }
+
+    #[test]
+    fn plan_vs_actual_counts_done_and_fills_empty_days() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+
+        let a = workitems::create_item(&c, &item("done task", 60)).unwrap();
+        let b = workitems::create_item(&c, &item("skipped task", 60)).unwrap();
+        let ba = workitems::upsert_block(&c, None, &a.id, "2026-03-10", 540, 600, None).unwrap();
+        workitems::upsert_block(&c, None, &b.id, "2026-03-10", 600, 660, None).unwrap();
+        complete_block(&c, &ba.id).unwrap();
+
+        let out = plan_vs_actual(&c, "2026-03-10", 3).unwrap();
+        assert_eq!(out.days.len(), 3, "gaps must still produce a column");
+        assert_eq!(out.days[0].planned_min, 120);
+        assert_eq!(out.days[0].done_min, 60);
+        assert_eq!(out.days[0].planned_blocks, 2);
+        assert_eq!(out.days[0].done_blocks, 1);
+        assert_eq!(out.days[1].planned_min, 0);
+        assert_eq!(out.planned_min, 120);
+        assert_eq!(out.done_min, 60);
+        assert!((out.adherence - 0.5).abs() < 1e-9);
+        // Completing the block also wrote 60 minutes of actual time.
+        assert_eq!(out.actual_min, 60);
+    }
+
+    #[test]
+    fn adherence_is_zero_when_nothing_was_planned() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let out = plan_vs_actual(&c, "2026-03-10", 7).unwrap();
+        assert_eq!(out.adherence, 0.0, "no plan must not read as 100%");
+        assert_eq!(out.planned_min, 0);
     }
 }
 

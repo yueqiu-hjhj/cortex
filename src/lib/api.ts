@@ -1740,3 +1740,25 @@ export const paperBibtex = (ids?: string[]) =>
   invoke<string>("paper_bibtex", { ids: ids ?? null });
 export const paperImportBibtex = (text: string) =>
   invoke<BibImportOutcome>("paper_import_bibtex", { text });
+
+// ---- plan vs actual (Insights) -------------------------------------------
+
+export interface PlanDayStat {
+  day: string;
+  planned_min: number;
+  done_min: number;
+  planned_blocks: number;
+  done_blocks: number;
+}
+
+export interface PlanVsActual {
+  days: PlanDayStat[];
+  planned_min: number;
+  done_min: number;
+  adherence: number;
+  estimate_min: number;
+  actual_min: number;
+}
+
+export const planVsActual = (startDay: string, days: number) =>
+  invoke<PlanVsActual>("plan_vs_actual", { startDay, days });
