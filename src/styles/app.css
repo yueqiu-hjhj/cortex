@@ -1303,3 +1303,40 @@ body.reorder-active, body.reorder-active * { cursor: grabbing !important; user-s
 .eval-q {
   color: var(--fg-muted);
 }
+
+/* ---- 计划页 · 估算校准提示 ---- */
+.calib-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: -8px 0 16px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.calib-note b {
+  color: var(--accent);
+  font-weight: 500;
+}
+.calib-t {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.calib-kinds {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.calib-kind {
+  font-family: var(--font-mono, monospace);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--fg-faint);
+}

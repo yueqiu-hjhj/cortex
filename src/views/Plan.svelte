@@ -66,6 +66,18 @@
     }
   }
 
+  // ── 估算校准 ──
+  // 排期用的是「校准后的时长」而不是你自己填的预估：如果你过去 60 天里平均
+  // 要花 1.4 倍的预估时间，排期就按 1.4 倍算。样本不够时保持原样。
+  let calib = $state<api.Calibration | null>(null);
+  async function loadCalib() {
+    try {
+      calib = await api.planCalibration(60);
+    } catch {
+      calib = null;
+    }
+  }
+
   async function init() {
     // Pick up the persisted capacity so the plan matches Settings.
     try {
@@ -74,7 +86,7 @@
     } catch {
       /* first run — keep the default */
     }
-    await Promise.all([load(), loadGoals()]);
+    await Promise.all([load(), loadGoals(), loadCalib()]);
   }
 
   async function loadGoals() {
@@ -225,6 +237,23 @@
   <div class="bar">
     <div class="fill" style="width:{Math.min(100, capacityMinutes ? (plannedMinutes / capacityMinutes) * 100 : 0)}%"></div>
   </div>
+
+  {#if calib && calib.samples >= 3}
+    <div class="calib-note">
+      <span class="calib-t">估算校准</span>
+      <span>
+        过去 {calib.window_days} 天完成 {calib.samples} 项，实际用时约为预估的
+        <b>{calib.factor.toFixed(2)}×</b>，排期按校准后的时长分配。
+      </span>
+      {#if calib.per_kind.filter((k) => k.samples >= 3).length > 1}
+        <span class="calib-kinds">
+          {#each calib.per_kind.filter((k) => k.samples >= 3).slice(0, 4) as k (k.kind)}
+            <span class="calib-kind">{k.kind} {k.factor.toFixed(2)}×</span>
+          {/each}
+        </span>
+      {/if}
+    </div>
+  {/if}
 
   {#if goals.length}
     <section class="goals">

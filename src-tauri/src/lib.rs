@@ -552,6 +552,7 @@ pub fn run() {
             commands::paper_build_matrix,
             commands::plan_vs_actual,
             commands::retrieval_eval,
+            commands::plan_calibration,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

@@ -1813,3 +1813,21 @@ export interface EvalReport {
 /** Run the synthetic-corpus retrieval evaluation for all four modes. */
 export const retrievalEval = (k?: number) =>
   invoke<EvalReport[]>("retrieval_eval", { k: k ?? null });
+
+// ---- planner estimate calibration ----------------------------------------
+
+export interface KindFactor {
+  kind: string;
+  factor: number;
+  samples: number;
+}
+
+export interface Calibration {
+  factor: number;
+  samples: number;
+  per_kind: KindFactor[];
+  window_days: number;
+}
+
+export const planCalibration = (days?: number) =>
+  invoke<Calibration>("plan_calibration", { days: days ?? null });

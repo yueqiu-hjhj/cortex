@@ -5948,3 +5948,12 @@ pub async fn retrieval_eval(
     crate::eval::seed(&c, &seeded)?;
     crate::eval::score_all(&c, want, &queries)
 }
+
+/// How far off the user's time estimates have been, over a look-back window.
+/// The Plan view shows this next to 自动排期 so a longer-than-expected schedule
+/// is explained rather than surprising.
+#[tauri::command]
+pub fn plan_calibration(state: State<AppState>, days: Option<i64>) -> Result<crate::planner::Calibration> {
+    let c = state.db.lock().unwrap();
+    crate::planner::calibration(&c, days.unwrap_or(60))
+}

@@ -110,6 +110,9 @@ pub fn plan_week(conn: &Connection, req: &PlanRequest) -> Result<PlanOutcome> {
 
     let start_idx = workitems::parse_day(&req.start_day)
         .ok_or_else(|| Error::Other(format!("invalid start_day '{}' (expected YYYY-MM-DD)", req.start_day)))?;
+    // Learn from history before deciding how long anything takes. Without this
+    // the plan is just the user's optimism, straight from the settings file.
+    let calib = calibration(conn, 60)?;
     let day_keys: Vec<String> = (0..days)
         .map(|i| workitems::format_day(start_idx + i))
         .collect();
@@ -203,7 +206,7 @@ pub fn plan_week(conn: &Connection, req: &PlanRequest) -> Result<PlanOutcome> {
         candidates.push(Candidate {
             id: it.id,
             title: it.title,
-            remaining: it.estimate_min.unwrap_or(30).clamp(5, 600),
+            remaining: effective_estimate_min(it.estimate_min, &it.kind, &calib),
             score,
         });
     }
@@ -288,6 +291,18 @@ pub fn plan_week(conn: &Connection, req: &PlanRequest) -> Result<PlanOutcome> {
     }
     if candidates.is_empty() {
         notes.push("没有待排的工作项（没有预估时长的项目会按 30 分钟计）。".into());
+    }
+    // Say why the schedule is longer than the raw estimates, otherwise the user
+    // reads a 1.4x plan as a bug in the planner.
+    if calib.samples >= MIN_KIND_SAMPLES && (calib.factor - 1.0).abs() >= 0.15 {
+        let dir = if calib.factor > 1.0 { "长" } else { "短" };
+        notes.push(format!(
+            "过去 {d} 天完成 {n} 项，实际用时平均是预估的 {f:.2} 倍，本次排期按校准后的时长分配（比填的预估{dir}）。",
+            d = calib.window_days,
+            n = calib.samples,
+            f = calib.factor,
+            dir = dir,
+        ));
     }
 
     Ok(PlanOutcome {
@@ -501,6 +516,141 @@ pub fn board(conn: &Connection, start_day: &str, days: i64) -> Result<Vec<BlockR
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// ------------------------------------------------------ estimate learning
+
+/// The planner's estimate for a task is the user's number, not reality. Left
+/// alone, every plan is optimistic in the same direction, and the
+/// "planned vs actual" chart becomes a receipt for wishful thinking.
+///
+/// This measures how far off estimates have actually been, per work-item kind,
+/// and lets `plan_week` schedule the *honest* duration instead.
+#[derive(Debug, Clone, Serialize)]
+pub struct Calibration {
+    /// actual / estimate over the window. 1.0 means estimates were right.
+    pub factor: f32,
+    /// How many finished items the number is based on. Few = weak signal.
+    pub samples: usize,
+    /// Per-kind factors, so a "reading" habit can differ from a "task" chore.
+    pub per_kind: Vec<KindFactor>,
+    /// Look-back window in days that produced this.
+    pub window_days: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KindFactor {
+    pub kind: String,
+    pub factor: f32,
+    pub samples: usize,
+}
+
+/// Below this many finished items a kind's own ratio is noise, so it borrows
+/// the global factor instead of following one wild datapoint.
+const MIN_KIND_SAMPLES: usize = 3;
+/// Hard bounds: a calibration that says "everything takes 6x longer" is a bug in
+/// the data, not a plan.
+const FACTOR_MIN: f32 = 0.5;
+const FACTOR_MAX: f32 = 3.0;
+/// A day in milliseconds.
+const DAY_MS: i64 = 86_400_000;
+
+/// Median of a ratio list. Median, not mean: one item abandoned at 5% progress
+/// would drag an average straight to zero.
+fn median(values: &mut [f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    Some(if values.len() % 2 == 1 {
+        values[mid]
+    } else {
+        (values[mid - 1] + values[mid]) / 2.0
+    })
+}
+
+/// Measure estimate error over the last `days`.
+///
+/// Only items that were actually *finished* ("done") with both an estimate and
+/// logged minutes count. An item still open tells you nothing.
+pub fn calibration(conn: &Connection, days: i64) -> Result<Calibration> {
+    let days = days.clamp(7, 365);
+    let since = now_ms() - days * DAY_MS;
+    let mut rows: Vec<(String, f64, f64)> = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT kind, estimate_min, actual_min FROM work_items \
+             WHERE status = 'done' AND estimate_min > 0 AND actual_min > 0 \
+               AND updated_at >= ?1 LIMIT 2000",
+        )?;
+        let out = st.query_map(params![since], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))
+        })?;
+        for row in out.flatten() {
+            rows.push(row);
+        }
+    }
+
+    let mut all: Vec<f32> = Vec::new();
+    let mut by_kind: HashMap<String, Vec<f32>> = HashMap::new();
+    for (kind, est, act) in &rows {
+        if *est <= 0.0 {
+            continue;
+        }
+        let ratio = (act / est) as f32;
+        if ratio.is_finite() && ratio > 0.0 {
+            all.push(ratio);
+            by_kind.entry(kind.clone()).or_default().push(ratio);
+        }
+    }
+
+    // Global first, because a kind with too few samples borrows it.
+    let mut all_ratios = all.clone();
+    let global = median(&mut all_ratios).unwrap_or(1.0);
+
+    let mut per_kind: Vec<KindFactor> = by_kind
+        .iter()
+        .filter(|(_, v)| v.len() >= MIN_KIND_SAMPLES)
+        .map(|(kind, v)| {
+            let mut v = v.clone();
+            KindFactor {
+                kind: kind.clone(),
+                factor: median(&mut v).unwrap_or(global).clamp(FACTOR_MIN, FACTOR_MAX),
+                samples: v.len(),
+            }
+        })
+        .collect();
+    per_kind.sort_by(|a, b| b.samples.cmp(&a.samples).then(a.kind.cmp(&b.kind)));
+
+    Ok(Calibration {
+        factor: global.clamp(FACTOR_MIN, FACTOR_MAX),
+        samples: all.len(),
+        per_kind,
+        window_days: days,
+    })
+}
+
+/// What the planner should budget for an item, given how honest the estimates
+/// have been for that kind.
+///
+/// Falls back to the raw estimate when there is nothing to learn from yet, so a
+/// brand-new install behaves exactly as before.
+pub fn effective_estimate_min(estimate_min: Option<i64>, kind: &str, calib: &Calibration) -> i64 {
+    let base = estimate_min.unwrap_or(30).clamp(5, 600);
+    if calib.samples < MIN_KIND_SAMPLES {
+        return base;
+    }
+    let factor = calib
+        .per_kind
+        .iter()
+        .find(|k| k.kind == kind)
+        .map(|k| k.factor)
+        .unwrap_or(calib.factor);
+    let scaled = (base as f32 * factor).round();
+    // Snap to 5 minutes: a 63-minute slot is theatre.
+    let snapped = ((scaled / 5.0).round() * 5.0) as i64;
+    snapped.clamp(5, 960)
 }
 
 // --------------------------------------------------------- plan vs actual
@@ -834,6 +984,159 @@ mod tests {
         create_item(&c, &habit).unwrap();
         let out = plan_week(&c, &request(3, 120)).unwrap();
         assert_eq!(out.blocks.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod calibration_tests {
+    use super::*;
+    use crate::db::AppState;
+    use crate::workitems::{self, ItemInput};
+
+    /// A finished item that recorded `actual` minutes against an `estimate`.
+    fn done_with(conn: &Connection, kind: &str, estimate: i64, actual: i64) -> String {
+        let it = workitems::create_item(
+            conn,
+            &ItemInput {
+                kind: Some(kind.into()),
+                title: format!("{kind} #{estimate}"),
+                body: None,
+                status: None,
+                priority: None,
+                due_ms: None,
+                start_ms: None,
+                estimate_min: Some(estimate),
+                parent_id: None,
+                rrule: None,
+                subject_id: None,
+                topic_id: None,
+                goal_id: None,
+            },
+        )
+        .unwrap();
+        workitems::set_status(conn, &it.id, "done").unwrap();
+        workitems::add_actual_minutes(conn, &it.id, actual).unwrap();
+        it.id
+    }
+
+    #[test]
+    fn nothing_to_learn_from_yet_means_no_behaviour_change() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let cb = calibration(&c, 60).unwrap();
+        assert_eq!(cb.samples, 0);
+        assert!((cb.factor - 1.0).abs() < 1e-6);
+        // The raw estimate passes through untouched, so a fresh install plans
+        // exactly as it did before this module existed.
+        assert_eq!(effective_estimate_min(Some(45), "task", &cb), 45);
+    }
+
+    #[test]
+    fn median_of_ratios_ignores_one_wild_outlier() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        for (est, act) in [(30, 45), (60, 90), (30, 45), (60, 600)] {
+            done_with(&c, "task", est, act);
+        }
+        let cb = calibration(&c, 60).unwrap();
+        assert_eq!(cb.samples, 4);
+        // Ratios are 1.5, 1.5, 1.5, 10.0 -> the median is 1.5, not the 3.6 mean.
+        assert!((cb.factor - 1.5).abs() < 1e-6, "got {}", cb.factor);
+    }
+
+    #[test]
+    fn per_kind_factor_beats_the_global_one() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        for _ in 0..3 {
+            done_with(&c, "reading", 60, 120); // twice over
+        }
+        for _ in 0..3 {
+            done_with(&c, "task", 60, 30); // half
+        }
+        let cb = calibration(&c, 60).unwrap();
+        let reading = cb.per_kind.iter().find(|k| k.kind == "reading").unwrap();
+        let task = cb.per_kind.iter().find(|k| k.kind == "task").unwrap();
+        assert!((reading.factor - 2.0).abs() < 1e-6);
+        assert!((task.factor - 0.5).abs() < 1e-6);
+        assert_eq!(effective_estimate_min(Some(60), "reading", &cb), 120);
+        assert_eq!(effective_estimate_min(Some(60), "task", &cb), 30);
+    }
+
+    #[test]
+    fn a_lonely_kind_borrows_the_global_factor() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        for _ in 0..3 {
+            done_with(&c, "task", 100, 50); // global ratio 0.5
+        }
+        done_with(&c, "milestone", 100, 400); // 4x, but only ONE sample
+        let cb = calibration(&c, 60).unwrap();
+        assert_eq!(cb.per_kind.len(), 1, "the single-sample kind must be dropped");
+        // 100 * 0.5, not 400.
+        assert_eq!(effective_estimate_min(Some(100), "milestone", &cb), 50);
+    }
+
+    #[test]
+    fn factors_are_clamped_so_bad_data_cannot_wreck_a_plan() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        for _ in 0..3 {
+            done_with(&c, "task", 10, 1000); // 100x
+        }
+        let cb = calibration(&c, 60).unwrap();
+        assert!((cb.factor - FACTOR_MAX).abs() < 1e-6, "got {}", cb.factor);
+        // 60 minutes of work must not become 6000 minutes of plan.
+        assert_eq!(effective_estimate_min(Some(60), "task", &cb), 180);
+    }
+
+    #[test]
+    fn plans_use_the_calibrated_duration() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        for _ in 0..3 {
+            done_with(&c, "task", 60, 90);
+        }
+        // A task the user thinks takes an hour actually takes 90 minutes.
+        workitems::create_item(
+            &c,
+            &ItemInput {
+                kind: Some("task".into()),
+                title: "write essay".into(),
+                body: None,
+                status: None,
+                priority: Some("high".into()),
+                due_ms: None,
+                start_ms: None,
+                estimate_min: Some(60),
+                parent_id: None,
+                rrule: None,
+                subject_id: None,
+                topic_id: None,
+                goal_id: None,
+            },
+        )
+        .unwrap();
+
+        let out = plan_week(
+            &c,
+            &PlanRequest {
+                start_day: "2026-05-10".into(),
+                days: Some(3),
+                daily_minutes: Some(120),
+                day_start_min: Some(540),
+                day_end_min: Some(1320),
+                break_min: Some(10),
+                replace: Some(true),
+            },
+        )
+        .unwrap();
+        let scheduled: i64 = out.blocks.iter().map(|b| b.end_min - b.start_min).sum();
+        assert_eq!(
+            scheduled, 90,
+            "planner must budget the honest 90 minutes, not the hopeful 60"
+        );
+        assert_eq!(out.scheduled_items, 1);
     }
 }
 
