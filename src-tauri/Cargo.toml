@@ -63,7 +63,7 @@ pdf-extract = "0.10"
 # tokenizers handles the HuggingFace 	okenizer.json that ships alongside the
 # model. Both are gated to non-iOS targets because iOS build artifacts don't ship
 # the ONNX runtime dylib and we already disable voice+vector on iOS via cfg.
-ort = { version = "2.0.0-rc.14", default-features = false, features = ["std"] }
+ort = { version = "2.0.0-rc.14", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 
 # Live sync: blocking WebSocket client for the homelab syncd push channel.
