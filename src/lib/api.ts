@@ -1180,6 +1180,60 @@ export const applyObservation = (
 export const calibrationSummary = (subjectId: string) =>
   invoke<CalibrationSummary>("calibration_summary", { subjectId });
 
+// ---- adaptive sprint planner -----------------------------------------
+
+export interface SprintTopic {
+  topic_id: string;
+  topic_name: string;
+  /** Effective mastery 0..1 (BKT blended with coverage + recent accuracy). */
+  mastery: number;
+  coverage: number;
+  recent_accuracy: number;
+  reviews: number;
+  /** Unmet mastery relative to the plan's target (0..1). */
+  gap: number;
+  /** Share of the total remaining gap, 0..1. */
+  weight: number;
+  rank: number;
+  minutes: number;
+  /** critical | focus | solid */
+  status: string;
+}
+
+export interface SprintPlan {
+  subject_id: string;
+  subject_name: string;
+  target_score: number;
+  current_score: number;
+  mastery_now: number;
+  mastery_target: number;
+  days_left: number;
+  daily_minutes: number;
+  minutes_required: number;
+  per_day_minutes: number;
+  minutes_available: number;
+  feasible: boolean;
+  topics: SprintTopic[];
+  notes: string[];
+}
+
+/**
+ * Goal-driven study plan for a subject. `deadlineMs` is an absolute timestamp;
+ * `dailyMinutes` falls back to the `daily_study_minutes` setting on the backend.
+ */
+export const sprintPlan = (
+  subjectId: string,
+  targetScore: number,
+  deadlineMs: number,
+  dailyMinutes?: number,
+) =>
+  invoke<SprintPlan>("sprint_plan", {
+    subjectId,
+    targetScore,
+    deadlineMs,
+    dailyMinutes: dailyMinutes ?? null,
+  });
+
 export const listUndoEntries = (limit = 50) =>
   invoke<UndoEntry[]>("list_undo_entries", { limit });
 

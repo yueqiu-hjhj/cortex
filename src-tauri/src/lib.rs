@@ -372,6 +372,7 @@ pub fn run() {
             commands::get_knowledge_graph,
             commands::apply_observation,
             commands::calibration_summary,
+            commands::sprint_plan,
             commands::list_undo_entries,
             commands::restore_undo,
             commands::set_secret,

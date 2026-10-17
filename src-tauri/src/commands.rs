@@ -3206,6 +3206,30 @@ pub fn calibration_summary(state: State<AppState>, subject_id: String) -> Result
     repo::calibration_summary(&c, &subject_id)
 }
 
+/// Adaptive sprint planner. `deadline_ms` is an absolute timestamp (same epoch
+/// as CalEvent.start_ms); `daily_minutes` falls back to the `daily_study_minutes`
+/// setting, then 60 minutes, when the caller omits it.
+#[tauri::command]
+pub fn sprint_plan(
+    state: State<AppState>,
+    subject_id: String,
+    target_score: f64,
+    deadline_ms: i64,
+    daily_minutes: Option<i64>,
+) -> Result<SprintPlan> {
+    let c = state.db.lock().unwrap();
+    let daily = daily_minutes
+        .filter(|m| *m > 0)
+        .or_else(|| {
+            repo::get_setting(&c, "daily_study_minutes")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<i64>().ok())
+        })
+        .unwrap_or(60);
+    repo::sprint_plan(&c, &subject_id, target_score, deadline_ms, daily)
+}
+
 #[tauri::command]
 pub fn list_undo_entries(state: State<AppState>, limit: Option<i64>) -> Result<Vec<UndoEntry>> {
     let c = state.db.lock().unwrap();

@@ -53,6 +53,7 @@
   let PomodoroTimelineC = $state<any>(null);
   let GlossaryViewC = $state<any>(null);
   let ReviewTodayC = $state<any>(null);
+  let SprintPlannerC = $state<any>(null);
   const loadSettings = () =>
     SettingsView ?? import("./views/Settings.svelte").then((m) => (SettingsView = m.default));
   const loadRecorder = () =>
@@ -71,6 +72,8 @@
     GlossaryViewC ?? import("./views/Glossary.svelte").then((m) => (GlossaryViewC = m.default));
   const loadReviewToday = () =>
     ReviewTodayC ?? import("./views/ReviewToday.svelte").then((m) => (ReviewTodayC = m.default));
+  const loadSprintPlanner = () =>
+    SprintPlannerC ?? import("./views/SprintPlanner.svelte").then((m) => (SprintPlannerC = m.default));
   $effect(() => {
     if (app.view === "settings") void loadSettings();
     else if (app.view === "recorder") void loadRecorder();
@@ -81,6 +84,7 @@
     else if (app.view === "neural-graph") void loadNeuralGraph();
     else if (app.view === "pomodoro") void loadPomodoro();
     else if (app.view === "review") void loadReviewToday();
+    else if (app.view === "sprint") void loadSprintPlanner();
     else if (app.view === "glossary") void loadGlossary();
   });
 
@@ -458,6 +462,8 @@
           {#if PomodoroTimelineC}{@const PomodoroTimeline = PomodoroTimelineC}<PomodoroTimeline />{/if}
         {:else if app.view === "review"}
           {#if ReviewTodayC}{@const ReviewToday = ReviewTodayC}<ReviewToday />{/if}
+        {:else if app.view === "sprint"}
+          {#if SprintPlannerC}{@const SprintPlanner = SprintPlannerC}<SprintPlanner />{/if}
         {:else if app.view === "glossary"}
           {#if GlossaryViewC}{@const GlossaryView = GlossaryViewC}<GlossaryView />{/if}
         {:else if app.view === "mindmap"}

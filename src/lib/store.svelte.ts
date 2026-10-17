@@ -23,6 +23,7 @@ export type View =
   | "neural-graph"
   | "pomodoro"
   | "review"
+  | "sprint"
   | "glossary"
   | "mindmap"
   | "exam"

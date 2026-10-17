@@ -91,6 +91,7 @@ export const LEADER_ACTIONS: LeaderAction[] = [
   { key: "t", label: "Theme",       detail: "cycle Omarchy theme" },
   { key: "m", label: "Music",       detail: "study sound panel" },
   { key: "p", label: "Pomodoro",    detail: "today focus timeline" },
+  { key: "q", label: "Sprint",      detail: "goal-driven study plan" },
   { key: "b", label: "Sidebar",     detail: "minimize / show navbar" },
   { key: ",", label: "Settings",    detail: "open preferences" },
   { key: "g", label: "Dashboard",   detail: "go to dashboard" },

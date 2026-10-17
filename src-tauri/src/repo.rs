@@ -2793,7 +2793,8 @@ pub fn analytics_summary(conn: &Connection, days: i64) -> Result<AnalyticsSummar
             // broken run before today — current streak is whatever run was
             if run > longest { longest = run; }
             run = 0;
-            streak = 0; // any earlier run is not the current streak
+            // `streak` was already latched from the trailing active run above;
+            // resetting it here would throw away a streak that includes today.
         }
         // Update current streak from the prefix when walking the trailing run.
         if active && run > 0 {
@@ -4387,6 +4388,180 @@ pub fn seed_showcase(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ---- adaptive sprint planner -------------------------------------------
+
+/// Minutes of focused study it takes, on average, to move one topic a full
+/// mastery unit (0 → 1). Tuned so a 30% gap on a single topic costs ~36 min.
+const MINUTES_PER_MASTERY_UNIT: f64 = 120.0;
+
+/// Build a goal-driven study plan: given a target score, a deadline and a daily
+/// time budget, work out how big the mastery gap is per topic, how many minutes
+/// that implies, and whether the budget actually covers it.
+///
+/// Effective mastery blends the BKT estimate with source coverage and recent
+/// accuracy, so a topic with no quiz history still gets a (small) credit for
+/// being fully ingested rather than reading as a flat zero.
+pub fn sprint_plan(
+    conn: &Connection,
+    subject_id: &str,
+    target_score: f64,
+    deadline_ms: i64,
+    daily_minutes: i64,
+) -> Result<crate::models::SprintPlan> {
+    use crate::models::{SprintPlan, SprintTopic};
+
+    let subject = get_subject(conn, subject_id)?;
+    let now = now_ms();
+
+    // Recent quiz accuracy per topic drives the accuracy fallback.
+    let window_ms = now - 30 * 24 * 60 * 60 * 1000;
+    let stats = topic_stats(conn, subject_id, window_ms)?;
+
+    // Node-level BKT mastery + coverage for the same topics.
+    let mut node_map: HashMap<String, (f64, f64)> = HashMap::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT topic_id, mastery, coverage FROM knowledge_nodes \
+             WHERE subject_id=?1 AND kind='topic' AND topic_id IS NOT NULL",
+        )?;
+        let rows = st.query_map(params![subject_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))
+        })?;
+        for (tid, mastery, coverage) in rows.flatten() {
+            node_map.insert(tid, (mastery, coverage));
+        }
+    }
+
+    let target_score = target_score.clamp(0.0, 100.0);
+    let mastery_target = clamp01(target_score / 100.0);
+
+    struct Row {
+        topic_id: String,
+        topic_name: String,
+        eff: f64,
+        coverage: f64,
+        accuracy: f64,
+        reviews: i64,
+        gap: f64,
+    }
+
+    let mut rows: Vec<Row> = Vec::with_capacity(stats.len());
+    let mut no_data = 0usize;
+    for t in &stats {
+        let (mastery, coverage) = node_map.get(&t.topic_id).copied().unwrap_or((0.0, 0.0));
+        let accuracy = t.accuracy;
+        let base = if mastery > 0.0 {
+            mastery
+        } else if t.reviews > 0 {
+            accuracy
+        } else {
+            no_data += 1;
+            0.5 * coverage
+        };
+        let eff = clamp01(0.7 * base + 0.3 * coverage);
+        rows.push(Row {
+            topic_id: t.topic_id.clone(),
+            topic_name: t.topic_name.clone(),
+            eff,
+            coverage,
+            accuracy,
+            reviews: t.reviews,
+            gap: (mastery_target - eff).max(0.0),
+        });
+    }
+
+    let mastery_now = if rows.is_empty() {
+        0.0
+    } else {
+        rows.iter().map(|r| r.eff).sum::<f64>() / rows.len() as f64
+    };
+    let total_gap: f64 = rows.iter().map(|r| r.gap).sum();
+    let minutes_required = (total_gap * MINUTES_PER_MASTERY_UNIT).round() as i64;
+
+    let days_left = ((deadline_ms - now) as f64 / 86_400_000.0).ceil().max(1.0) as i64;
+    let daily_minutes = daily_minutes.max(10);
+    let minutes_available = days_left * daily_minutes;
+    let per_day_minutes = (minutes_required as f64 / days_left as f64).ceil() as i64;
+    let feasible = minutes_available >= minutes_required;
+
+    // Most urgent first: biggest unmet gap wins the top slot.
+    rows.sort_by(|a, b| b.gap.partial_cmp(&a.gap).unwrap_or(std::cmp::Ordering::Equal));
+
+    let topics: Vec<SprintTopic> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let weight = if total_gap > 0.0 { r.gap / total_gap } else { 0.0 };
+            let status = if r.gap > 0.5 {
+                "critical"
+            } else if r.gap > 0.2 {
+                "focus"
+            } else {
+                "solid"
+            };
+            SprintTopic {
+                topic_id: r.topic_id.clone(),
+                topic_name: r.topic_name.clone(),
+                mastery: r.eff,
+                coverage: r.coverage,
+                recent_accuracy: r.accuracy,
+                reviews: r.reviews,
+                gap: r.gap,
+                weight,
+                rank: i as i64 + 1,
+                minutes: (r.gap * MINUTES_PER_MASTERY_UNIT).round() as i64,
+                status: status.to_string(),
+            }
+        })
+        .collect();
+
+    let mut notes: Vec<String> = Vec::new();
+    if rows.is_empty() {
+        notes.push("这个科目还没有知识点，先添加主题再制定冲刺计划。".into());
+    } else if total_gap <= 0.0 {
+        notes.push("按当前掌握度已经达到目标分，保持复习节奏即可。".into());
+    } else if feasible {
+        let slack = minutes_available - minutes_required;
+        notes.push(format!(
+            "按每天 {daily_minutes} 分钟可在截止前完成，还剩约 {slack} 分钟余量。"
+        ));
+    } else {
+        let deficit = minutes_required - minutes_available;
+        notes.push(format!(
+            "时间不足：每天需要约 {per_day_minutes} 分钟（当前预算 {daily_minutes} 分钟），还差约 {deficit} 分钟。建议提高日投入或下调目标分。"
+        ));
+    }
+    if !rows.is_empty() && total_gap > 0.0 {
+        let focus: Vec<&str> = topics.iter().take(3).map(|t| t.topic_name.as_str()).collect();
+        notes.push(format!("优先攻克：{}。", focus.join("、")));
+    }
+    if no_data > 0 {
+        notes.push(format!(
+            "{no_data} 个知识点尚无作答记录，估分基于封面覆盖率，建议先做一次自测。"
+        ));
+    }
+    if deadline_ms <= now {
+        notes.push("截止日期已过，按 1 天窗口估算。".into());
+    }
+
+    Ok(SprintPlan {
+        subject_id: subject.id,
+        subject_name: subject.name,
+        target_score,
+        current_score: (mastery_now * 100.0).round(),
+        mastery_now,
+        mastery_target,
+        days_left,
+        daily_minutes,
+        minutes_required,
+        per_day_minutes,
+        minutes_available,
+        feasible,
+        topics,
+        notes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4863,5 +5038,56 @@ mod tests {
         assert_eq!(after.len(), 4, "before-restore + restored snapshots added");
         assert_eq!(after[0].note, "restored");
         assert_eq!(after[1].note, "before restore");
+    }
+
+    #[test]
+    fn sprint_plan_ranks_gaps_and_flags_feasibility() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "Biology", None, None, None).unwrap();
+        let strong = insert_topic(&c, &sid, "Cells", None, &[]).unwrap();
+        let weak = insert_topic(&c, &sid, "Genetics", None, &[]).unwrap();
+
+        // Ready sources give both topics coverage; mastery still comes from quiz
+        // observations, so the weak topic keeps a real gap against a 90 target.
+        let s1 = insert_source(&c, &sid, Some(&strong), "cells.md", "md", None).unwrap();
+        insert_chunk(&c, &s1, &sid, Some(&strong), 0, "cells body", None, 0, &[]).unwrap();
+        finalize_source(&c, &s1, "ready", None, Some("cells body"), None).unwrap();
+        let s2 = insert_source(&c, &sid, Some(&weak), "genetics.md", "md", None).unwrap();
+        insert_chunk(&c, &s2, &sid, Some(&weak), 0, "genetics body", None, 0, &[]).unwrap();
+        finalize_source(&c, &s2, "ready", None, Some("genetics body"), None).unwrap();
+
+        sync_knowledge_graph(&c, &sid).unwrap();
+        let nodes = list_knowledge_nodes(&c, &sid).unwrap();
+        let node_id = |tid: &str| {
+            nodes
+                .iter()
+                .find(|n| n.topic_id.as_deref() == Some(tid))
+                .unwrap()
+                .id
+                .clone()
+        };
+        for _ in 0..12 {
+            apply_observation(&c, &node_id(&strong), true, 0.9, "quiz", None).unwrap();
+        }
+        apply_observation(&c, &node_id(&weak), false, 0.9, "quiz", None).unwrap();
+
+        let plan = sprint_plan(&c, &sid, 90.0, now_ms() + 10 * 86_400_000, 60).unwrap();
+        assert_eq!(plan.days_left, 10);
+        assert_eq!(plan.daily_minutes, 60);
+        assert_eq!(plan.topics.len(), 2);
+        // The unmet gap wins the top slot; a nailed topic is a rounding-to-zero gap.
+        assert_eq!(plan.topics[0].topic_id, weak);
+        assert_eq!(plan.topics[0].rank, 1);
+        assert!(plan.topics[0].gap > plan.topics[1].gap);
+        assert_eq!(plan.topics[0].status, "focus");
+        assert!(plan.minutes_required > 0);
+        assert_eq!(
+            plan.per_day_minutes,
+            (plan.minutes_required as f64 / 10.0).ceil() as i64
+        );
+        assert_eq!(plan.feasible, plan.minutes_available >= plan.minutes_required);
+        assert!(plan.feasible, "10 days x 60 min easily covers one topic gap");
+        assert!(!plan.notes.iter().any(|n| n.contains("尚无作答记录")));
     }
 }

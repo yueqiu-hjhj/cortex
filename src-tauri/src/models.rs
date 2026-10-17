@@ -218,6 +218,51 @@ pub struct KnowledgeGraph {
     pub calibration: CalibrationSummary,
 }
 
+// ---- adaptive sprint planner -----------------------------------------
+
+/// One topic's contribution to a sprint plan. Mirrored in `api.ts`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SprintTopic {
+    pub topic_id: String,
+    pub topic_name: String,
+    /// Effective mastery 0..1 (BKT blended with coverage + recent accuracy).
+    pub mastery: f64,
+    pub coverage: f64,
+    pub recent_accuracy: f64,
+    pub reviews: i64,
+    /// Unmet mastery relative to the plan's target (0..1).
+    pub gap: f64,
+    /// Share of the total remaining gap, 0..1.
+    pub weight: f64,
+    /// 1-based priority; lower is more urgent.
+    pub rank: i64,
+    /// Suggested study minutes for the whole sprint.
+    pub minutes: i64,
+    /// "critical" | "focus" | "solid"
+    pub status: String,
+}
+
+/// A goal-driven study plan: what it takes to reach `target_score` by the
+/// deadline given a daily time budget.
+#[derive(Debug, Clone, Serialize)]
+pub struct SprintPlan {
+    pub subject_id: String,
+    pub subject_name: String,
+    pub target_score: f64,
+    /// Estimated score right now (0..100), from blended mastery.
+    pub current_score: f64,
+    pub mastery_now: f64,
+    pub mastery_target: f64,
+    pub days_left: i64,
+    pub daily_minutes: i64,
+    pub minutes_required: i64,
+    pub per_day_minutes: i64,
+    pub minutes_available: i64,
+    pub feasible: bool,
+    pub topics: Vec<SprintTopic>,
+    pub notes: Vec<String>,
+}
+
 // ---- undo / local agent registry -------------------------------------
 
 #[derive(Debug, Clone, Serialize)]

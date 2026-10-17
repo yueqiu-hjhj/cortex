@@ -112,6 +112,8 @@
     { id: "v-dash", group: "Go to", label: "Dashboard", kind: "view", icon: "home", hint: "g " + kh(keybinds.map.dashboard), run: () => app.setView("dashboard") },
     { id: "v-analytics", group: "Go to", label: "Study analytics", kind: "view", icon: "chart", run: () => app.setView("analytics") },
     { id: "v-exam", group: "Go to", label: "Start exam", kind: "view", icon: "check", run: () => app.setView("exam") },
+
+    { id: "v-sprint", group: "Go to", label: "Sprint planner", kind: "view", icon: "star", hint: "g " + kh(keybinds.map.leader) + " q", run: () => app.setView("sprint") },
     { id: "s-settings", group: "Settings", label: "Open settings", kind: "setting", icon: "settings", run: () => app.setView("settings") },
     { id: "s-keys", group: "Settings", label: "API keys & models", kind: "setting", icon: "lock", run: () => app.setView("settings") },
     { id: "s-profile", group: "Settings", label: "Edit your profile", kind: "setting", icon: "diamond", run: () => app.setView("settings") },

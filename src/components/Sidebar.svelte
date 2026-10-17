@@ -218,6 +218,17 @@
       <Icon name="cards" size={14} /><span class="lbl"> Review</span><span class="nav-k">FSRS</span>
     </div>
 
+    <div
+      class="sb-nav-item{app.view === 'sprint' ? ' on' : ''}"
+      onclick={() => app.setView("sprint")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("sprint")}
+      title="Sprint planner — 目标驱动的冲刺规划 (Space q)"
+    >
+      <Icon name="star" size={14} /><span class="lbl"> Sprint</span><span class="nav-k">␣ q</span>
+    </div>
+
     <!-- Subjects section header -->
     <div class="sb-section-l">
       <span class="label">Subjects</span>

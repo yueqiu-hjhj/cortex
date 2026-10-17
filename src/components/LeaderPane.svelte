@@ -22,6 +22,7 @@
     t: () => app.cycleTheme(),
     m: () => { app.musicOpen = true; },
     p: () => app.setView("pomodoro"),
+    q: () => app.setView("sprint"),
     b: () => app.toggleSidebar(),
     g: () => app.setView("dashboard"),
     ",": () => app.openSettings(),
