@@ -151,6 +151,13 @@
   // ── headline figures ──
   const streak = $derived(data?.streak ?? 0);
   const longestStreak = $derived(data?.longest_streak ?? 0);
+  // B2: work-items habit surface (separate from the Anki review streak)
+  const workStreak = $derived(data?.work_streak ?? 0);
+  const workLongest = $derived(data?.work_longest_streak ?? 0);
+  const workWeekDone = $derived(data?.work_week_done ?? 0);
+  const workWeekTotal = $derived(data?.work_week_total ?? 0);
+  const workWeekRate = $derived(workWeekTotal > 0 ? Math.round((workWeekDone / workWeekTotal) * 100) : null);
+  const workStudiedToday = $derived(workStreak > 0);
   // Today last cell: any study minutes today means streak is safe.
   const studiedToday = $derived(((data?.year_minutes ?? []).slice(-1)[0]?.minutes ?? 0) > 0);
   const minutesWeek = $derived(data?.minutes_week ?? 0);
@@ -332,6 +339,23 @@
               best {longestStreak}
             {:else}
               <span class="faint">best {longestStreak}</span>
+            {/if}
+          </div>
+        </div>
+        <div class="an-stat">
+          <div class="an-stat-k mono">任务连续</div>
+          <div class="an-stat-v">
+            {workStreak}<span class="an-stat-u"> 天</span>
+          </div>
+          <div class="an-stat-sub mono">
+            {#if workWeekRate !== null}
+              本周完成 {workWeekDone}/{workWeekTotal} · {workWeekRate}%
+            {:else if workLongest > workStreak}
+              最长 {workLongest} 天
+            {:else if workStreak === 0}
+              <span class="faint">标记一件任务开始连续</span>
+            {:else}
+              <span class="faint">最长 {workLongest} 天</span>
             {/if}
           </div>
         </div>

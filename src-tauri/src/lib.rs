@@ -549,6 +549,7 @@ pub fn run() {
             commands::excerpt_delete,
             commands::paper_bibtex,
             commands::paper_import_bibtex,
+            commands::paper_build_matrix,
             commands::plan_vs_actual,
             commands::retrieval_eval,
         ])

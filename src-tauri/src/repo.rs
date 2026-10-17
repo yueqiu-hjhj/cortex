@@ -2973,6 +2973,80 @@ pub fn analytics_summary(conn: &Connection, days: i64) -> Result<AnalyticsSummar
     let fsrs = FsrsTotals { cards, avg_stability, lapses };
 
     // ── rolling 7-day headline figures ──
+    // ====== B2: work-items habit surface ==================================
+    // Same shape as the Anki review streak (a year of daily buckets from
+    // local midnight) so the dashboard can render `streak` and
+    // `work_streak` side by side without surprising the eye. We bucket
+    // `done_at` (not `updated_at`) so a row the user merely *edited*
+    // yesterday doesn't count as "completed yesterday".
+    let mut stmt = conn.prepare(
+        "SELECT date(done_at/1000, 'unixepoch', 'localtime') AS d, COUNT(*) AS n
+         FROM work_items
+         WHERE status = 'done' AND done_at IS NOT NULL AND done_at >= ?1
+         GROUP BY d",
+    )?;
+    let mut wi_done_by_day: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let rows = stmt.query_map(params![year_since_ms], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (d, n) = row?;
+        wi_done_by_day.insert(d, n);
+    }
+
+    // Current streak: walk backwards from today, counting consecutive days
+    // where at least one work item landed in the done bucket. Today is
+    // allowed to be empty without breaking the streak (matches the Anki
+    // streak rules above).
+    let mut work_streak: i64 = 0;
+    let mut work_longest_streak: i64 = 0;
+    {
+        let mut cursor = day_floor_ms(now_ms());
+        let mut run: i64 = 0;
+        let mut pre_break = true;
+        loop {
+            let day = local_day_str(cursor);
+            let had = wi_done_by_day.get(&day).copied().unwrap_or(0) > 0;
+            if had {
+                run += 1;
+                if run > work_longest_streak { work_longest_streak = run; }
+                if pre_break { work_streak = run; }
+            } else if day != today {
+                pre_break = false;
+            }
+            if !had && day != today {
+                // real break, walk stops here
+                if !pre_break { break; }
+            }
+            cursor -= DAY_MS;
+            if cursor < year_floor { break; }
+        }
+    }
+
+    // Week-to-date (Mon..today, local).
+    // date(now,'localtime','weekday 1','-7 days') -> Monday of the ISO week
+    // containing `now` (SQLite: weekday 1 = Monday). Multiplying by -7 cancels
+    // the forward jump to next Monday, leaving the Monday-of-this-week at
+    // local midnight; the trailing `'utc'` modifier re-parses the local-day
+    // string in UTC for %s so the epoch ms lines up with `done_at` (also UTC).
+    // The date() expression is duplicated because SQLite's dialect does not
+    // allow column-alias reuse in the same SELECT; the cost is one date()
+    // call per query.
+    let work_week_done: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM work_items
+         WHERE status = 'done' AND done_at IS NOT NULL
+           AND done_at >= CAST(strftime('%s', date('now','localtime','weekday 1','-7 days'), 'utc') AS INTEGER) * 1000",
+        [],
+        |r| r.get(0),
+    )?;
+    let work_week_total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM work_items
+         WHERE status != 'dropped'
+           AND ( (done_at IS NOT NULL AND done_at >= CAST(strftime('%s', date('now','localtime','weekday 1','-7 days'), 'utc') AS INTEGER) * 1000)
+              OR (created_at >= CAST(strftime('%s', date('now','localtime','weekday 1','-7 days'), 'utc') AS INTEGER) * 1000) )",
+        [],
+        |r| r.get(0),
+    )?;
     let week_start = day_floor_ms(now_ms()) - 6 * DAY_MS;
     let minutes_week: i64 = conn.query_row(
         "SELECT COALESCE(SUM(ended_ms - started_ms), 0) / 60000
@@ -3007,6 +3081,10 @@ pub fn analytics_summary(conn: &Connection, days: i64) -> Result<AnalyticsSummar
         minutes_week,
         reviews_week,
         accuracy_week,
+        work_streak,
+        work_longest_streak,
+        work_week_done,
+        work_week_total,
         pomodoro,
     })
 }

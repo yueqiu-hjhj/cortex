@@ -5875,6 +5875,22 @@ pub fn paper_import_bibtex(state: State<AppState>, text: String) -> Result<crate
     crate::papers::import_bibtex(&c, &text)
 }
 
+/// B4: build a cross-paper comparison matrix from the picked papers. Default
+/// rows are 方法 / 数据 / 结论 / 局限; pass `row_labels` to override.
+#[tauri::command]
+pub fn paper_build_matrix(
+    app: AppHandle,
+    paper_ids: Vec<String>,
+    row_labels: Option<Vec<String>>,
+) -> Result<crate::papers::PaperMatrix> {
+    let labels = row_labels.unwrap_or_default();
+    // build_matrix is intentionally sync because its body is all sync LLM
+    // calls wrapped by spawn_blocking on the call site of other paper
+    // commands; nesting tauri::async_runtime::spawn_blocking just hides the
+    // blocking from the message loop without freeing it.
+    crate::papers::build_matrix(app, paper_ids, labels)
+}
+
 /// Planned vs completed minutes per day, for the Insights "plan vs actual" card.
 #[tauri::command]
 pub fn plan_vs_actual(

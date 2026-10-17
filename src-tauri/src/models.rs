@@ -16,7 +16,7 @@ pub struct Subject {
     pub topics: Vec<Topic>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Moodle course id this subject is linked to (Settings → Experimental), if any.
+    /// Moodle course id this subject is linked to (Settings ā†?Experimental), if any.
     #[serde(default)]
     pub moodle_course_id: Option<String>,
     /// Comma-separated keywords for matching calendar event titles to this subject.
@@ -70,7 +70,7 @@ pub struct IngestResult {
     pub warning: Option<String>,
 }
 
-/// Summary returned by `import_anki` — how many decks/cards landed and how many
+/// Summary returned by `import_anki` ā€?how many decks/cards landed and how many
 /// cards were skipped (empty fronts or duplicates of existing/within-import cards).
 #[derive(Debug, Clone, Serialize)]
 pub struct AnkiImportResult {
@@ -79,7 +79,7 @@ pub struct AnkiImportResult {
     pub skipped: usize,
 }
 
-/// A stored chunk's info, returned by `list_chunks` — lets the UI prove a
+/// A stored chunk's info, returned by `list_chunks` ā€?lets the UI prove a
 /// source was actually parsed + embedded (text + vector dimension).
 #[derive(Debug, Clone, Serialize)]
 pub struct ChunkInfo {
@@ -317,8 +317,7 @@ pub struct CsSection {
     pub image: Option<String>,
     /// A short web-image search query the synthesis model supplies ONLY for a
     /// section whose understanding genuinely needs a diagram/figure. Drives
-    /// whether we fetch an image at all (saves needless searches). Transient —
-    /// never persisted or sent to the frontend.
+    /// whether we fetch an image at all (saves needless searches). Transient ā€?    /// never persisted or sent to the frontend.
     #[serde(default, skip_serializing)]
     pub image_query: Option<String>,
 }
@@ -556,7 +555,7 @@ pub struct CalEvent {
     #[serde(default)]
     pub checklist: Vec<String>,
     /// Assignment priority: "low" | "med" | "high" (None = normal). Previously
-    /// encoded as a colour hex in `color` — now a real field.
+    /// encoded as a colour hex in `color` ā€?now a real field.
     pub priority: Option<String>,
     /// Topic ids this assignment covers (previously squatted in `tags`).
     #[serde(default)]
@@ -604,7 +603,7 @@ pub struct DueCard {
     pub interval_d: i64,
 }
 
-/// Result of grading a card with SM-2 — the updated schedule, so the UI can show
+/// Result of grading a card with SM-2 ā€?the updated schedule, so the UI can show
 /// "next due in N days" feedback.
 #[derive(Debug, Clone, Serialize)]
 pub struct SrsResult {
@@ -643,7 +642,7 @@ pub struct Reference {
 
 // ---- database stats ---------------------------------------------------
 
-/// Storage + content counts for the Settings → Data screen.
+/// Storage + content counts for the Settings ā†?Data screen.
 #[derive(Debug, Clone, Serialize)]
 pub struct DbStats {
     pub db_bytes: i64,
@@ -691,7 +690,7 @@ pub struct WeakTopic {
     pub lapses: i64,
     /// Mean FSRS stability (days) over this topic's cards that have one set.
     pub avg_stability: f64,
-    /// Short human reason it's flagged (e.g. "Low accuracy · 4 lapses").
+    /// Short human reason it's flagged (e.g. "Low accuracy Ā· 4 lapses").
     pub reason: String,
 }
 
@@ -732,7 +731,7 @@ pub struct FsrsTotals {
     pub lapses: i64,
 }
 
-/// Per-topic stats for one subject — drives the subject-switcher topic charts.
+/// Per-topic stats for one subject ā€?drives the subject-switcher topic charts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicStat {
     pub topic_id: String,
@@ -755,22 +754,22 @@ pub struct PomodoroStats {
     pub break_minutes: i64,
     pub avg_session_min: f64,
     pub longest_session_min: i64,
-    /// Hour-of-day histogram (0-23) of focus minutes — "when do you study?".
+    /// Hour-of-day histogram (0-23) of focus minutes ā€?"when do you study?".
     pub by_hour: Vec<i64>,
 }
 
 /// The whole Study Analytics dashboard, returned by `analytics_summary`.
 #[derive(Debug, Clone, Serialize)]
 pub struct AnalyticsSummary {
-    /// Per-day study minutes for the window (oldest → newest, gaps filled with 0).
+    /// Per-day study minutes for the window (oldest ā†?newest, gaps filled with 0).
     pub minutes_per_day: Vec<DayMinutes>,
-    /// A full rolling year (366 days) of daily study minutes, oldest → newest,
-    /// gaps filled with 0 — drives the GitHub-style contributions heatmap.
+    /// A full rolling year (366 days) of daily study minutes, oldest ā†?newest,
+    /// gaps filled with 0 ā€?drives the GitHub-style contributions heatmap.
     /// Always a year regardless of the `days` window param.
     pub year_minutes: Vec<DayMinutes>,
-    /// Per-day reviews + accuracy for the window (oldest → newest, gaps filled).
+    /// Per-day reviews + accuracy for the window (oldest ā†?newest, gaps filled).
     pub reviews_per_day: Vec<DayReviews>,
-    /// Cards due each of the next 7 days (today → today+6, gaps filled with 0).
+    /// Cards due each of the next 7 days (today ā†?today+6, gaps filled with 0).
     pub due_forecast: Vec<DueDay>,
     /// Per-subject totals over the window (only subjects with any activity).
     pub per_subject: Vec<SubjectStat>,
@@ -778,7 +777,7 @@ pub struct AnalyticsSummary {
     pub weak_topics: Vec<WeakTopic>,
     /// FSRS state totals (all scheduled cards, not windowed).
     pub fsrs: FsrsTotals,
-    /// Consecutive days ending today with ≥1 review attempt OR work session.
+    /// Consecutive days ending today with ā‰? review attempt OR work session.
     pub streak: i64,
     /// Longest run of consecutive days with activity, anywhere in the year
     /// (independent of where the current streak sits). 0 if the year is empty.
@@ -787,6 +786,20 @@ pub struct AnalyticsSummary {
     pub minutes_week: i64,
     /// Reviews answered over the last 7 calendar days.
     pub reviews_week: i64,
+    /// Consecutive days ending today with at least 1 done work item.
+    /// Distinct from streak (the Anki review streak): this answers
+    /// did I clear my daily task queue today? without depending on
+    /// the queue being a queue of cards.
+    pub work_streak: i64,
+    /// Longest past run of consecutive days with a done work item in the
+    /// rolling year. 0 when the year is empty.
+    pub work_longest_streak: i64,
+    /// Items completed this calendar week (Mon..today, local).
+    pub work_week_done: i64,
+    /// Items NOT dropped this calendar week - denominator of the completion
+    /// rate. Lives alongside work_week_done so the frontend can render
+    /// done / total without an extra round-trip.
+    pub work_week_total: i64,
     /// Accuracy over the last 7 calendar days (0.0-1.0).
     pub accuracy_week: f64,
     /// Pomodoro/focus-timer stats over the window.

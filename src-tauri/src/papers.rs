@@ -20,10 +20,12 @@
 //!     unchanged and defend it.
 
 use crate::db::{new_id, now_ms};
+use crate::db::AppState;
 use crate::error::{Error, Result};
 use crate::workitems::{self, ItemInput, WorkItem};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
 
 pub const PAPER_STATUSES: &[&str] = &["to_read", "reading", "read", "cited", "dropped"];
 
@@ -945,3 +947,154 @@ mod tests {
         assert!(list_papers(&c, Some("nonsense"), None, None).is_err());
     }
 }
+// ======================================================================
+// B4: cross-paper comparison matrix
+// ======================================================================
+
+/// Default comparison rows when the caller does not specify their own.
+pub const DEFAULT_MATRIX_ROWS: &[&str] = &[
+    "方法 / Approach",
+    "数据 / Data",
+    "结论 / Findings",
+    "局限 / Limitations",
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MatrixRowData {
+    pub label: String,
+    pub cells: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaperMatrix {
+    pub columns: Vec<String>,
+    pub rows: Vec<MatrixRowData>,
+    pub generated_by: String,
+    pub generated_at: i64,
+}
+
+fn collect_paper_card(conn: &Connection, paper_id: &str) -> Result<(Paper, String)> {
+    let p = get_paper(conn, paper_id)?;
+    let excerpts: Vec<Excerpt> = list_excerpts(conn, Some(paper_id))?;
+    let mut card = String::new();
+    card.push_str(&format!("# {}\n", p.title));
+    if let Some(a) = &p.authors { card.push_str(&format!("authors: {a}\n")); }
+    if let Some(y) = p.year { card.push_str(&format!("year: {y}\n")); }
+    if let Some(v) = &p.venue { card.push_str(&format!("venue: {v}\n")); }
+    if let Some(doi) = &p.doi { card.push_str(&format!("doi: {doi}\n")); }
+    if let Some(abs) = &p.abstract_text {
+        if !abs.trim().is_empty() {
+            card.push_str("\n## abstract\n");
+            card.push_str(abs);
+            card.push('\n');
+        }
+    }
+    if !excerpts.is_empty() {
+        card.push_str("\n## excerpts\n");
+        for e in &excerpts {
+            card.push_str(&format!("- {}", e.quote.trim()));
+            if let Some(pg) = e.page { card.push_str(&format!(" (p.{pg})")); }
+            if let Some(n) = &e.note {
+                if !n.trim().is_empty() { card.push_str(&format!(" - {n}")); }
+            }
+            card.push('\n');
+        }
+    }
+    Ok((p, card))
+}
+
+pub fn build_matrix(
+    app: AppHandle,
+    paper_ids: Vec<String>,
+    row_labels: Vec<String>,
+) -> Result<PaperMatrix> {
+    if paper_ids.is_empty() {
+        return Err(Error::Other("select at least one paper".into()));
+    }
+    let rows: Vec<String> = if row_labels.is_empty() {
+        DEFAULT_MATRIX_ROWS.iter().map(|s| s.to_string()).collect()
+    } else { row_labels };
+
+    let (cards, spec, keys) = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut cards = Vec::with_capacity(paper_ids.len());
+        for id in &paper_ids {
+            let (_paper, card) = collect_paper_card(&c, id)?;
+            cards.push(card);
+        }
+        let spec = crate::repo::get_setting(&c, "model_cheatsheet")?
+            .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+        crate::commands::guard_offline_llm(&c, &spec)?;
+        let keys = crate::commands::read_keys(&c)?;
+        (cards, spec, keys)
+    };
+
+    let mut model = crate::llm::from_spec_or_any(&spec, &keys)
+        .ok_or_else(|| Error::Other("No model configured - add an API key in Settings -> API keys".into()))?;
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        crate::commands::apply_budget(&mut model, &c, "cheatsheet");
+    }
+
+    let columns: Vec<String> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut titles = Vec::with_capacity(paper_ids.len());
+        for id in &paper_ids {
+            titles.push(get_paper(&c, id)?.title);
+        }
+        titles
+    };
+
+    let mut out_rows: Vec<MatrixRowData> = Vec::with_capacity(rows.len());
+    let mut generated_by = String::from("local cache");
+
+    for label in rows {
+        let user = format!(
+            "PAPERS (in selection order, [1] is column 1):\n\n{}\n\n\
+             ROW LABEL: {}\n\n\
+             For EACH paper, in selection order, write a 1-3 sentence answer \
+             grounded ONLY in that paper's abstract and excerpts. Quote verbatim \
+             terms (dataset names, metric names, algorithm names) when the paper \
+             uses them. NEVER invent facts beyond what the paper supplies; if \
+             the paper is silent on this dimension, write an empty string and \
+             the matrix view will render an em-dash.\n\n\
+             Output JSON array of strings, in selection order, NO commentary, \
+             NO markdown:",
+            cards.iter().enumerate().map(|(i, c)| format!("[{i}] =====\n{c}")).collect::<Vec<_>>().join("\n\n"),
+            label
+        );
+        let system = "You are a research synthesis assistant. You receive ONE row label (e.g. \"方法 / Approach\") and N paper cards numbered in selection order. For each paper, output ONE short cell answering the row label, grounded ONLY in that paper's abstract and excerpts. NEVER invent; if a paper does not address the dimension, return an empty string for that cell. Return a JSON array of N strings, in selection order, no markdown, no commentary. The output language follows the row label: if the row label is bilingual, match the second half (after the /).";
+        let floor = 2048 + 1500 * paper_ids.len() as u32;
+        model.set_max_tokens(floor.max(4096));
+        let raw = model.complete(&system, &user)?;
+        generated_by = model.name();
+        let parsed = match crate::llm::extract_json(&raw) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("[papers] matrix row unparseable, retrying");
+                let raw2 = model.complete(system, &format!("{user}\n\nIMPORTANT: previous reply could not be parsed. Respond with ONLY the raw JSON array of N strings."))?;
+                match crate::llm::extract_json(&raw2) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let blanks = vec![String::new(); paper_ids.len()];
+                        out_rows.push(MatrixRowData { label, cells: blanks });
+                        continue;
+                    }
+                }
+            }
+        };
+        let arr = parsed.as_array().cloned().unwrap_or_default();
+        let mut cells: Vec<String> = Vec::with_capacity(paper_ids.len());
+        for i in 0..paper_ids.len() {
+            let txt = arr.get(i).and_then(|v| v.as_str()).map(|s| s.trim().to_string()).unwrap_or_default();
+            cells.push(txt);
+        }
+        out_rows.push(MatrixRowData { label, cells });
+    }
+
+    Ok(PaperMatrix { columns, rows: out_rows, generated_by, generated_at: now_ms() })
+}
+

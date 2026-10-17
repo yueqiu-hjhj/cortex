@@ -1139,6 +1139,14 @@ export interface AnalyticsSummary {
   /** Longest run of consecutive days with activity, anywhere in the year. */
   longest_streak: number;
   pomodoro: PomodoroStats;
+  // B2: work-items habit surface (counters day-by-day in local time).
+  work_streak: number;
+  /** Longest past run of consecutive days with a done work item in the year. */
+  work_longest_streak: number;
+  /** Items completed this calendar week (Mon..today, local). */
+  work_week_done: number;
+  /** Items NOT dropped this calendar week - denominator of the completion rate. */
+  work_week_total: number;
   minutes_week: number;
   reviews_week: number;
   accuracy_week: number;
@@ -1740,6 +1748,27 @@ export const paperBibtex = (ids?: string[]) =>
   invoke<string>("paper_bibtex", { ids: ids ?? null });
 export const paperImportBibtex = (text: string) =>
   invoke<BibImportOutcome>("paper_import_bibtex", { text });
+
+// ---- B4: cross-paper matrix -----------------------------------------------
+
+export interface MatrixRow {
+  label: string;
+  cells: string[];
+}
+export interface PaperMatrix {
+  columns: string[];       // paper titles, in selection order
+  rows: MatrixRow[];        // one entry per row label, aligned with columns
+  generated_by: string;     // model name (or "local cache")
+  generated_at: number;
+}
+
+/** Build a cross-paper comparison matrix. `paperIds` is the user selection;
+ *  `rowLabels` overrides the default four rows; empty list falls back. */
+export const paperBuildMatrix = (paperIds: string[], rowLabels?: string[]) =>
+  invoke<PaperMatrix>("paper_build_matrix", {
+    paperIds,
+    rowLabels: rowLabels ?? null,
+  });
 
 // ---- plan vs actual (Insights) -------------------------------------------
 

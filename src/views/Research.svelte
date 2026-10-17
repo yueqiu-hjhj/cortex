@@ -8,6 +8,7 @@
   // and every excerpt is kept verbatim so it can go straight into a draft.
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
+  import MatrixView from "../components/MatrixView.svelte";
 
   const STATUSES = [
     { id: "all", label: "全部" },
@@ -37,6 +38,29 @@
 
   let importOpen = $state(false);
   let importText = $state("");
+
+  // ----- B4: cross-paper matrix -----
+  let matrixSelection = $state<Set<string>>(new Set());
+  let matrix = $state<api.PaperMatrix | null>(null);
+  let matrixBuilding = $state(false);
+  let matrixError = $state<string | null>(null);
+  function toggleMatrixPick(id: string) {
+    const next = new Set(matrixSelection);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    matrixSelection = next;
+  }
+  const matrixSelectionCount = $derived(matrixSelection.size);
+  const matrixSelectionIds = $derived(Array.from(matrixSelection));
+  function clearMatrixSelection() { matrixSelection = new Set(); }
+  async function buildComparison() {
+    if (matrixSelectionCount === 0) return;
+    matrixBuilding = true;
+    matrixError = null;
+    try { matrix = await api.paperBuildMatrix(matrixSelectionIds); }
+    catch (e) { matrixError = String(e); }
+    finally { matrixBuilding = false; }
+  }
+  function closeMatrix() { matrix = null; matrixError = null; }
 
   let quote = $state("");
   let page = $state<number | null>(null);
@@ -215,6 +239,17 @@
       <input class="search" bind:value={search} placeholder="搜索标题 / 作者 / 摘要" oninput={() => load()} />
       <button class="btn" onclick={() => (importOpen = !importOpen)}>导入 BibTeX</button>
       <button class="btn" disabled={busy === "bib"} onclick={copyBibtex}>导出 BibTeX</button>
+      <button
+        class="btn primary"
+        disabled={matrixSelectionCount === 0 || matrixBuilding}
+        onclick={buildComparison}
+        title={matrixSelectionCount === 0 ? "勾选至少一篇论文" : "按已勾选的 " + matrixSelectionCount + " 篇生成对比矩阵"}
+      >
+        {matrixBuilding ? "生成中…" : "对比矩阵 · " + matrixSelectionCount}
+      </button>
+      {#if matrixSelectionCount > 0}
+        <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
+      {/if}
     </div>
   </header>
 
@@ -250,15 +285,26 @@
         </div>
       {:else}
         {#each papers as p (p.id)}
-          <button class="prow" class:on={selected?.id === p.id} onclick={() => pick(p)}>
-            <div class="ptitle">{p.title}</div>
-            <div class="pmeta">
-              <span class="badge">{STATUS_LABEL[p.status] ?? p.status}</span>
-              {#if p.year}<span>{p.year}</span>{/if}
-              {#if p.excerpt_count}<span>{p.excerpt_count} 摘录</span>{/if}
-              {#if p.open_task_count}<span class="task">{p.open_task_count} 任务</span>{/if}
-            </div>
-          </button>
+          {@const isPicked = matrixSelection.has(p.id)}
+          <div class="prow" class:picked={isPicked} class:on={selected?.id === p.id}>
+            <label class="prow-check">
+              <input
+                type="checkbox"
+                checked={isPicked}
+                onchange={() => toggleMatrixPick(p.id)}
+                title="勾选以便加入对比矩阵"
+              />
+            </label>
+            <button type="button" class="prow-body" onclick={() => pick(p)}>
+              <div class="ptitle">{p.title}</div>
+              <div class="pmeta">
+                <span class="badge">{STATUS_LABEL[p.status] ?? p.status}</span>
+                {#if p.year}<span>{p.year}</span>{/if}
+                {#if p.excerpt_count}<span>{p.excerpt_count} 摘录</span>{/if}
+                {#if p.open_task_count}<span class="task">{p.open_task_count} 任务</span>{/if}
+              </div>
+            </button>
+          </div>
         {/each}
       {/if}
     </div>
@@ -334,6 +380,34 @@
     </div>
   </div>
 </div>
+
+
+{#if matrix || matrixBuilding || matrixError}
+  <div class="matrix-modal-bg" onclick={closeMatrix} role="presentation"></div>
+  <div class="matrix-modal" role="dialog" aria-label="跨论文对比矩阵">
+    {#if matrixError}
+      <div class="matrix-modal-bd err">
+        生成失败：{matrixError}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={closeMatrix}>关闭</button>
+        </div>
+      </div>
+    {:else if matrix}
+      <MatrixView
+        data={{ columns: matrix.columns, rows: matrix.rows }}
+        title={`对比 ${matrix.columns.length} 篇 · ${matrix.rows.length} 行`}
+        onExit={closeMatrix}
+      />
+    {:else}
+      <div class="matrix-modal-bd">
+        <div class="matrix-modal-loading">
+          <span class="is-spin" style="width:18px;height:18px"></span>
+          <span>正在生成对比矩阵…</span>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
 
 <style>
   .research {
@@ -700,5 +774,65 @@
     margin-top: 6px;
     font-size: var(--t-xs);
     color: var(--fg-faint);
+  }
+
+  /* B4: cross-paper matrix UI */
+  .prow { display: flex; align-items: stretch; gap: 0; }
+  .prow.picked { background: rgba(124, 92, 240, 0.08); }
+  .prow-check {
+    display: flex;
+    align-items: center;
+    padding: 0 6px 0 10px;
+    cursor: pointer;
+  }
+  .prow-check input { cursor: pointer; }
+  .prow-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    background: transparent;
+    border: 0;
+    text-align: left;
+    color: inherit;
+    padding: 10px 8px;
+    cursor: pointer;
+  }
+  .prow-body .ptitle { font-size: 13px; }
+  .matrix-modal-bg {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 90;
+  }
+  .matrix-modal {
+    position: fixed;
+    inset: 4vh 6vw;
+    z-index: 91;
+    background: var(--surface-1, rgba(20, 20, 28, 0.96));
+    border-radius: var(--rad-4, 10px);
+    border: 1px solid var(--line-2, rgba(255, 255, 255, 0.1));
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    overflow: auto;
+  }
+  .matrix-modal-bd {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 20px;
+  }
+  .matrix-modal-bd.err { color: #fca5a5; }
+  .matrix-modal-loading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px;
+    color: var(--text-3, #b5b9c3);
+  }
+  .matrix-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
   }
 </style>

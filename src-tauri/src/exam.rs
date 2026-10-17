@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::llm;
 use crate::models::ExamRec;
 use crate::repo;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 
@@ -499,11 +500,44 @@ fn grade_exam_inner(app: &AppHandle, id: &str, answers: &[ExamAnswer]) -> Result
             .map(|a| json!({ "id": a.id, "choice": a.choice, "text": a.text }))
             .collect::<Vec<_>>());
 
+        // B3 hook: nudge each missed topic's mastery via apply_observation AND
+        // open remediation work items for them. Best-effort: errors here land
+        // in remediation.warnings; the grade itself is never blocked.
+        let (attributions, attribution_warnings) = {
+            let c = state.db.lock().unwrap();
+            match attribute_exam_mistakes(&c, &exam, &per_question, percent) {
+                Ok(items) => (items, Vec::new()),
+                Err(e) => (Vec::new(), vec![e.to_string()]),
+            }
+        };
+
+        let mut results_obj = results.as_object().cloned().unwrap_or_default();
+        results_obj.insert(
+            "remediation".into(),
+            json!({
+                "items": attributions
+                    .iter()
+                    .map(|w| json!({
+                        "id": w.id,
+                        "title": w.title,
+                        "kind": w.kind,
+                        "priority": w.priority,
+                        "due_ms": w.due_ms,
+                        "topic_id": w.topic_id,
+                        "missed_count": w.missed_count,
+                        "knowledge_node_id": w.knowledge_node_id,
+                    }))
+                    .collect::<Vec<_>>(),
+                "warnings": attribution_warnings,
+            }),
+        );
+        let results_final = Value::Object(results_obj);
+
         {
             let c = state.db.lock().unwrap();
-            repo::finalize_exam(&c, id, &answers_json, &results, percent)?;
+            repo::finalize_exam(&c, id, &answers_json, &results_final, percent)?;
         }
-        Ok(results)
+        Ok(results_final)
 }
 
 /// The exam's scoped topic names (empty scope → all subject topics). Best-effort:
@@ -543,4 +577,212 @@ pub fn get_exam(state: State<AppState>, id: String) -> Result<ExamRec> {
 pub fn delete_exam(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
     repo::delete_exam(&c, &id)
+}
+
+/// One remediation work item opened by `attribute_exam_mistakes`. A thin
+/// slice of `WorkItem` so we return only the fields the UI needs without
+/// round-tripping the whole row.
+#[derive(Debug, Clone)]
+struct RemediationItem {
+    id: String,
+    title: String,
+    kind: String,
+    priority: Option<String>,
+    due_ms: Option<i64>,
+    topic_id: Option<String>,
+    /// How many questions failed in the originating exam AND bucketed here.
+    missed_count: i64,
+    /// The knowledge node we recorded the observation against (None when this
+    /// subject has no framework yet, e.g. brand new exam on a brand new
+    /// subject - we still create the work item, just skip the BKT write).
+    knowledge_node_id: Option<String>,
+}
+
+/// Bucket a graded exam's per-question results into the exam's scoped topics,
+/// nudging each topic's mastery via `apply_observation(correct=false)` and
+/// opening a single remediation work item per missed topic. Returns the items
+/// opened (never the mastery numbers - only the IDs the UI shows).
+///
+/// Bucketing rule: when the exam is scoped to N topics and M questions,
+/// question i is attributed to topic `topic_ids[i * N / M]`. With N == 1 all
+/// missed questions count toward that single topic; with N == 0 (whole-
+/// subject exam) every miss falls back to the subject root node and the work
+/// item is created without a topic_id - still actionable, just less precise
+/// than a topic-scoped remediation.
+///
+/// Best-effort: any internal error logs and continues, surfaced under
+/// `remediation.warnings` so the grade itself is never blocked.
+fn attribute_exam_mistakes(
+    c: &Connection,
+    exam: &ExamRec,
+    per_question: &[Value],
+    percent: f64,
+) -> Result<Vec<RemediationItem>> {
+    use crate::workitems::{self, ItemInput};
+    use std::collections::HashMap;
+
+    if percent >= 100.0 {
+        return Ok(Vec::new());
+    }
+
+    let n = exam.topic_ids.len();
+    let mut by_topic: HashMap<Option<String>, (String, i64, Vec<String>)> = HashMap::new();
+
+    let total_q = per_question.len().max(1);
+    let topic_attr_for = |qi: usize| -> Option<String> {
+        if n == 0 {
+            None
+        } else {
+            Some(exam.topic_ids[qi * n / total_q].clone())
+        }
+    };
+
+    for (qi, pq) in per_question.iter().enumerate() {
+        let qid = pq.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let qtype = pq.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let failed = match qtype {
+            "mcq" => !pq.get("correct").and_then(|v| v.as_bool()).unwrap_or(false),
+            "written" => {
+                let marks = pq.get("marks").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                let score = pq.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                score < marks * 0.5
+            }
+            _ => false,
+        };
+        if !failed {
+            continue;
+        }
+        let tid = topic_attr_for(qi);
+        let tname = match &tid {
+            Some(id) => c
+                .query_row(
+                    "SELECT name FROM topics WHERE id=?1",
+                    params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| "未命名主题".into()),
+            None => "整张试卷".into(),
+        };
+        let entry = by_topic
+            .entry(tid.clone())
+            .or_insert_with(|| (tname, 0, Vec::new()));
+        entry.1 += 1;
+        if !qid.is_empty() {
+            entry.2.push(qid);
+        }
+    }
+
+    if by_topic.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Ensure the subject's knowledge framework exists before any topic_id
+    // lookup; sync_knowledge_graph is idempotent and cheap.
+    if let Err(e) = crate::repo::sync_knowledge_graph(c, &exam.subject_id) {
+        eprintln!("[exam] sync_knowledge_graph failed (non-fatal): {e}");
+    }
+
+    // Tomorrow at the same wall-clock time the exam finished (a coach asks
+    // "by tomorrow morning"; absolute ms is fine - the Today view sorts on it).
+    let tomorrow_ms = crate::db::now_ms() + 24 * 3600 * 1000;
+
+    let mut out: Vec<RemediationItem> = Vec::new();
+
+    for (topic_id_opt, (topic_name, missed_count, qids)) in by_topic.into_iter() {
+        // 1) Look up the topic's knowledge node. We require kind='topic' to
+        //    avoid accidentally hitting a subject-level root.
+        let node_id: Option<String> = match &topic_id_opt {
+            Some(tid) => c
+                .query_row(
+                    "SELECT id FROM knowledge_nodes
+                     WHERE subject_id=?1 AND topic_id=?2 AND kind='topic' LIMIT 1",
+                    params![exam.subject_id, tid],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?,
+            None => None,
+        };
+
+        // 2) Write the BKT observation against the node. The framework already
+        //    de-emphasises a string of wrong answers via bkt_update's slip
+        //    probability, so a single exam doesn't double-bite mastery.
+        if let Some(nid) = &node_id {
+            let note = if qids.is_empty() {
+                format!("missed {missed_count} question(s) in exam 「{}」", exam.title)
+            } else {
+                format!(
+                    "missed {} question(s) in exam 「{}」: {}",
+                    missed_count,
+                    exam.title,
+                    qids.join(", ")
+                )
+            };
+            if let Err(e) = crate::repo::apply_observation(
+                c, nid, false, 0.7, "exam", Some(&note),
+            ) {
+                eprintln!("[exam] apply_observation failed (non-fatal): {e}");
+            }
+        }
+
+        // 3) Open the remediation work item. The title names the topic so the
+        //    Today row reads like a coaching nudge; body carries the question
+        //    ids so re-opening the card surfaces the closure trail.
+        let title = match &topic_id_opt {
+            Some(_) => format!("补强 · {topic_name}"),
+            None => format!(
+                "补强 · 试卷「{}」",
+                exam.title
+            ),
+        };
+        let body = if qids.is_empty() {
+            format!(
+                "本场考试「{}」共错过 {missed_count} 题，请重做并结合考试反馈复盘。",
+                exam.title
+            )
+        } else {
+            format!(
+                "本场考试「{}」在「{topic_name}」上共错过 {missed_count} 题（{}）。请重做并结合考试反馈复盘。",
+                exam.title,
+                qids.join(", ")
+            )
+        };
+        let input = ItemInput {
+            kind: Some("question".into()),
+            title,
+            body: Some(body),
+            status: Some("open".into()),
+            priority: Some("high".into()),
+            due_ms: Some(tomorrow_ms),
+            start_ms: None,
+            estimate_min: Some(20),
+            parent_id: None,
+            rrule: None,
+            subject_id: Some(exam.subject_id.clone()),
+            topic_id: topic_id_opt.clone(),
+            goal_id: None,
+        };
+        let item = match workitems::create_item(c, &input) {
+            Ok(it) => it,
+            Err(e) => {
+                eprintln!("[exam] create_item for remediation failed (non-fatal): {e}");
+                continue;
+            }
+        };
+        if let Err(e) = workitems::link(c, &item.id, "exams", &exam.id, "derived_from") {
+            eprintln!("[exam] item_links insert failed (non-fatal): {e}");
+        }
+
+        out.push(RemediationItem {
+            id: item.id,
+            title: item.title,
+            kind: item.kind,
+            priority: item.priority,
+            due_ms: item.due_ms,
+            topic_id: item.topic_id,
+            missed_count,
+            knowledge_node_id: node_id,
+        });
+    }
+
+    Ok(out)
 }

@@ -219,6 +219,33 @@
   });
   const scorePct = $derived(results?.score ?? exam?.score ?? 0);
 
+  // B3: auto-attribution results. Backend embeds them under results.remediation;
+  // expose them as a typed derived so the template renders the callout directly.
+  interface RemediationItem {
+    id: string;
+    title: string;
+    kind: string;
+    priority?: string;
+    due_ms?: number;
+    topic_id?: string;
+    missed_count: number;
+    knowledge_node_id?: string;
+  }
+  const remediationItems = $derived.by<RemediationItem[]>(() => {
+    const items = (results as any)?.remediation?.items;
+    return Array.isArray(items) ? items : [];
+  });
+  const remediationWarnings = $derived.by<string[]>(() => {
+    const w = (results as any)?.remediation?.warnings;
+    return Array.isArray(w) ? w : [];
+  });
+  function openRemediationInToday(_it: RemediationItem) {
+    // The Today cockpit already lists every open work item; the deep link is
+    // just a view switch. No toast - the user just clicked us.
+    app.setView("today");
+  }
+
+
   // ── navigation block while running (mirror Flashcards/Quiz) ──
   $effect(() => {
     const running = screen === "run";
@@ -483,6 +510,41 @@
         </section>
       {/if}
 
+      {#if remediationItems.length > 0}
+        <!-- B3: auto-attribution callout. Surfaces each remediation work item
+             the backend opened, with a jump-to-Today so the user can start
+             fixing it without hunting through the inbox. -->
+        <section class="set-group">
+          <div class="set-group-h">
+            <h3 class="set-group-t">智能归因 · 自动补 {remediationItems.length} 道练习题</h3>
+            <span class="set-group-sub mono">已写入知识框架 · 已加入今日任务</span>
+          </div>
+          <div class="set-card exam-remediate">
+            <ul class="exam-remediate-list">
+              {#each remediationItems as it (it.id)}
+                <li>
+                  <span class="exam-remediate-n mono">{it.missed_count} 题</span>
+                  <span class="exam-remediate-t">{it.title}</span>
+                  <button class="btn btn--ghost btn--sm" onclick={() => openRemediationInToday(it)}>
+                    去今日任务
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        </section>
+      {/if}
+      {#if remediationWarnings.length > 0}
+        <section class="set-group">
+          <div class="set-card exam-remediate-warn mono">
+            智能归因发生非致命错误（成绩不受影响）：
+            <ul>
+              {#each remediationWarnings as w}<li>· {w}</li>{/each}
+            </ul>
+          </div>
+        </section>
+      {/if}
+
       <!-- Per-question review reuses Quiz.svelte's answered-state classes. -->
       <section class="set-group">
         <div class="set-group-h"><h3 class="set-group-t">逐题回顾</h3></div>
@@ -585,6 +647,24 @@
   .exam-stat-k { font-size: var(--t-2xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-faint); }
   .exam-stat-v { margin-top: 8px; font-size: var(--r-xl); font-weight: 600; color: var(--fg-bright); font-variant-numeric: tabular-nums; }
   .exam-stat-u { font-size: var(--t-sm); font-weight: 400; color: var(--fg-faint); }
+
+  /* B3: smart-attribution callout. Mirrors exam-weak so the two read as
+     siblings: weak -> auto-remediation. */
+  .exam-remediate {
+    border-color: rgba(124, 92, 240, 0.4);
+    background: linear-gradient(180deg, rgba(124, 92, 240, 0.08), rgba(124, 92, 240, 0.02));
+  }
+  .exam-remediate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .exam-remediate-list li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+  .exam-remediate-n { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(124, 92, 240, 0.18); color: #c4b5fd; }
+  .exam-remediate-t { flex: 1; min-width: 0; font-size: 13px; }
+  .exam-remediate-warn {
+    color: var(--fg-muted, #b5b9c3);
+    padding: 8px 12px;
+    border-radius: var(--rad-3, 6px);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .exam-remediate-warn ul { margin: 4px 0 0; padding-left: 16px; }
 
   /* Weak-topic callout: warn-accented set-card. */
   .exam-weak { border-color: color-mix(in oklab, var(--warn) 40%, var(--border)); background: color-mix(in oklab, var(--warn) 6%, var(--surface)); }

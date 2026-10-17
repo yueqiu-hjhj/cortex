@@ -56,6 +56,21 @@
     void refresh();
   });
 
+  // ----- B2: work-items streak chip ---------------------------------------
+  // Pulls the same analytics payload the AnalyticsView uses; cached client-side
+  // so we do not pay for it twice when both views are mounted.
+  let summary = $state<api.AnalyticsSummary | null>(null);
+  $effect(() => {
+    api.analyticsSummary(30).then((s) => { summary = s; }).catch(() => { summary = null; });
+  });
+  const workStreak = $derived(summary?.work_streak ?? 0);
+  const workWeek = $derived.by(() => {
+    const d = summary?.work_week_done ?? 0;
+    const t = summary?.work_week_total ?? 0;
+    return { done: d, total: t };
+  });
+  const weekRate = $derived(workWeek.total > 0 ? Math.round((workWeek.done / workWeek.total) * 100) : null);
+
   const counts = $derived(board?.counts ?? null);
   const totalToday = $derived(board ? board.overdue.length + board.today.length : 0);
   const isEmpty = $derived(
@@ -258,6 +273,15 @@
           weekday: "long",
         })}
       </p>
+    </div>
+    <div class="streak-chip" class:streak-chip--hot={workStreak >= 3} title={workStreak > 0 ? `连续 ${workStreak} 天有任务完成` : "今天还没有完成的任务 — 标记一件开始连续"}>
+      <span class="streak-chip-flame">🔥</span>
+      <span class="streak-chip-n">{workStreak}</span>
+      <span class="streak-chip-l">连续</span>
+      {#if weekRate !== null}
+        <span class="streak-chip-sep">·</span>
+        <span class="streak-chip-l">本周 {weekRate}%</span>
+      {/if}
     </div>
     <div class="stats">
       <div class="stat"><b class:hot={totalToday > 0}>{totalToday}</b><span>待办</span></div>
@@ -550,6 +574,29 @@
     align-items: center;
     gap: 3px;
   }
+  .streak-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--fg-muted, #b5b9c3);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .streak-chip--hot {
+    background: linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(249, 115, 22, 0.08));
+    border-color: rgba(249, 115, 22, 0.45);
+    color: #fed7aa;
+  }
+  .streak-chip-flame { font-size: 13px; line-height: 1; }
+  .streak-chip-n { font-weight: 600; color: inherit; }
+  .streak-chip-l { opacity: 0.9; }
+  .streak-chip-sep { opacity: 0.5; }
+
   .chip.rec {
     color: var(--info);
   }
