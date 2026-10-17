@@ -184,7 +184,7 @@
         {#if value.trim()}
           <RichText text={value} />
         {:else}
-          <div class="md-empty">Nothing to preview yet.</div>
+          <div class="md-empty">还没有可预览的内容。</div>
         {/if}
       </div>
     </div>

@@ -113,7 +113,7 @@
 <div class="vw">
   <header class="vw-head">
     <div>
-      <div class="eyebrow">Vocabulary</div>
+      <div class="eyebrow">词汇本</div>
       <h1 class="vw-title">{app.activeSubject?.name ?? "未选中科目"}</h1>
       <p class="vw-sub mono">词频 · 术语定义 · 语境例句 · 掌握度</p>
     </div>

@@ -416,7 +416,7 @@
         <!-- ── HISTORY (editable: view + restore) ── -->
         <div class="diff-body">
           {#if histLoading}
-            <div class="mono faint" style="display:flex;align-items:center;justify-content:center;min-height:200px;">Loading history…</div>
+            <div class="mono faint" style="display:flex;align-items:center;justify-content:center;min-height:200px;">正在加载历史…</div>
           {:else if viewing}
             <!-- Read-only render of one stored version -->
             <div class="cmdk-group">
@@ -462,7 +462,7 @@
           {:else if versions.length === 0}
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:240px;text-align:center;padding:24px;">
               <Icon name="refresh" size={26} color="var(--fg3)" />
-              <div class="read" style="font-size:18px;color:var(--fg-bright);">No versions yet</div>
+              <div class="read" style="font-size:18px;color:var(--fg-bright);">还没有历史版本</div>
               <p class="mono faint" style="max-width:360px;line-height:1.5;">
                 Edits and regenerations of this cheatsheet are recorded here — you'll
                 be able to view and restore them.
@@ -470,7 +470,7 @@
             </div>
           {:else}
             <div class="cmdk-group">
-              <div class="gl">Versions — newest first</div>
+              <div class="gl">版本 — 最新的在前</div>
               {#each versions as v, i (v.id)}
                 <div class="diff-hist-row set-card">
                   <div class="diff-hist-meta">

@@ -124,15 +124,15 @@
       </div>
       {#if withTime}
         <div class="dp-time">
-          <span class="dp-time-lbl">Time</span>
+          <span class="dp-time-lbl">时间</span>
           <input class="input dp-tnum" type="number" min="0" max="23" bind:value={hh} onchange={commitTime} aria-label="Hour" />
           <span class="dp-colon">:</span>
           <input class="input dp-tnum" type="number" min="0" max="59" bind:value={mi} onchange={commitTime} aria-label="Minute" />
-          <button type="button" class="dp-done" onclick={() => (open = false)}>Done</button>
+          <button type="button" class="dp-done" onclick={() => (open = false)}>确定</button>
         </div>
       {:else}
         <div class="dp-foot">
-          <button type="button" class="dp-quick" onclick={() => pickDay(new Date())}>Today</button>
+          <button type="button" class="dp-quick" onclick={() => pickDay(new Date())}>今天</button>
         </div>
       {/if}
     </div>

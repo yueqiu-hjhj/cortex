@@ -231,7 +231,7 @@
         <div class="rev-speakers" style:margin-top="16px">
           <div class="rev-speakers-l">
             <span class="onb-label mono">多人发言</span>
-            <span class="rev-speakers-d">Label the transcript by voice — “Speaker 1 / Speaker 2” (homelab WhisperX or a diarizing cloud model).</span>
+            <span class="rev-speakers-d">按人声给转写打标签 — 「说话人 1 / 说话人 2」（homelab WhisperX 或支持分人的云端模型）。</span>
           </div>
           <button
             type="button"
@@ -246,7 +246,7 @@
         <div class="rev-meta mono faint">
           <span class="rev-meta-item"><Icon name="bolt" size={11} color="var(--fg-faint)" />{rec.reviewSourceLabel === "uploaded" ? "Uploaded audio file" : `Captured ${rec.reviewDuration}`}</span>
           {#if rec.reviewTranscript.trim()}
-            <span class="rev-meta-item"><Icon name="doc" size={11} color="var(--fg-faint)" />Live transcript captured</span>
+            <span class="rev-meta-item"><Icon name="doc" size={11} color="var(--fg-faint)" />已捕获实时转写</span>
           {/if}
         </div>
 
@@ -313,7 +313,7 @@
       {:else if !rec.recording}
         Press <span class="kbd">␣</span> or click to start · output becomes a transcribed source
       {:else}
-        <span class="kbd">m</span> tag moment · <span class="kbd">space</span> pause · <span class="kbd">⏎</span> stop &amp; save · leaving this screen keeps recording
+        <span class="kbd">m</span> 标记时间点 · <span class="kbd">space</span> pause · <span class="kbd">⏎</span> stop &amp; save · leaving this screen keeps recording
       {/if}
     </div>
 
@@ -345,7 +345,7 @@
       <div style:display="flex" style:gap="10px" style:margin-top="18px">
         {#if rec.recording}
           <button class="btn btn--ghost btn--sm" onclick={discard}>丢弃</button>
-          <button class="btn btn--ghost btn--sm" onclick={leave}>Hide (keeps recording)</button>
+          <button class="btn btn--ghost btn--sm" onclick={leave}>隐藏（继续录音）</button>
         {:else}
           <button class="btn btn--ghost btn--sm" onclick={leave}>关闭</button>
         {/if}

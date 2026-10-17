@@ -60,7 +60,7 @@
   {#if slides.length === 0}
     <div class="ss-empty">
       <Icon name="play" size={26} color="var(--fg-faint)" />
-      <p class="mono faint" style="margin-top: 12px;">No slides available.</p>
+      <p class="mono faint" style="margin-top: 12px;">没有可用的幻灯片。</p>
     </div>
   {:else if current}
     <!-- ── Slide content ── -->
@@ -79,7 +79,7 @@
 
       {#if showNotes && current.notes}
         <div class="ss-notes">
-          <div class="ss-notes-h mono">Speaker notes</div>
+          <div class="ss-notes-h mono">演讲者备注</div>
           <p class="ss-notes-body read">{current.notes}</p>
         </div>
       {/if}

@@ -591,15 +591,15 @@
     <div class="ng-title">
       <Icon name="graph" size={15} />
       <div>
-        <h2>Neural Graph</h2>
+        <h2>知识图谱</h2>
         <p>每个模块是一簇知识，连线是它的来源。点击展开，双击直达。</p>
       </div>
     </div>
     <div class="ng-chips">
-      <span class="chip"><b>{counts.subjects}</b> Subjects</span>
-      <span class="chip"><b>{counts.topics}</b> Modules</span>
-      <span class="chip"><b>{counts.sources}</b> Sources</span>
-      <span class="chip"><b>{Object.keys(accuracy).length}</b> Tracked</span>
+      <span class="chip"><b>{counts.subjects}</b> 科目</span>
+      <span class="chip"><b>{counts.topics}</b> 主题</span>
+      <span class="chip"><b>{counts.sources}</b> 资料</span>
+      <span class="chip"><b>{Object.keys(accuracy).length}</b> 已跟踪</span>
     </div>
   </div>
 
@@ -608,7 +608,7 @@
     <div class="ng-canvas" bind:this={host}></div>
 
     {#if !ready && !failed}
-      <div class="ng-boot">building the map…</div>
+      <div class="ng-boot">正在生成图谱…</div>
     {/if}
     {#if failed}
       <div class="ng-boot err">graph failed: {failed}</div>
@@ -621,17 +621,17 @@
   <!-- controls -->
   <div class="ng-ctl">
     <div class="seg">
-      <button class:on={mode === "radial"} onclick={() => (mode = "radial")} title="Radial layout">
+      <button class:on={mode === "radial"} onclick={() => (mode = "radial")} title="放射布局">
         Radial
       </button>
-      <button class:on={mode === "force"} onclick={() => (mode = "force")} title="Force layout">
+      <button class:on={mode === "force"} onclick={() => (mode = "force")} title="力导向布局">
         Force
       </button>
     </div>
-    <button class="tgl" class:on={labels} onclick={() => (labels = !labels)} title="Toggle labels">
+    <button class="tgl" class:on={labels} onclick={() => (labels = !labels)} title="显示/隐藏标签">
       <Icon name="reader" size={13} /> Labels
     </button>
-    <button class="tgl" onclick={refit} title="Reset view"><Icon name="refresh" size={13} /> Fit</button>
+    <button class="tgl" onclick={refit} title="重置视图"><Icon name="refresh" size={13} /> 适配</button>
     <div class="ng-search">
       <Icon name="search" size={13} />
       <input placeholder="搜索节点…" bind:value={query} />
@@ -658,25 +658,25 @@
 
   <!-- legend -->
   <div class="ng-legend">
-    <span class="lg-t">Mastery</span>
+    <span class="lg-t">掌握度</span>
     {#each BANDS as b}
       <span class="lg-i"><i style:background={bandColor(b.min === -1 ? 0.3 : b.min + 0.01, T)}></i>{b.label}</span>
     {/each}
-    <span class="lg-i dim"><i></i>No data</span>
+    <span class="lg-i dim"><i></i>无数据</span>
   </div>
 
   <!-- detail panel -->
   {#if selected}
     {@const sel = selected}
     <aside class="ng-side">
-      <button class="ng-x" onclick={() => (selected = null)} aria-label="Close"><Icon name="x" size={13} /></button>
+      <button class="ng-x" onclick={() => (selected = null)} aria-label="关闭"><Icon name="x" size={13} /></button>
       <div class="ng-side-k">{selected.kind}</div>
       <h3 style:color={selected.color}>{selected.label}</h3>
       <p class="ng-side-sub">{selected.sub}</p>
 
       {#if selected.kind !== "root"}
         <div class="ng-side-sec">
-          <span class="lbl">Mastery</span>
+          <span class="lbl">掌握度</span>
           <div class="mbar">
             {#each [0, 1, 2, 3] as i}
               <i
@@ -692,9 +692,9 @@
       <div class="ng-side-acts">
       {#if selected.kind === "subject"}
         <div class="ng-side-sec">
-          <span class="lbl">Knowledge framework</span>
+          <span class="lbl">知识框架</span>
           {#if knLoading}
-            <div class="kn-mut">syncing nodes &amp; mastery…</div>
+            <div class="kn-mut">正在同步节点与掌握度…</div>
           {:else if knErr}
             <div class="kn-mut err">{knErr}</div>
           {:else}
@@ -702,22 +702,22 @@
             <div class="kn-summary">
               <div class="kn-stat">
                 <span class="kn-stat-n">{knNodes.length}</span>
-                <span class="kn-stat-l">nodes</span>
+                <span class="kn-stat-l">节点</span>
               </div>
               <div class="kn-stat">
                 <span class="kn-stat-n">{knConcepts.length}</span>
-                <span class="kn-stat-l">concepts</span>
+                <span class="kn-stat-l">概念</span>
               </div>
               <div class="kn-stat">
                 <span class="kn-stat-n">{fmtPct(avg)}</span>
-                <span class="kn-stat-l">avg mastery</span>
+                <span class="kn-stat-l">平均掌握度</span>
               </div>
             </div>
 
             {#if knCalib && knCalib.observations > 0}
               <div class="kn-cal">
                 <div class="kn-cal-t">
-                  <span class="lbl">Calibration</span>
+                  <span class="lbl">校准</span>
                   <span class="kn-cal-b">Brier {knCalib.brier_score.toFixed(3)}</span>
                 </div>
                 {#each knCalib.buckets as b}
@@ -740,15 +740,15 @@
                   </div>
                 {/each}
                 <div class="kn-cal-legend">
-                  <span><i class="conf"></i> predicted</span>
-                  <span><i class="acc"></i> actual</span>
+                  <span><i class="conf"></i> 预测</span>
+                  <span><i class="acc"></i> 实际</span>
                 </div>
               </div>
             {/if}
 
             {#if knConcepts.length}
               <div class="kn-concepts">
-                <span class="lbl">Concepts</span>
+                <span class="lbl">概念</span>
                 {#each knConcepts.slice(0, 6) as c}
                   {@const band = bktBand(c.mastery)}
                   <div class="kn-concept">
@@ -770,15 +770,15 @@
       {/if}
 
         {#if sel.kind === "subject"}
-          <button class="pri" onclick={() => openNode(sel.id)}><Icon name="arrowR" size={13} /> Open subject</button>
+          <button class="pri" onclick={() => openNode(sel.id)}><Icon name="arrowR" size={13} /> 打开科目</button>
         {:else if sel.kind === "topic"}
-          <button class="pri" onclick={() => openNode(sel.id)}><Icon name="arrowR" size={13} /> Open cheatsheet</button>
+          <button class="pri" onclick={() => openNode(sel.id)}><Icon name="arrowR" size={13} /> 打开速查表</button>
         {:else}
           <button class="pri" onclick={() => app.openSubject(app.subjects[0]?.id ?? "")} disabled={!app.subjects.length}>
             <Icon name="arrowR" size={13} /> Start with {app.subjects[0]?.name ?? "a subject"}
           </button>
         {/if}
-        <button class="gho" onclick={refit}><Icon name="refresh" size={13} /> Center</button>
+        <button class="gho" onclick={refit}><Icon name="refresh" size={13} /> 居中</button>
       </div>
     </aside>
   {/if}

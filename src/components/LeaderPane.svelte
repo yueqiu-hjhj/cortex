@@ -9,6 +9,7 @@
     y: () => app.setView("today"),
     w: () => app.setView("plan"),
     u: () => app.setView("research"),
+    z: () => app.setView("agents"),
     s: () => app.goToSources(),
     h: () => app.goToCheatsheet(),
     c: () => { app.chatOpen = true; },

@@ -129,7 +129,7 @@
       </div>
       <div class="ms-list">
         {#if loading && options.length === 0}
-          <div class="ms-empty">Loading models…</div>
+          <div class="ms-empty">正在加载模型…</div>
         {:else if shown.length === 0}
           <div class="ms-empty">No models match “{q}”</div>
         {:else}
@@ -142,7 +142,7 @@
               <Icon name="plus" size={11} color="var(--accent)" />
               <span class="grow ms-text">
                 <span class="ms-label">Use “{customCandidate}”</span>
-                <span class="ms-sub mono">Custom model id</span>
+                <span class="ms-sub mono">自定义模型 ID</span>
               </span>
             </button>
           {/if}

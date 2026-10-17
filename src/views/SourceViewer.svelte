@@ -239,7 +239,7 @@
       <button
         class="btn btn--icon btn--sm btn--ghost"
         onclick={() => app.closeSource()}
-        title="Back"
+        title="返回"
       >
         <span style="display:block;transform:rotate(180deg)">
           <Icon name="chevron" size={13} color="currentColor" />
@@ -258,21 +258,21 @@
         {/if}
       {/if}
 
-      <button class="btn btn--icon btn--sm btn--ghost" title="Search">
+      <button class="btn btn--icon btn--sm btn--ghost" title="搜索">
         <Icon name="search" size={13} />
       </button>
       {#if src}
         <button
           class="btn btn--icon btn--sm btn--ghost"
           onclick={editSource}
-          title="Edit source"
+          title="编辑资料"
         >
           <Icon name="pencil" size={13} color="currentColor" />
         </button>
         <button
           class="btn btn--icon btn--sm btn--ghost sv-delete"
           onclick={confirmDelete}
-          title="Delete source"
+          title="删除资料"
         >
           <Icon name="x" size={13} color="currentColor" />
         </button>
@@ -284,7 +284,7 @@
       {#if src?.error}
         <!-- Failed ingest: surface the error prominently instead of an empty view -->
         <div class="pdf-page sv-error" style="width:100%;max-width:560px">
-          <h3 class="pdf-h" style="color:var(--err, var(--warn))">Failed to ingest</h3>
+          <h3 class="pdf-h" style="color:var(--err, var(--warn))">入库失败</h3>
           <p class="read pdf-note">{src.error}</p>
           <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted)">
             This source couldn't be parsed. Try deleting and re-adding it.
@@ -296,7 +296,7 @@
           <!-- All pages via PDF.js (WKWebView's iframe shows only page 1) -->
           <div class="sv-pdf-pages" bind:this={pdfBox}></div>
           {#if pdfRendering}
-            <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted);text-align:center;padding:12px">Rendering pages…</p>
+            <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted);text-align:center;padding:12px">正在渲染页面…</p>
           {/if}
           {#if pdfError}
             <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--err,var(--warn));text-align:center;padding:12px">Couldn't render PDF: {pdfError}</p>
@@ -315,7 +315,7 @@
           <audio class="sv-audio" controls src={assetUrl}></audio>
         </div>
         <div class="pdf-page" style="width:100%;max-width:560px">
-          <h3 class="pdf-h">Overview</h3>
+          <h3 class="pdf-h">概览</h3>
           {#if summaryNote}
             <RichText text={summaryNote.body} />
           {:else}
@@ -327,7 +327,7 @@
         </div>
         <div class="pdf-page" style="width:100%;max-width:560px">
           <div class="sv-sec-head">
-            <h3 class="pdf-h">Transcript</h3>
+            <h3 class="pdf-h">转写稿</h3>
             <button
               class="btn btn--sm btn--ghost"
               onclick={() => (showTranscript = !showTranscript)}
@@ -368,7 +368,7 @@
               Source fully parsed and embedded. Each chunk below is stored with its vector.
             </p>
           {:else}
-            <h3 class="pdf-h" style="color:var(--warn)">not embedded / ingesting</h3>
+            <h3 class="pdf-h" style="color:var(--warn)">未向量化 / 正在入库</h3>
             <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted)">
               No chunks found — the source may still be ingesting or failed to parse.
             </p>

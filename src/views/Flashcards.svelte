@@ -208,7 +208,7 @@
           {/if}
         </div>
         {#if missedCards.length === 0}
-          <p class="mono muted fc-review-empty">No cards missed this session 🎉</p>
+          <p class="mono muted fc-review-empty">这一轮没有答错的卡片 🎉</p>
         {:else}
           <ul class="fc-review-list">
             {#each missedCards as card, idx (idx)}

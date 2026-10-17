@@ -13,6 +13,7 @@
   import Today from "../views/Today.svelte";
   import Plan from "../views/Plan.svelte";
   import Research from "../views/Research.svelte";
+  import Agents from "../views/Agents.svelte";
   import SubjectView from "../views/SubjectView.svelte";
   import SourceViewer from "../views/SourceViewer.svelte";
   import AddSource from "../views/AddSource.svelte";
@@ -177,6 +178,7 @@
     { id: "today",       icon: "check",    label: "今天" },
     { id: "plan",        icon: "calendar", label: "计划" },
     { id: "research",    icon: "reader",   label: "研究" },
+    { id: "agents",       icon: "cmd",      label: "智能体" },
     { id: "dashboard",   icon: "home",     label: "总览" },
     { id: "add-source",  icon: "doc",      label: "添加资料" },
     { id: "recorder",    icon: "record",   label: "录制讲座" },
@@ -222,6 +224,8 @@
       <Plan />
     {:else if app.view === "research"}
       <Research />
+    {:else if app.view === "agents"}
+      <Agents />
     {:else if app.view === "dashboard"}
       <Dashboard />
     {:else if app.view === "subject"}

@@ -153,6 +153,15 @@
       <Icon name="reader" size={14} /><span class="lbl"> 研究</span><span class="nav-k">␣ u</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'agents' ? ' on' : ''}" title="智能体平台 — 自定义 Agent 与运行记录 (Space z)"
+      onclick={() => app.setView("agents")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("agents")}
+    >
+      <Icon name="cmd" size={14} /><span class="lbl"> 智能体</span><span class="nav-k">␣ z</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'dashboard' ? ' on' : ''}" title="总览 (Space g)"
       onclick={() => app.setView("dashboard")}
       role="button"
@@ -522,7 +531,7 @@
     </div>
     <div style:flex="1" style:min-width="0">
       <div class="m-name">{stationName}</div>
-      <div class="m-sub">lo-fi · ad-free study</div>
+      <div class="m-sub">lo-fi · 无广告学习音乐</div>
     </div>
     <button
       class="m-play"

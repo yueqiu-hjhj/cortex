@@ -149,7 +149,7 @@
 
 <div class="board">
   {#if loading}
-    <div class="board-empty">Loading board…</div>
+    <div class="board-empty">正在加载看板…</div>
   {:else}
     {#each COLUMNS as col (col.id)}
       <section
@@ -160,7 +160,7 @@
         <header class="bcol-h">
           <span class="bcol-t">{col.label}</span>
           <span class="bcol-n">{byStatus(col.id).length}</span>
-          <button class="bcol-add" title="Add card" onclick={() => { adding = col.id; newTitle = ""; }}>
+          <button class="bcol-add" title="添加卡片" onclick={() => { adding = col.id; newTitle = ""; }}>
             <Icon name="plus" size={13} />
           </button>
         </header>
@@ -170,7 +170,7 @@
             <!-- svelte-ignore a11y_autofocus -->
             <input
               class="bcard-input"
-              placeholder="Card title…"
+              placeholder="卡片标题…"
               bind:value={newTitle}
               autofocus
               onkeydown={(e) => { if (e.key === "Enter") addCard(col.id); else if (e.key === "Escape") { adding = null; newTitle = ""; } }}
@@ -200,13 +200,13 @@
                 </div>
               {/if}
               <div class="bcard-move">
-                <button title="Move left" disabled={col.id === "todo"} onpointerdown={(ev) => ev.stopPropagation()} onclick={() => move(e.id, nextStatus(col.id, -1))}>◂</button>
-                <button title="Move right" disabled={col.id === "done"} onpointerdown={(ev) => ev.stopPropagation()} onclick={() => move(e.id, nextStatus(col.id, 1))}>▸</button>
+                <button title="左移" disabled={col.id === "todo"} onpointerdown={(ev) => ev.stopPropagation()} onclick={() => move(e.id, nextStatus(col.id, -1))}>◂</button>
+                <button title="右移" disabled={col.id === "done"} onpointerdown={(ev) => ev.stopPropagation()} onclick={() => move(e.id, nextStatus(col.id, 1))}>▸</button>
               </div>
             </article>
           {/each}
           {#if byStatus(col.id).length === 0 && adding !== col.id}
-            <div class="bcol-empty">Drop cards here</div>
+            <div class="bcol-empty">把卡片拖到这里</div>
           {/if}
         </div>
       </section>

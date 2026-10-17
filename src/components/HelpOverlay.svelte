@@ -41,7 +41,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="help-pane" style:margin-top="12vh" onmousedown={(e) => e.stopPropagation()}>
       <div class="help-head">
-        <span class="help-title">Keyboard shortcuts</span>
+        <span class="help-title">快捷键</span>
         <span class="help-spacer"></span>
         <button class="help-close" type="button" title="Close" aria-label="Close" onclick={close}>
           <Icon name="x" size={14} />
@@ -56,7 +56,7 @@
           </div>
         {/each}
 
-        <div class="help-sub">Space leader menu</div>
+        <div class="help-sub">Space leader 菜单</div>
         {#each LEADER_ACTIONS as a (a.key)}
           <div class="help-row">
             <span class="help-label">{a.label} <span class="help-detail">· {a.detail}</span></span>

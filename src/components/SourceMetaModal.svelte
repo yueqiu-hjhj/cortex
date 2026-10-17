@@ -135,7 +135,7 @@
         <!-- Title field -->
         <div class="field">
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">SOURCE TITLE</label>
+          <label class="onb-label mono">资料标题</label>
           <div class="meta-title-row">
             <span class={"badge badge--" + (type === "audio" ? "audio" : type)}>
               <span class="dot"></span>{typeLabel}
@@ -145,7 +145,7 @@
               class="input"
               autofocus
               bind:value={title}
-              placeholder="Give this source a clear name…"
+              placeholder="给这份资料起个清晰的名字…"
             />
           </div>
         </div>
@@ -154,7 +154,7 @@
         <div class="meta-grid">
           <div class="field">
             <!-- svelte-ignore a11y_label_has_associated_control -->
-            <label class="onb-label mono">SUBJECT</label>
+            <label class="onb-label mono">科目</label>
             <div class="picker">
               <button type="button" class="picker-btn">
                 <Icon name="diamond" size={12} color="var(--fg-faint)" />
@@ -165,7 +165,7 @@
           </div>
           <div class="field">
             <!-- svelte-ignore a11y_label_has_associated_control -->
-            <label class="onb-label mono">TOPIC</label>
+            <label class="onb-label mono">主题</label>
             <div class="picker">
               <button type="button" class="picker-btn">
                 <Icon name="chevron" size={12} color="var(--fg-faint)" />
@@ -179,7 +179,7 @@
         <!-- Tags -->
         <div class="field">
           <!-- svelte-ignore a11y_label_has_associated_control -->
-          <label class="onb-label mono">TAGS</label>
+          <label class="onb-label mono">标签</label>
           <div class="tag-editor">
             {#each tags as t}
               <span class="src-tag editable">
@@ -207,7 +207,7 @@
       </div>
 
       <footer class="meta-foot">
-        <button class="btn btn--ghost" onclick={close}>Cancel</button>
+        <button class="btn btn--ghost" onclick={close}>取消</button>
         <button class="btn btn--primary" onclick={save} disabled={saving}>
           <Icon name="check" size={13} /> {isRecord ? "Save source" : "Save changes"}
         </button>

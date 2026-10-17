@@ -393,7 +393,7 @@
         <section class="sp-card">
           <div class="sp-card-h"><Icon name="calendar" size={14} /><span>日历匹配</span></div>
           <input class="input mono" placeholder="关键词，例如 GenLing, GL178" bind:value={aliasInput} onblur={saveAliases} />
-          <p class="sp-faint sm" style="margin:8px 0 0">Comma-separated terms that appear in your timetable events for this subject — lectures with these in the title auto-file here (no AI). Saved on blur; re-files your calendar instantly.</p>
+          <p class="sp-faint sm" style="margin:8px 0 0">填在课程表里出现的术语（逗号分隔）— 标题带这些词的讲座会自动归到这个科目（不用 AI）。失焦即保存，并立刻重排你的日历。</p>
         </section>
 
         <!-- Topics -->
@@ -404,7 +404,7 @@
             <button class="btn btn--sm btn--ghost" onclick={addTopic}><Icon name="plus" size={12} /> Add topic</button>
           </div>
           {#if subj.topics.length === 0}
-            <p class="sp-faint sm">No topics yet. Add one to group sources, cheatsheets and chats.</p>
+            <p class="sp-faint sm">还没有主题。添加一个来组织资料、速查表和对话。</p>
           {:else}
             <div class="sp-topics">
               {#each subj.topics as t (t.id)}
@@ -417,7 +417,7 @@
         <!-- Module framework -->
         <section class="sp-card">
           <div class="sp-card-h">
-            <Icon name="doc" size={14} /><span>Module framework</span>
+            <Icon name="doc" size={14} /><span>课程框架</span>
             <div class="grow"></div>
             {#if framework}
               <button class="btn btn--sm btn--ghost" onclick={uploadFramework} disabled={fwBusy}><Icon name="upload" size={12} /> Replace</button>
@@ -434,10 +434,10 @@
               <div class="grow"></div>
               <span class="sp-open mono sm"><Icon name="external" size={11} /> view</span>
             </div>
-            <p class="sp-faint sm">Chat uses this for mark/weighting questions — e.g. <em>"what is my A2 weighted?"</em>. Ignored in normal chat.</p>
+            <p class="sp-faint sm">对话在问分数/权重时会用到它 — 例如 <em>"我的 A2 加权是多少？"</em>。普通对话中会被忽略。</p>
           {:else}
             <div class="sp-empty">
-              <p class="sp-faint">Upload your module framework (course outline with assessment weights). Chat references it only when you explicitly ask about marks or weighting.</p>
+              <p class="sp-faint">上传课程框架（带考核权重的课程大纲）。只有在你明确问起分数或权重时，对话才会引用它。</p>
               <button class="btn btn--sm btn--primary" onclick={uploadFramework} disabled={fwBusy}>
                 <Icon name="upload" size={12} /> {fwBusy ? "Reading…" : "Upload framework"}
               </button>

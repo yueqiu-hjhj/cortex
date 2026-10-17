@@ -53,10 +53,10 @@
   <div class="infographic-page">
     {#if onExit}
       <div class="infographic-toolbar">
-        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="Back to materials">
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="返回学习材料">
           <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={14} /></span>
         </button>
-        <span class="mono faint" style="font-size: var(--t-xs);">Infographic</span>
+        <span class="mono faint" style="font-size: var(--t-xs);">信息图</span>
       </div>
     {/if}
 
@@ -72,7 +72,7 @@
         </header>
         {#if takeaway}
           <div class="poster-takeaway">
-            <span class="ptk-label mono">KEY TAKEAWAY</span>
+            <span class="ptk-label mono">核心结论</span>
             <p class="ptk-text">{takeaway}</p>
           </div>
         {/if}
@@ -104,7 +104,7 @@
 
           {#if timeline.length}
             <section class="poster-timeline">
-              <h2 class="ptl-heading"><span aria-hidden="true">🕑</span> Timeline</h2>
+              <h2 class="ptl-heading"><span aria-hidden="true">🕑</span> 时间线</h2>
               <ol class="ptl-track">
                 {#each timeline as ev, i (i)}
                   <li class="ptl-item">
@@ -126,7 +126,7 @@
     {:else}
       <div class="infographic-empty">
         <Icon name="grid" size={26} color="var(--fg-faint)" />
-        <p class="mono faint" style="margin-top: 12px;">No infographic content.</p>
+        <p class="mono faint" style="margin-top: 12px;">没有信息图内容。</p>
       </div>
     {/if}
   </div>

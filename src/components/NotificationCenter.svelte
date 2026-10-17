@@ -47,13 +47,13 @@
     <div class="nc" role="dialog" aria-modal="true" aria-label="Notifications" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
       <header class="nc-head">
         <Icon name="bell" size={15} />
-        <span class="nc-title">Notifications</span>
+        <span class="nc-title">通知</span>
         {#if app.unreadCount > 0}<span class="nc-count">{app.unreadCount}</span>{/if}
         <div class="grow"></div>
-        <button class="btn btn--icon btn--sm btn--ghost" title="Sync now" aria-label="Sync now" onclick={() => app.syncMoodle()} disabled={app.moodleSyncing}>
+        <button class="btn btn--icon btn--sm btn--ghost" title="立即同步" aria-label="立即同步" onclick={() => app.syncMoodle()} disabled={app.moodleSyncing}>
           <Icon name="refresh" size={13} />
         </button>
-        <button class="btn btn--icon btn--sm btn--ghost" title="Close" aria-label="Close" onclick={() => (app.notifOpen = false)}>
+        <button class="btn btn--icon btn--sm btn--ghost" title="关闭" aria-label="关闭" onclick={() => (app.notifOpen = false)}>
           <Icon name="x" size={14} />
         </button>
       </header>
@@ -70,18 +70,18 @@
         {#if app.notifications.length === 0}
           <div class="nc-empty">
             <Icon name="bell" size={26} color="var(--fg-faint)" />
-            <p>You're all caught up.</p>
+            <p>都处理完了。</p>
             <span class="nc-empty-sub mono">{app.moodleData.courses.length ? "No announcements or deadlines." : "Connect your portal in Settings → Experimental."}</span>
           </div>
         {:else}
           {#if upcoming.length}
-            <div class="nc-group mono">Due soon</div>
+            <div class="nc-group mono">即将到期</div>
             {#each upcoming as n (n.id)}
               {@render item(n)}
             {/each}
           {/if}
           {#if announcements.length}
-            <div class="nc-group mono">Announcements</div>
+            <div class="nc-group mono">公告</div>
             {#each announcements as n (n.id)}
               {@render item(n)}
             {/each}

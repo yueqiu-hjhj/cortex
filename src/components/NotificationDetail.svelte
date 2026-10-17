@@ -84,7 +84,7 @@
           {#if d.message.trim()}
             <p class="nd-text read">{htmlToText(d.message)}</p>
           {:else}
-            <p class="nd-empty">No content — open it in Moodle for the full post.</p>
+            <p class="nd-empty">没有正文 — 到 Moodle 打开查看完整帖子。</p>
           {/if}
         {:else}
           <p class="nd-text read">{kindLabel(d.kind)} {d.ts ? `due ${fmtFull(d.ts)}` : ""}{d.course ? ` for ${d.course}` : ""}.</p>
@@ -104,7 +104,7 @@
               api.openExternal(d.url).catch((e) =>
                 app.pushToast({ kind: "error", title: "Couldn't open the link", body: String(e) })
               )}
-          ><Icon name="external" size={12} /> Open in Moodle</button>
+          ><Icon name="external" size={12} /> 在 Moodle 中打开</button>
         {/if}
       </footer>
     </div>

@@ -579,7 +579,7 @@
   let mdStatus = $state<api.MoodleStatus>({ configured: false, user_id: 0, last_sync: 0 });
   let mdData = $state<api.MoodleData>({ courses: [], grades: [], deadlines: [], announcements: [] });
   let mdSummary = $state<api.MoodleSummary | null>(null);
-  // Upcoming deadlines (future, soonest first) for the synced-data preview.
+  // 即将到来的截止日 (future, soonest first) for the synced-data preview.
   const mdUpcoming = $derived(
     mdData.deadlines
       .filter((d) => d.due_at * 1000 >= Date.now() - 12 * 3600 * 1000)
@@ -1398,8 +1398,8 @@
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Profile</div>
-          <h1 class="set-title">Who the AI thinks you are</h1>
-          <p class="set-sub">Shared with every chat and generation so answers fit your level and style. Stays on this machine.</p>
+          <h1 class="set-title">AI 眼中的你</h1>
+          <p class="set-sub">与所有对话和生成共享，让回答贴合你的水平和风格。只留在这台机器上。</p>
         </header>
 
         <section class="set-group">
@@ -1438,7 +1438,7 @@
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">关于你</h3>
-            <p class="set-group-d">Context the AI uses to personalize explanations.</p>
+            <p class="set-group-d">AI 用来个性化解释的背景信息。</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
@@ -1528,7 +1528,7 @@
         </section>
 
         <div class="set-preview">
-          <div class="label" style="margin-bottom:8px">What the AI receives</div>
+          <div class="label" style="margin-bottom:8px">AI 会收到什么</div>
           <pre class="set-sysprompt mono">User: {name} ({pronouns}) · {levelLabels[level] ?? level}
 Studying: {field}
 Style: {style}, prefers {explain.join(", ") || "no special format"}
@@ -1547,13 +1547,13 @@ Notes: {about}</pre>
       <div class="set-pane set-pane--models">
         <header class="set-head">
           <div class="eyebrow">Models</div>
-          <h1 class="set-title">A model for every task</h1>
-          <p class="set-sub">Route each job to the provider that does it best. Token budgets cap spend per call.</p>
+          <h1 class="set-title">每类任务各配一个模型</h1>
+          <p class="set-sub">把每类任务派给最合适的服务商。Token 预算为每次调用封顶。</p>
         </header>
 
         <div class="set-card set-table">
           <div class="mt-head mono">
-            <span>Task</span><span>Provider</span><span>Model</span><span>Token budget</span>
+            <span>Task</span><span>Provider</span><span>Model</span><span>Token 预算</span>
           </div>
           {#each MODEL_TASKS as t}
             {@const a = assign[t.id]}
@@ -1609,8 +1609,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">API keys</div>
-          <h1 class="set-title">Bring your own keys</h1>
-          <p class="set-sub">Stored in the OS keychain, never synced. Nothing routes through Cortex servers.</p>
+          <h1 class="set-title">带上你自己的密钥</h1>
+          <p class="set-sub">存在系统钥匙串里，永不同步。任何内容都不会经过 Cortex 的服务器。</p>
         </header>
 
         <section class="set-group">
@@ -1728,7 +1728,7 @@ Notes: {about}</pre>
                     {:else if onnxStat?.kind === "failed"}
                       <span class="key-status bad">failed</span>
                     {:else}
-                      <span class="key-status off">not present</span>
+                      <span class="key-status off">未安装</span>
                     {/if}
                   </span>
                 </div>
@@ -1773,8 +1773,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Appearance</div>
-          <h1 class="set-title">Make it yours</h1>
-          <p class="set-sub">Cortex re-skins live from your Omarchy theme, or pick one manually.</p>
+          <h1 class="set-title">按你的习惯调整</h1>
+          <p class="set-sub">Cortex 会跟随 Omarchy 主题实时换肤，也可以手动选一个。</p>
         </header>
 
         <!-- Follow-Omarchy mirrors the desktop's Omarchy palette — meaningless on a phone. -->
@@ -1924,8 +1924,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Keybinds</div>
-          <h1 class="set-title">Helix-style, your way</h1>
-          <p class="set-sub">Click any binding to rebind it. Press Esc while listening to cancel.</p>
+          <h1 class="set-title">Helix 风格，随你调整</h1>
+          <p class="set-sub">点击任意绑定即可重设。监听中按 Esc 取消。</p>
         </header>
 
         <div class="set-card">
@@ -1983,7 +1983,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">Leader 菜单（按 Space 再按…）</h3>
-            <p class="set-group-d">Press <span class="kbd">Space</span> to open the leader menu, then a key. Fixed, mnemonic — they only fire while the menu is open.</p>
+            <p class="set-group-d">先按 <span class="kbd">Space</span> 打开 leader 菜单，再按一个键。固定且助记 — 只在菜单打开时生效。</p>
           </div>
           <div class="set-card set-binds">
             {#each LEADER_ACTIONS as a}
@@ -1998,7 +1998,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">系统</h3>
-            <p class="set-group-d">Built-in shortcuts that follow OS conventions and can't be rebound.</p>
+            <p class="set-group-d">内置快捷键，遵循系统惯例，不可重绑定。</p>
           </div>
           <div class="set-card set-binds">
             {#each SYSTEM_BINDS as b}
@@ -2058,27 +2058,27 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Integrations</div>
-          <h1 class="set-title">Transcription, search & sync — your way</h1>
-          <p class="set-sub">Everything works out of the box on this computer. Add a cloud API key for heavier lifting, or point Cortex at your own homelab (the <span class="mono">homelab/</span> docker compose) — nothing here is required.</p>
+          <h1 class="set-title">转写、搜索与同步 — 都听你的</h1>
+          <p class="set-sub">在这台电脑上开箱即用。需要更大算力就加一个云端 API 密钥，或者把 Cortex 指向你自己的 homelab（<span class="mono">homelab/</span> docker compose）— 这里不填也不影响任何功能。</p>
         </header>
 
         <!-- ═══ TRANSCRIPTION — outcome-first: pick WHERE audio becomes text ═══ -->
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">转写</h3>
-            <p class="set-group-d">Where lecture recordings become text.</p>
+            <p class="set-group-d">讲座录音在这里变成文字。</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
               <div class="seg">
-                <button type="button" class={"seg-opt" + (transcriptionMode === "local" ? " on" : "")} onclick={() => setTranscriptionMode("local")}>This computer</button>
+                <button type="button" class={"seg-opt" + (transcriptionMode === "local" ? " on" : "")} onclick={() => setTranscriptionMode("local")}>本机</button>
                 <button type="button" class={"seg-opt" + (transcriptionMode === "cloud" ? " on" : "")} onclick={() => setTranscriptionMode("cloud")}>Cloud API</button>
                 <button type="button" class={"seg-opt" + (transcriptionMode === "homelab" ? " on" : "")} onclick={() => setTranscriptionMode("homelab")}>My homelab</button>
               </div>
               {#if transcriptionMode === "local"}
                 <div class="set-row-d">零配置 — Whisper 跑在本机，首次转写会自动下载模型。最私密，但长讲座比另外两种慢。</div>
               {:else if transcriptionMode === "cloud"}
-                <div class="set-row-d">No server, no hosting — just an API key. Groq's free tier turns a whole lecture into text in seconds with <span class="mono">large-v3-turbo</span>.</div>
+                <div class="set-row-d">无需服务器、无需托管 — 只要一个 API 密钥。Groq 免费额度就能在几秒内把一整堂课转成文字 with <span class="mono">large-v3-turbo</span>.</div>
               {:else}
                 <div class="set-row-d">跑在 Homelab 地址后面的 WhisperX 服务上（在下方配置）— 为小时级录音设计，服务器配置 HF token 后还能区分说话人。音频不离开你的机器。</div>
               {/if}
@@ -2098,14 +2098,14 @@ Notes: {about}</pre>
                 <div class="set-row stacked">
                   <div class="set-row-t">服务地址</div>
                   <input class="input mono" bind:value={whisperCloudUrl} onchange={saveCloudWhisper} onblur={saveCloudWhisper} placeholder="https://api.example.com/v1" />
-                  <div class="set-row-d">Any OpenAI-compatible <span class="mono">/v1/audio/transcriptions</span> endpoint.</div>
+                  <div class="set-row-d">任何 OpenAI 兼容的 <span class="mono">/v1/audio/transcriptions</span> 端点。</div>
                 </div>
               {/if}
               <div class="set-row stacked">
                 <div class="set-row-t">API 密钥</div>
                 <input class="input mono" type="password" bind:value={whisperApiKey} onchange={saveCloudWhisper} onblur={saveCloudWhisper} placeholder={whisperCloudProvider === "openai" ? "sk-…" : "gsk_…"} />
                 {#if whisperCloudProvider === "groq"}
-                  <div class="set-row-d">Get one free — no card needed:
+                  <div class="set-row-d">免费获取 — 不需要绑卡：
                     <button class="btn btn--sm btn--ghost" onclick={() => api.openExternal("https://console.groq.com/keys")}><Icon name="external" size={11} /> console.groq.com/keys</button>
                   </div>
                 {/if}
@@ -2118,9 +2118,9 @@ Notes: {about}</pre>
 
             {#if transcriptionMode === "homelab"}
               <div class="set-row stacked">
-                <div class="set-row-t">模型 <span class="faint">legacy servers only</span></div>
+                <div class="set-row-t">模型 <span class="faint">仅兼容旧服务</span></div>
                 <input class="input mono" bind:value={whisperModel} onchange={saveWhisperModel} onblur={saveWhisperModel} placeholder="deepdml/faster-whisper-large-v3-turbo-ct2" />
-                <div class="set-row-d">仅 OpenAI 兼容服务（speaches）使用。WhisperX 讲座服务器在以下位置选择模型 <span class="mono">docker-compose</span> instead (<span class="mono">WHISPER_MODEL</span>, default <span class="mono">distil-large-v3</span>) — leave this blank there.</div>
+                <div class="set-row-d">仅 OpenAI 兼容服务（speaches）使用。WhisperX 讲座服务器在以下位置选择模型 <span class="mono">docker-compose</span> instead (<span class="mono">WHISPER_MODEL</span>, default <span class="mono">distil-large-v3</span> 中配置）— 这里留空即可。</div>
               </div>
             {/if}
 
@@ -2143,7 +2143,7 @@ Notes: {about}</pre>
           <div class="set-group-h svc-h">
             <div>
               <h3 class="set-group-t">Homelab 地址</h3>
-              <p class="set-group-d">One address for everything. Run the <span class="mono">homelab/</span> docker compose and point Cortex here — search, lecture transcription, instant sync, mobile ingest and local models are all reached off this single URL (Cortex adds <span class="mono">/searxng</span>, <span class="mono">/whisper</span>, <span class="mono">/sync</span>, <span class="mono">/syncd</span>, <span class="mono">/ingest</span>, <span class="mono">/ollama</span> for you). Add a Tailscale and/or public address and Cortex auto-picks the first reachable: <strong>local → Tailscale → public</strong>.</p>
+              <p class="set-group-d">一个地址管所有。跑起 <span class="mono">homelab/</span> 的 docker compose 然后把 Cortex 指到这里 — 搜索、讲座转写、即时同步、移动端入库和本地模型都走这同一个地址（Cortex 会自动补上  <span class="mono">/searxng</span>, <span class="mono">/whisper</span>, <span class="mono">/sync</span>, <span class="mono">/syncd</span>, <span class="mono">/ingest</span>, <span class="mono">/ollama</span> 。填上 Tailscale 和/或公网地址后，Cortex 会自动选第一个能连上的：<strong>local → Tailscale → public</strong>.</p>
             </div>
             {#if hlBase.trim()}
               {@const p = connPill(hlState === "idle" ? null : hlState, true)}
@@ -2154,7 +2154,7 @@ Notes: {about}</pre>
             <div class="set-row stacked">
               <div class="set-row-t">本地地址</div>
               <input class="input mono" bind:value={hlBase} oninput={saveHomelabBasesSoon} onchange={saveHomelabBases} onblur={saveHomelabBases} placeholder="http://192.168.1.10:8080" />
-              <div class="set-row-d">Your homelab's LAN address (the Caddy proxy port, default <span class="mono">8080</span>).</div>
+              <div class="set-row-d">homelab 的局域网地址（Caddy 代理端口，默认 <span class="mono">8080</span>).</div>
             </div>
             <div class="set-row stacked">
               <div class="set-row-t">Tailscale 地址 <span class="faint">optional</span></div>
@@ -2166,11 +2166,11 @@ Notes: {about}</pre>
               <input class="input mono" bind:value={hlPublic} oninput={saveHomelabBasesSoon} onchange={saveHomelabBases} onblur={saveHomelabBases} placeholder="https://lab.example.com" />
             </div>
             <div class="set-row stacked">
-              <div class="set-row-t">访问令牌 <span class="faint">optional — required for a public URL</span></div>
+              <div class="set-row-t">访问令牌 <span class="faint">可选 — 仅公网地址需要</span></div>
               <input class="input mono" type="password" bind:value={hlToken} onchange={saveHlToken} onblur={saveHlToken} placeholder="the CORTEX_TOKEN your proxy was started with" />
-              <div class="set-row-d">Locks every homelab service behind a shared secret. Start the proxy with <span class="mono">CORTEX_TOKEN=… docker compose up -d</span> and paste the same value here — Cortex sends it automatically on every request (sync keeps its own WebDAV credentials).</div>
+              <div class="set-row-d">用同一个共享密钥锁住所有 homelab 服务。启动代理时带上 <span class="mono">CORTEX_TOKEN=… docker compose up -d</span> 然后把同样的值贴在这里 — 之后每次请求 Cortex 都会自动带上（同步用的 WebDAV 凭据是另一套，单独保存）。</div>
               {#if hlPublic.trim() && !hlToken.trim()}
-                <div class="set-row-d" style="color:var(--warn)">Your homelab has a public URL but no access token — anyone on the internet can use your Whisper/Ollama/SearXNG. Set <span class="mono">CORTEX_TOKEN</span> on the proxy and paste it here.</div>
+                <div class="set-row-d" style="color:var(--warn)">你的 homelab 有公网地址但没有访问令牌 — 互联网上任何人都能使用你的 Whisper/Ollama/SearXNG. Set <span class="mono">CORTEX_TOKEN</span> 填在代理上，然后把值贴到这里。</div>
               {/if}
             </div>
             <div class="set-row stacked">
@@ -2186,7 +2186,7 @@ Notes: {about}</pre>
             <!-- Per-service health: each feature probed on the exact URL the app
                  uses, so a red row names the ONE thing to fix (and how). -->
             {#if svcTesting && !svcStatus}
-              <div class="set-row-d faint" style="margin-top:6px">Checking each service…</div>
+              <div class="set-row-d faint" style="margin-top:6px">正在逐项检查服务…</div>
             {:else if svcStatus}
               <div style="margin-top:10px">
                 {#each svcStatus as s (s.id)}
@@ -2210,7 +2210,7 @@ Notes: {about}</pre>
           <div class="set-group-h svc-h">
             <div>
               <h3 class="set-group-t">依赖组件</h3>
-              <p class="set-group-d">External tools Cortex shells out to for ingest, OCR, transcription and media. Install whatever's missing with the one command below.</p>
+              <p class="set-group-d">Cortex 处理入库、OCR、转写和媒体时调用的外部工具。用下面那一条命令装齐缺的。</p>
             </div>
             <button class="btn btn--sm btn--ghost" onclick={loadDeps} disabled={depLoading}><Icon name="refresh" size={12} /> {depLoading ? "Checking…" : "Re-check"}</button>
           </div>
@@ -2239,7 +2239,7 @@ Notes: {about}</pre>
                   <div class="set-row-d">{depReport.manager === "brew" ? "One-click install via Homebrew (no sudo). LibreOffice is large — this can take a few minutes." : depReport.note}</div>
                 </div>
               {:else}
-                <div class="set-row-d" style="color:var(--ok); margin-top:8px">All dependencies present 🎉</div>
+                <div class="set-row-d" style="color:var(--ok); margin-top:8px">依赖已全部就位 🎉</div>
               {/if}
             {:else}
               <div class="set-row-d faint">{depLoading ? "Checking installed tools…" : "Couldn't check dependencies."}</div>
@@ -2253,7 +2253,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">Homelab 功能</h3>
-            <p class="set-group-d">Optional features powered by the services behind your Homelab URL — they switch on the moment a Homelab URL is set.</p>
+            <p class="set-group-d">由 Homelab 地址后面的服务提供的可选功能 — 一填上地址就自动启用。</p>
           </div>
           <div class="set-card">
             {@render diagramsToggle()}
@@ -2263,7 +2263,7 @@ Notes: {about}</pre>
           <div class="set-group-h svc-h">
             <div>
               <h3 class="set-group-t">实时同步</h3>
-              <p class="set-group-d">Instant cross-device sync. Every change streams to your other devices as a tiny per-record delta over a WebSocket (the homelab's <span class="mono">/syncd</span> service) and shows up within about a second — newest edit wins, and nothing is deleted unless you actually deleted it. Source files and a full snapshot ride the <span class="mono">/sync</span> WebDAV vault, which also serves as the automatic fallback when <span class="mono">/syncd</span> isn't reachable.</p>
+              <p class="set-group-d">跨设备即时同步。每次改动都以「按记录的微小增量」通过 WebSocket 流到你的其他设备（homelab 的 <span class="mono">/syncd</span> 服务），大约一秒内出现在其他设备上 — 最新的编辑胜出，而且除非你真的删除，否则任何东西都不会被删掉。来源文件和整体快照走 <span class="mono">/sync</span> WebDAV 仓库，它同时作为自动兜底 — 当 <span class="mono">/syncd</span> 连不上时。</p>
             </div>
             <span class="status-pill status-pill--{syncPill().cls}"><span class="dot"></span>{syncPill().label}</span>
           </div>
@@ -2279,16 +2279,16 @@ Notes: {about}</pre>
             </div>
 
             <div class="set-row stacked">
-              <div class="set-row-d">Rides the <strong>Homelab URL</strong> above (its <span class="mono">/syncd</span> + <span class="mono">/sync</span> services), with the same local → Tailscale → public reachability. One username/password below covers both — it's the pair set in <span class="mono">docker-compose.yml</span> for the <span class="mono">sync</span> and <span class="mono">syncd</span> services.</div>
+              <div class="set-row-d">复用上面的 <strong>Homelab 地址</strong>（它的 <span class="mono">/syncd</span> + <span class="mono">/sync</span> 服务），可达路径同样是 本地 → Tailscale → 公网。下面一套用户名/密码同时覆盖两者 — 就是 <span class="mono">docker-compose.yml</span> 里为 <span class="mono">sync</span> 和 <span class="mono">syncd</span> 设置的那一对。</div>
               {#if syncOn}
                 {#if app.syncLive}
-                  <div class="set-row-d" style="color:var(--ok)">Live — connected to <span class="mono">/syncd</span>; changes propagate across devices in about a second.</div>
+                  <div class="set-row-d" style="color:var(--ok)">实时 — 已连接 <span class="mono">/syncd</span>；改动会在一秒内同步到所有设备。</div>
                 {:else if syncdOk === false}
-                  <div class="set-row-d" style="color:var(--warn)">Running in snapshot mode: the homelab's live-sync service didn't answer (see the service check above). Update the homelab — <span class="mono">git pull && docker compose up -d --build</span> — to get instant sync; until then changes still sync via WebDAV snapshots.</div>
+                  <div class="set-row-d" style="color:var(--warn)">当前是快照模式：homelab 的实时同步服务没有响应（见上面的服务状态检查）。更新 homelab 后重试 — <span class="mono">git pull && docker compose up -d --build</span> — 才能用实时同步；在那之前改动仍会通过 WebDAV 快照同步。</div>
                 {:else if app.syncState === "error"}
-                  <div class="set-row-d" style="color:var(--warn)">Sync is failing — hit <strong>Test homelab</strong> above; the service check will name what's broken (URL, credentials, or a service that isn't running).</div>
+                  <div class="set-row-d" style="color:var(--warn)">同步失败了 — 点上面的 <strong>测试 homelab</strong>，服务检查会指出具体原因（地址、凭据，或某个服务没在跑）。</div>
                 {:else}
-                  <div class="set-row-d faint">Not live right now — snapshot sync still runs in the background. <strong>Test homelab</strong> above checks whether your homelab has the <span class="mono">/syncd</span> live-sync service.</div>
+                  <div class="set-row-d faint">实时同步当前不可用 — 快照同步仍在后台跑。上面的 <strong>测试 homelab</strong> 会检查你的 homelab 是否提供 <span class="mono">/syncd</span> 实时同步服务。</div>
                 {/if}
               {/if}
             </div>
@@ -2304,7 +2304,7 @@ Notes: {about}</pre>
                   <Icon name="upload" size={12} /> {app.syncState === "syncing" ? "Syncing…" : "Sync now"}
                 </button>
               </div>
-              <div class="set-row-d">Last snapshot sync: <span class="mono">{fmtSyncTime(app.syncLastAt)}</span> (live deltas don't update this — it's the periodic full-vault pass). Files live under <span class="mono">files/</span> on the target; the DB merges by record.</div>
+              <div class="set-row-d">上次快照同步：<span class="mono">{fmtSyncTime(app.syncLastAt)}</span>（实时增量不会更新这个时间 — 它代表周期性全量合并）。文件存放在目标机的 <span class="mono">files/</span> 目录下；数据库按记录合并。</div>
             </div>
           </div>
         </section>
@@ -2315,7 +2315,7 @@ Notes: {about}</pre>
           <div class="set-group-h svc-h">
             <div>
               <h3 class="set-group-t">加密备份</h3>
-              <p class="set-group-d">Snapshot the database, encrypt it with <span class="mono">age</span>, and upload with <span class="mono">rclone</span>. Nothing leaves the machine unencrypted.</p>
+              <p class="set-group-d">把数据库打快照，用 <span class="mono">age</span> 加密，再用 <span class="mono">rclone</span> 上传。未加密的内容不会离开本机。</p>
             </div>
             {#if backupInfo}
               <div class="svc-tools">
@@ -2328,7 +2328,7 @@ Notes: {about}</pre>
             <div class="set-row stacked">
               <div class="set-row-t">age 收件人（公钥）</div>
               <input class="input mono" bind:value={ageRecipient} onchange={saveBackupConfig} onblur={saveBackupConfig} placeholder="age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p" />
-              <div class="set-row-d">From <span class="mono">age-keygen</span>. Only this key's holder can decrypt the backups.</div>
+              <div class="set-row-d">来自 <span class="mono">age-keygen</span>。只有这把密钥的持有者能解开备份。</div>
             </div>
             <div class="set-row stacked">
               <div class="set-row-t">rclone 远程</div>
@@ -2339,7 +2339,7 @@ Notes: {about}</pre>
                 </button>
               </div>
               <div class="set-row-d">
-                An rclone remote + path, e.g. <span class="mono">homelab:cortex-backups</span> (configure with <span class="mono">rclone config</span>).
+                An rclone remote + path, e.g. <span class="mono">homelab:cortex-backups</span> （在 <span class="mono">rclone 配置</span>).
                 Last backup: <span class="mono">{fmtBackupTime(backupInfo?.last_at ?? null)}</span>{#if backupInfo?.last_dest} → <span class="mono">{backupInfo.last_dest}</span>{/if}
               </div>
             </div>
@@ -2354,8 +2354,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Audio</div>
-          <h1 class="set-title">Study sound & voices</h1>
-          <p class="set-sub">Defaults for the music player and generated audio overviews.</p>
+          <h1 class="set-title">学习音乐与音色</h1>
+          <p class="set-sub">音乐播放器和音频概览的默认设置。</p>
         </header>
 
         <!-- Music is cut on mobile (no mpv/yt-dlp sidecars) — hide its settings. -->
@@ -2389,7 +2389,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">YouTube 播放</h3>
-            <p class="set-group-d">Paste a YouTube video or livestream URL in the music panel to stream it ad-free. Uses a headless <span class="mono">mpv</span> + <span class="mono">yt-dlp</span> (auto-downloaded on first use). Nothing is bundled — only the URL is saved.</p>
+            <p class="set-group-d">在音乐面板里粘贴 YouTube 视频或直播地址，就能无广告播放。用无头 <span class="mono">mpv</span> + <span class="mono">yt-dlp</span> （首次使用自动下载）。应用不附带任何东西 — 只保存这个地址。</p>
           </div>
           <div class="set-card">
             <div class="set-row">
@@ -2412,11 +2412,11 @@ Notes: {about}</pre>
             </div>
             {#if mediaTools && !mediaTools.mpv}
               <div class="set-row">
-                <div class="set-row-l"><div class="set-row-d">Install mpv to enable YouTube streaming: <span class="mono">sudo pacman -S mpv</span></div></div>
+                <div class="set-row-l"><div class="set-row-d">安装 mpv 才能播放 YouTube 流：<span class="mono">sudo pacman -S mpv</span></div></div>
               </div>
             {:else if mediaTools && !mediaTools.ytdlp}
               <div class="set-row">
-                <div class="set-row-l"><div class="set-row-d">yt-dlp will be downloaded automatically the first time you play a YouTube station.</div></div>
+                <div class="set-row-l"><div class="set-row-d">第一次播放 YouTube 电台时会自动下载 yt-dlp。</div></div>
               </div>
             {/if}
           </div>
@@ -2426,7 +2426,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">专注计时</h3>
-            <p class="set-group-d">Pomodoro session lengths (applies app-wide).</p>
+            <p class="set-group-d">番茄钟各段时长（全局生效）。</p>
           </div>
           <div class="set-card">
             {#each pomoFields as f (f.key)}
@@ -2447,7 +2447,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">音频概览音色</h3>
-            <p class="set-group-d">The two hosts of generated podcasts.</p>
+            <p class="set-group-d">生成播客的两位主持人。</p>
           </div>
           <div class="set-card">
             <div class="set-row">
@@ -2479,8 +2479,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Google Calendar</div>
-          <h1 class="set-title">Sync your calendar</h1>
-          <p class="set-sub">Two-way sync with Google Calendar. The native Cortex calendar works fully without this — connecting just mirrors events both ways.</p>
+          <h1 class="set-title">同步你的日历</h1>
+          <p class="set-sub">与 Google 日历双向同步。不连也能完整使用自带日历 — 连接只是让日程两边镜像。</p>
         </header>
 
         <section class="set-group">
@@ -2523,14 +2523,14 @@ Notes: {about}</pre>
           <section class="set-group">
             <div class="set-group-h">
               <h3 class="set-group-t">要同步的日历</h3>
-              <p class="set-group-d">Pick which Google calendars to pull events from — tick your <strong>university / timetable</strong> calendar here so its classes, deadlines and exams land on the Cortex calendar.</p>
+              <p class="set-group-d">选择要从哪些 Google 日历拉取日程 — 在这里勾选你的 <strong>学校/课程表</strong> 日历，它的课程、截止日和考试就会进入 Cortex 日历。</p>
             </div>
             <div class="set-card">
               {#if gCalBusy && gCalendars.length === 0}
-                <div class="set-row"><div class="set-row-d faint">Loading calendars…</div></div>
+                <div class="set-row"><div class="set-row-d faint">正在加载日历…</div></div>
               {:else if gCalendars.length === 0}
                 <div class="set-row">
-                  <div class="set-row-l"><div class="set-row-d faint">No calendars found.</div></div>
+                  <div class="set-row-l"><div class="set-row-d faint">没有找到日历。</div></div>
                   <div class="set-row-r"><button class="btn btn--sm" onclick={loadGoogleCalendars}>Reload</button></div>
                 </div>
               {:else}
@@ -2551,7 +2551,7 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <h3 class="set-group-t">凭据</h3>
-            <p class="set-group-d">Create an OAuth client of type “Desktop app” in Google Cloud → APIs &amp; Services → Credentials, enable the Calendar API, then paste the ID and secret here.</p>
+            <p class="set-group-d">在 Google Cloud → APIs &amp; Services → 凭据 里创建一个「桌面应用」类型的 OAuth 客户端，启用 Calendar API，然后把 ID 和密钥贴到这里。</p>
           </div>
           <div class="set-card">
             <div class="set-row stacked">
@@ -2576,14 +2576,14 @@ Notes: {about}</pre>
         <header class="set-head">
           <div class="eyebrow">Settings</div>
           <h2 class="set-title">Experimental</h2>
-          <p class="set-sub">Early features that may be rough or change. Toggle one on to try it.</p>
+          <p class="set-sub">早期功能，可能粗糙或变动。开一个试试看。</p>
         </header>
 
         <section class="set-group">
           <div class="set-group-h svc-h">
             <div>
               <h3 class="set-group-t">学校门户（Moodle）</h3>
-              <p class="set-group-d">Pull grades, assignments, deadlines and announcements from your Moodle portal into Cortex.</p>
+              <p class="set-group-d">把成绩、作业、截止日和公告从 Moodle 门户拉进 Cortex。</p>
             </div>
             <button class={"st-toggle" + (expMoodle ? " on" : "")} type="button" onclick={toggleExpMoodle} role="switch" aria-checked={expMoodle} aria-label="enable moodle"><span class="st-knob"></span></button>
           </div>
@@ -2638,7 +2638,7 @@ Notes: {about}</pre>
                     <button class="btn btn--ghost btn--sm" type="button" onclick={mdDisconnect} disabled={mdBusy}>Disconnect</button>
                     <button class="btn btn--primary btn--sm" type="button" onclick={mdSyncNow} disabled={mdBusy}><Icon name="refresh" size={12} /> {mdBusy ? "Syncing…" : "Sync now"}</button>
                   {:else}
-                    <button class="btn btn--sm" type="button" onclick={mdLoginSso}>Sign in via browser (SSO)</button>
+                    <button class="btn btn--sm" type="button" onclick={mdLoginSso}>通过浏览器登录（SSO）</button>
                     <button class="btn btn--primary btn--sm" type="button" onclick={mdConnect} disabled={mdBusy || (mdAuthMode==='token' ? !mdToken.trim() : !mdUser.trim())}>{mdBusy ? "Connecting…" : "Connect"}</button>
                   {/if}
                 </div>
@@ -2664,7 +2664,7 @@ Notes: {about}</pre>
                     <span class="md-stat"><b>{mdData.announcements.length}</b> announcements</span>
                   </div>
                   {#if mdUpcoming.length}
-                    <div class="md-up-h mono">Upcoming deadlines</div>
+                    <div class="md-up-h mono">即将到来的截止日</div>
                     <ul class="md-up">
                       {#each mdUpcoming.slice(0, 6) as d (d.id)}
                         <li>
@@ -2691,8 +2691,8 @@ Notes: {about}</pre>
       <div class="set-pane">
         <header class="set-head">
           <div class="eyebrow">Data & privacy</div>
-          <h1 class="set-title">Local-first by default</h1>
-          <p class="set-sub">Everything lives in a SQLite database on this machine. You own it.</p>
+          <h1 class="set-title">默认本地优先</h1>
+          <p class="set-sub">所有数据都存在本机的 SQLite 数据库里。它归你。</p>
         </header>
 
         <section class="set-group">
@@ -2738,7 +2738,7 @@ Notes: {about}</pre>
           <section class="set-group">
             <div class="set-group-h">
               <h3 class="set-group-t">已归档科目</h3>
-              <p class="set-group-d">Hidden from the app, kept for storage. Restore any time.</p>
+              <p class="set-group-d">不在应用里显示，但保留在存储中。随时可以恢复。</p>
             </div>
             <div class="set-card">
               {#each archivedSubjects as s (s.id)}
@@ -2764,13 +2764,13 @@ Notes: {about}</pre>
           <section class="set-group">
             <div class="set-group-h">
               <h3 class="set-group-t">回收站</h3>
-              <p class="set-group-d">Recently deleted subjects, topics, sources, notes and materials. Restore brings the rows (and their chunks/tags) back; entries auto-expire after 7 days.</p>
+              <p class="set-group-d">最近删除的科目、主题、资料、笔记和材料。恢复会把行（连同分块和标签）一起找回来；条目 7 天后自动过期。</p>
             </div>
             <div class="set-card">
               {#if undoError}
                 <div class="set-row">
                   <div class="set-row-l">
-                    <div class="set-row-t" style="color:var(--err)">Could not load undo entries</div>
+                    <div class="set-row-t" style="color:var(--err)">无法加载撤销记录</div>
                     <div class="set-row-d">{undoError}</div>
                   </div>
                   <div class="set-row-r">
@@ -2795,7 +2795,7 @@ Notes: {about}</pre>
                     <div class="set-row-d mono faint">
                       {undoAge(e.created_at)} · {undoExpiry(e.expires_at)}
                       {#if e.undone_at}
-                        · <span style="color:var(--fg-muted)">already restored</span>
+                        · <span style="color:var(--fg-muted)">已恢复</span>
                       {/if}
                     </div>
                   </div>
@@ -2854,7 +2854,7 @@ Notes: {about}</pre>
         <header class="set-head">
           <div class="eyebrow">About</div>
           <h1 class="set-title">Cortex</h1>
-          <p class="set-sub">A desktop study OS for serious students.</p>
+          <p class="set-sub">给认真学的人一套桌面学习系统。</p>
         </header>
 
         <div class="set-card">

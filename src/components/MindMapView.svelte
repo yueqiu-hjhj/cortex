@@ -60,22 +60,22 @@
   <div class="mm-page">
     {#if onExit}
       <div class="mm-toolbar">
-        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="Back to materials">
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={onExit} title="返回学习材料">
           <span style="display:inline-flex;transform:rotate(180deg)"><Icon name="chevron" size={14} /></span>
         </button>
-        <span class="mono faint" style="font-size: var(--t-xs);">Mind map</span>
+        <span class="mono faint" style="font-size: var(--t-xs);">思维导图</span>
       </div>
     {/if}
 
     {#if branches.length === 0}
       <div class="mm-empty">
         <Icon name="link" size={26} color="var(--fg-faint)" />
-        <p class="mono faint" style="margin-top: 12px;">No mind-map content.</p>
+        <p class="mono faint" style="margin-top: 12px;">没有思维导图内容。</p>
       </div>
     {:else}
       <div class="mm-controls">
-        <button class="btn btn--sm btn--ghost" onclick={expandAll}>Expand all</button>
-        <button class="btn btn--sm btn--ghost" onclick={collapseAll}>Collapse all</button>
+        <button class="btn btn--sm btn--ghost" onclick={expandAll}>全部展开</button>
+        <button class="btn btn--sm btn--ghost" onclick={collapseAll}>全部收起</button>
       </div>
 
       <div class="mm-canvas">

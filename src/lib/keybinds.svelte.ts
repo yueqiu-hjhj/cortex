@@ -80,6 +80,7 @@ export const LEADER_ACTIONS: LeaderAction[] = [
   { key: "y", label: "Today",       detail: "what to do now" },
   { key: "w", label: "Plan",        detail: "week schedule" },
   { key: "u", label: "Research",    detail: "papers & excerpts" },
+  { key: "z", label: "Agents",      detail: "custom agents & runs" },
   { key: "s", label: "Sources",     detail: "view all sources" },
   { key: "h", label: "Cheatsheet",  detail: "back to your sheet" },
   { key: "c", label: "Chat",        detail: "open chat dock" },
