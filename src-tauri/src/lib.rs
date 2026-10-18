@@ -27,6 +27,7 @@ pub mod obsidian;
 pub mod agents;
 mod agent_exec;
 pub mod citecheck;
+mod deep_research;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -426,6 +427,7 @@ pub fn run() {
             commands::plugins_list,
             commands::retrieval_eval_real,
             commands::agents_execute_run,
+            commands::deep_research,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

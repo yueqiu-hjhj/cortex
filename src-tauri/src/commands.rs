@@ -6080,6 +6080,56 @@ pub fn paper_import(state: State<AppState>, input: crate::papers::PaperInput) ->
     crate::papers::import_paper(&c, &input)
 }
 
+/// Deep Research (gap D2): 课题 → 多源文献发现 → AI 筛选 → 阅读清单 → 有据综述
+/// 初稿（存为科目笔记）。网络重（五源并发检索 + 多次模型调用），所以整个管线
+/// 在阻塞线程上跑，并使用**独立 SQLite 连接**——与 agent 执行器同理，绝不在
+/// 长网络 I/O 期间持有全局锁。进度经 ingest:progress 事件实时外发。
+#[tauri::command]
+pub async fn deep_research(
+    app: AppHandle,
+    subject_id: String,
+    topic: String,
+    max_sources: Option<usize>,
+) -> Result<crate::deep_research::DeepResearchResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::deep_research::DeepResearchResult> {
+        let state = app.state::<AppState>();
+        let (chat_spec, keys, searxng) = {
+            let c = state.db.lock().unwrap();
+            let chat_spec = repo::get_setting(&c, "model_chat")?
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            guard_offline_llm(&c, &chat_spec)?;
+            (chat_spec, read_keys(&c)?, searxng_base(&c)?)
+        };
+        let model =
+            llm::from_spec_or_any(&chat_spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+
+        let db_path = state
+            .data_dir
+            .as_ref()
+            .map(|d| d.join("cortex.db"))
+            .ok_or_else(|| Error::Other("in-memory build has no database".into()))?;
+        let conn = Connection::open(&db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+        conn.pragma_update(None, "journal_mode", "WAL").ok();
+
+        let task_id = format!("dr-{}", crate::db::new_id());
+        let mut progress = |stage: &str, detail: &str, pct: u8| {
+            emit_progress(&app, &task_id, stage, detail, pct);
+        };
+        crate::deep_research::run(
+            &conn,
+            Some(model.as_ref()),
+            searxng.as_deref(),
+            &subject_id,
+            &topic,
+            max_sources.unwrap_or(6),
+            &mut progress,
+        )
+    })
+    .await
+    .map_err(|e| Error::Other(format!("deep research task failed: {e}")))?
+}
+
 #[tauri::command]
 pub fn paper_list(
     state: State<AppState>,

@@ -7,9 +7,10 @@
   // sentence I will cite". A paper here can become a schedulable reading task,
   // and every excerpt is kept verbatim so it can go straight into a draft.
   import * as api from "../lib/api";
-import Icon from "../components/Icon.svelte";
-import MatrixView from "../components/MatrixView.svelte";
-import OfficeTools from "../components/OfficeTools.svelte";
+  import { app } from "../lib/store.svelte";
+  import Icon from "../components/Icon.svelte";
+  import MatrixView from "../components/MatrixView.svelte";
+  import OfficeTools from "../components/OfficeTools.svelte";
 
   const STATUSES = [
     { id: "all", label: "全部" },
@@ -38,6 +39,30 @@ import OfficeTools from "../components/OfficeTools.svelte";
   let flash = $state<string | null>(null);
 
   let importOpen = $state(false);
+
+  // ── Deep Research（D2）：课题 → 多源发现 → AI 筛选 → 入库 → 综述初稿 ──
+  let drOpen = $state(false);
+  let drTopic = $state("");
+  let drMax = $state(6);
+  let drBusy = $state(false);
+  let drResult = $state<api.DeepResearchResult | null>(null);
+  async function runDeepResearch() {
+    if (!drTopic.trim() || drBusy) return;
+    const sid = app.activeSubject?.id;
+    if (!sid) { say("先选择一个科目"); return; }
+    drBusy = true;
+    error = null;
+    try {
+      drResult = await api.deepResearch(sid, drTopic.trim(), drMax);
+      const added = drResult.picks.filter((p) => p.imported).length;
+      say(`深度研究完成：新增 ${added} 篇到阅读清单${drResult.overview ? "，综述初稿已存入笔记" : ""}`);
+      await load();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      drBusy = false;
+    }
+  }
   let importText = $state("");
 
   // ----- B4: cross-paper matrix -----
@@ -371,6 +396,9 @@ import OfficeTools from "../components/OfficeTools.svelte";
     <div class="controls">
       <input class="search" bind:value={search} placeholder="搜索标题 / 作者 / 摘要" oninput={() => load()} />
       <button class="btn" onclick={() => (importOpen = !importOpen)}>导入 BibTeX</button>
+      <button class="btn primary" onclick={() => (drOpen = !drOpen)} title="课题 → 多源检索 → AI 筛选 → 入库 → 综述初稿">
+        {drBusy ? "深度研究中…" : "深度研究"}
+      </button>
       <button class="btn" disabled={busy === "bib"} onclick={copyBibtex}>导出 BibTeX</button>
       <button
         class="btn primary"
@@ -408,6 +436,48 @@ import OfficeTools from "../components/OfficeTools.svelte";
           {busy === "import" ? "导入中…" : "导入"}
         </button>
       </div>
+    </div>
+  {/if}
+
+  {#if drOpen}
+    <div class="import">
+      <input class="search" style="width:100%" bind:value={drTopic}
+             placeholder="研究课题，例如：检索增强生成在中文教育场景中的应用效果"
+             onkeydown={(e) => e.key === "Enter" && void runDeepResearch()} />
+      <div class="irow">
+        <span class="faint">五源并发检索 → AI 筛选（每篇带理由）→ DOI 去重入库 → 综述初稿存为笔记 · 约 1–3 分钟</span>
+        <label class="faint">篇数
+          <input class="search" type="number" min="3" max="12" bind:value={drMax} style="width:64px" />
+        </label>
+        <button class="btn primary" disabled={drBusy || !drTopic.trim()} onclick={() => void runDeepResearch()}>
+          {drBusy ? "研究中…" : "开始"}
+        </button>
+      </div>
+      {#if drResult}
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div class="faint mono">
+            候选 {drResult.candidates} 篇 · 命中源 {drResult.sources_succeeded.join(" / ") || "—"} · {(drResult.took_ms / 1000).toFixed(1)}s
+            {#if drResult.note_id} · 综述已存笔记{/if}
+          </div>
+          {#each drResult.picks as p (p.paper_id + p.title)}
+            <div class="prow" style="cursor:default">
+              <div style="flex:1;min-width:0">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  {p.title}{#if !p.imported}<span class="faint">（已在库）</span>{/if}
+                  {#if p.year}<span class="faint"> · {p.year}</span>{/if}
+                </div>
+                <div class="faint">{p.why} <span class="mono">— {p.found_by}</span></div>
+              </div>
+            </div>
+          {/each}
+          {#if drResult.overview}
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;white-space:pre-wrap;font-size:12.5px;line-height:1.75">{drResult.overview}</div>
+          {/if}
+          {#each drResult.warnings as w}
+            <div class="faint" style="color:var(--warn)">{w}</div>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 

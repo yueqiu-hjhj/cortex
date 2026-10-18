@@ -741,6 +741,40 @@ export const literatureSearch = (
     limit: limit ?? null,
   });
 
+// ---- Deep Research: topic → discover → screen → import → overview note ----
+export interface DeepResearchPick {
+  paper_id: string;
+  title: string;
+  url: string | null;
+  doi: string | null;
+  year: number | null;
+  venue: string | null;
+  /** Discovery sources that surfaced it (arxiv / crossref / …). */
+  found_by: string;
+  /** The screener's one-line reason (or the honest fallback note). */
+  why: string;
+  /** false = the DOI was already in the library. */
+  imported: boolean;
+}
+export interface DeepResearchResult {
+  topic: string;
+  rewritten: string[];
+  candidates: number;
+  sources_attempted: string[];
+  sources_succeeded: string[];
+  picks: DeepResearchPick[];
+  overview: string;
+  note_id: string;
+  took_ms: number;
+  warnings: string[];
+}
+export const deepResearch = (subjectId: string, topic: string, maxSources?: number) =>
+  invoke<DeepResearchResult>("deep_research", {
+    subjectId,
+    topic,
+    maxSources: maxSources ?? null,
+  });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
