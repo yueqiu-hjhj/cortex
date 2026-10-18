@@ -794,6 +794,8 @@ mod tests {
             source_name: "lecture1.md".into(),
             text: "BM25 的得分函数由词频与逆文档频率组成。".into(),
             loc: Some("p.2".into()),
+            char_start: None,
+            char_end: None,
             score: 0.9,
         };
         let (text, names) =

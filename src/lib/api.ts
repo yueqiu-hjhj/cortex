@@ -94,6 +94,10 @@ export interface Citation {
   chunk_id: string;
   source_name: string;
   loc: string | null;
+  /** Character span of the passage in the source's extracted text (0046) —
+   *  slice-verifiable: source_text.slice(char_start, char_end) === passage. */
+  char_start?: number | null;
+  char_end?: number | null;
   snippet: string;
   score: number;
   cited: boolean;
@@ -937,6 +941,9 @@ export const pkgImport = (path: string, targetDir: string, force?: boolean) =>
 /** Export the knowledge framework as a real .xmind (2020+ format). */
 export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
   invoke<number>("export_knowledge_xmind", { subjectId, dest });
+
+/** Backfill char offsets for pre-0046 chunks (idempotent; returns count). */
+export const backfillChunkOffsets = () => invoke<number>("backfill_chunk_offsets");
 
 // ---- recovery directories (.deleted-<id>) ----
 export interface DeletedSubject {

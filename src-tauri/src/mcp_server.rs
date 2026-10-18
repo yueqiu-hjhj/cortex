@@ -258,11 +258,18 @@ fn search_notebook(conn: &Connection, args: &Value) -> Result<String> {
     let mut out = String::new();
     for (i, h) in hits.iter().enumerate() {
         let loc = h.loc.as_deref().unwrap_or("");
+        // Character offsets (when the chunk has them) — an external agent can
+        // slice-verify: the passage IS source_text[char_start..char_end].
+        let span = match (h.char_start, h.char_end) {
+            (Some(a), Some(b)) => format!(" chars {a}-{b}"),
+            _ => String::new(),
+        };
         out.push_str(&format!(
-            "[{}] {} {} (source_id={}, chunk_id={})\n{}\n\n",
+            "[{}] {} {}{} (source_id={}, chunk_id={})\n{}\n\n",
             i + 1,
             h.source_name,
             loc,
+            span,
             h.source_id,
             h.id,
             h.text.trim()

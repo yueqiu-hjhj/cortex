@@ -153,6 +153,8 @@ mod tests {
             source_name: format!("{source}.md"),
             text: text.into(),
             loc: None,
+            char_start: None,
+            char_end: None,
             score,
         }
     }

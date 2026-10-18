@@ -767,6 +767,23 @@
   async function loadDeleted() {
     deleted = await api.recoveryList().catch(() => []);
   }
+  let offsetBusy = $state(false);
+  async function runBackfillOffsets() {
+    if (offsetBusy) return;
+    offsetBusy = true;
+    try {
+      const n = await api.backfillChunkOffsets();
+      app.pushToast({
+        kind: "success",
+        title: n > 0 ? `已为 ${n} 个旧分块补上字符偏移` : "无需补偿",
+        body: n > 0 ? "引用校验现在可切片复核（MCP 与证据面板均已显示）" : "所有分块都已有准确偏移",
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "补偿失败", body: String(e) });
+    } finally {
+      offsetBusy = false;
+    }
+  }
   async function restoreDeleted(d: api.DeletedSubject) {
     if (recoveryBusy) return;
     recoveryBusy = d.dir_name;
@@ -2655,6 +2672,10 @@ Notes: {about}</pre>
               <p class="set-group-d">删除科目时完整快照（行 + 附件）会移到 <span class="mono">.deleted-&lt;id&gt;-&lt;ts&gt;</span>，不自动清除。恢复后索引需重新生成；确认不再需要再彻底删除。</p>
             </div>
             <div class="svc-tools">
+              <button class="btn btn--sm" disabled={offsetBusy} onclick={runBackfillOffsets}
+                      title="为 0046 之前入库的分块补上 char_start/char_end（幂等）">
+                <Icon name="link" size={12} /> {offsetBusy ? "补偿中…" : "补偿引文偏移"}
+              </button>
               <button class="btn btn--sm" onclick={loadDeleted}><Icon name="refresh" size={12} /> 刷新</button>
             </div>
           </div>

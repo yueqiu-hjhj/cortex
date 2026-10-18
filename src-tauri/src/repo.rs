@@ -772,10 +772,28 @@ pub fn insert_chunk(
     dim: i64,
     embedding: &[u8],
 ) -> Result<()> {
+    insert_chunk_at(conn, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, None)
+}
+
+/// Like insert_chunk, with explicit char offsets (0046). Ingest computes them
+/// via `locate_chunks`; callers without a text map pass None.
+pub fn insert_chunk_at(
+    conn: &Connection,
+    source_id: &str,
+    subject_id: &str,
+    topic_id: Option<&str>,
+    ord: i64,
+    text: &str,
+    loc: Option<&str>,
+    dim: i64,
+    embedding: &[u8],
+    span: Option<(i64, i64)>,
+) -> Result<()> {
+    let (cs, ce) = span.map(|(a, b)| (Some(a), Some(b))).unwrap_or((None, None));
     conn.execute(
-        "INSERT INTO chunks (id, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![new_id(), source_id, subject_id, topic_id, ord, text, loc, dim, embedding, now_ms()],
+        "INSERT INTO chunks (id, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, created_at, char_start, char_end)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![new_id(), source_id, subject_id, topic_id, ord, text, loc, dim, embedding, now_ms(), cs, ce],
     )?;
     Ok(())
 }
@@ -839,7 +857,7 @@ fn search_chunks_vec(
     query_blob: &[u8],
     k: usize,
 ) -> Result<Vec<ChunkHit>> {
-    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc,
+    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.char_start, c.char_end,
                       vec_distance_cosine(c.embedding, ?2) AS dist
                FROM chunks c JOIN sources s ON s.id=c.source_id
                WHERE (?1 IS NULL OR c.subject_id=?1)
@@ -848,13 +866,15 @@ fn search_chunks_vec(
                LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![subject_id, query_blob, k as i64], |r| {
-        let dist: f64 = r.get(5)?;
+        let dist: f64 = r.get(7)?;
         Ok(ChunkHit {
             id: r.get(0)?,
             source_id: r.get(1)?,
             source_name: r.get(2)?,
             text: r.get(3)?,
             loc: r.get(4)?,
+            char_start: r.get(5)?,
+            char_end: r.get(6)?,
             // cosine distance → similarity, matching the prior cosine() semantics.
             score: (1.0 - dist) as f32,
         })
@@ -869,24 +889,26 @@ fn search_chunks_scan(
     query_vec: &[f32],
     k: usize,
 ) -> Result<Vec<ChunkHit>> {
-    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.embedding
+    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.char_start, c.char_end, c.embedding
                FROM chunks c JOIN sources s ON s.id=c.source_id
                WHERE (?1 IS NULL OR c.subject_id=?1)";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![subject_id], |r| {
-        let blob: Vec<u8> = r.get(5)?;
+        let blob: Vec<u8> = r.get(7)?;
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<i64>>(5)?,
+            r.get::<_, Option<i64>>(6)?,
             blob,
         ))
     })?;
     let mut hits: Vec<ChunkHit> = Vec::new();
     for row in rows {
-        let (id, source_id, source_name, text, loc, blob) = row?;
+        let (id, source_id, source_name, text, loc, char_start, char_end, blob) = row?;
         let score = cosine(query_vec, &blob_to_f32s(&blob));
         hits.push(ChunkHit {
             id,
@@ -894,6 +916,8 @@ fn search_chunks_scan(
             source_name,
             text,
             loc,
+            char_start,
+            char_end,
             score,
         });
     }
@@ -946,7 +970,7 @@ pub fn keyword_search_chunks(
     if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc
+    let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.char_start, c.char_end
                FROM chunks c JOIN sources s ON s.id=c.source_id
                WHERE (?1 IS NULL OR c.subject_id=?1)
                  AND (?2 IS NULL OR c.source_id=?2)";
@@ -958,11 +982,13 @@ pub fn keyword_search_chunks(
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<i64>>(5)?,
+            r.get::<_, Option<i64>>(6)?,
         ))
     })?;
     let mut hits: Vec<ChunkHit> = Vec::new();
     for row in rows {
-        let (id, source_id, source_name, text, loc) = row?;
+        let (id, source_id, source_name, text, loc, char_start, char_end) = row?;
         let lower = text.to_lowercase();
         let matched = terms.iter().filter(|t| lower.contains(t.as_str())).count();
         if matched == 0 {
@@ -974,6 +1000,8 @@ pub fn keyword_search_chunks(
             source_name,
             text,
             loc,
+            char_start,
+            char_end,
             // Score = fraction of distinct query terms present, so it is
             // comparable in spirit to a cosine similarity in [0,1].
             score: matched as f32 / terms.len() as f32,
@@ -4734,6 +4762,77 @@ pub fn sprint_plan(
     })
 }
 
+/// Locate each chunk's character span in the source's extracted text.
+/// Sequential scan (each chunk starts at or after the previous one's end)
+/// because `chunk_text` emits chunks in order with overlap — so after an
+/// overlapping prefix the index_of lands on the fresh content. Chunks that
+/// cannot be found (content changed under us) map to None — never a wrong
+/// offset, because a wrong offset is worse than none (verification would
+/// "confirm" text that isn't there).
+pub fn locate_chunks(text: &str, chunks: &[String]) -> Vec<Option<(i64, i64)>> {
+    let mut out: Vec<Option<(i64, i64)>> = Vec::with_capacity(chunks.len());
+    let mut from = 0usize;
+    for c in chunks {
+        let needle = c.trim();
+        if needle.is_empty() || from > text.len() {
+            out.push(None);
+            continue;
+        }
+        match text[from..].find(needle) {
+            Some(rel) => {
+                let start_byte = from + rel;
+                let end_byte = start_byte + needle.len();
+                // CHAR offsets (KnowNote semantics; JS/UI-sliceable) — never
+                // bytes, which would be 3x off for Chinese text.
+                let cs = text[..start_byte].chars().count() as i64;
+                let ce = text[..end_byte].chars().count() as i64;
+                out.push(Some((cs, ce)));
+                from = end_byte;
+            }
+            None => out.push(None),
+        }
+    }
+    out
+}
+
+/// Backfill char_start/char_end for chunks that lack them (pre-0046 rows).
+/// Returns the number of chunks updated.
+pub fn backfill_chunk_offsets(conn: &Connection) -> Result<usize> {
+    let mut sources = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT id, COALESCE(content,'') FROM sources WHERE content IS NOT NULL AND content <> ''",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for r in rows {
+            sources.push(r?);
+        }
+    }
+    let mut updated = 0usize;
+    for (sid, content) in sources {
+        // Only chunks that are missing offsets; in ord order (the scan assumes it).
+        let mut st = conn.prepare(
+            "SELECT id, text FROM chunks WHERE source_id=?1 AND char_start IS NULL ORDER BY ord",
+        )?;
+        let rows: Vec<(String, String)> = st
+            .query_map([&sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(st);
+        let texts: Vec<String> = rows.iter().map(|(_, t)| t.clone()).collect();
+        let spans = locate_chunks(&content, &texts);
+        for ((id, _), span) in rows.iter().zip(spans.iter()) {
+            if let Some((a, b)) = span {
+                conn.execute(
+                    "UPDATE chunks SET char_start=?2, char_end=?3 WHERE id=?1",
+                    rusqlite::params![id, a, b],
+                )?;
+                updated += 1;
+            }
+        }
+    }
+    Ok(updated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4768,6 +4867,47 @@ mod tests {
         assert_eq!(msgs[1].retrieval.as_ref().unwrap().hits, 3);
         assert_eq!(msgs[2].retrieval.as_ref().unwrap().hits, 0);
         assert!(msgs[2].retrieval.as_ref().unwrap().abstained);
+    }
+
+    #[test]
+    fn locate_chunks_walks_sequentially_and_handles_misses() {
+        let text = "矩阵乘以特征向量等于缩放，这就是特征值的定义。后面继续展开对角化内容。";
+        // Two overlapping-ish chunks in order: the second must resume AFTER
+        // the first's end, not match its own overlap prefix again.
+        let c1 = "矩阵乘以特征向量等于缩放，这就是特征值的定义。".to_string();
+        let c2 = "后面继续展开对角化内容。".to_string();
+        let spans = locate_chunks(text, &[c1.clone(), c2.clone()]);
+        assert_eq!(spans[0], Some((0, c1.chars().count() as i64)));
+        assert_eq!(spans[1], Some((c1.chars().count() as i64, text.chars().count() as i64)));
+        // Slice-verify (char slice): the offsets must reproduce the chunk exactly.
+        let (a, b) = spans[0].unwrap();
+        let sliced: String = text.chars().skip(a as usize).take((b - a) as usize).collect();
+        assert_eq!(sliced, c1);
+        // A chunk not in the text maps to None — never a wrong offset.
+        let spans2 = locate_chunks(text, &[c1, "不存在的句子".to_string()]);
+        assert_eq!(spans2[1], None);
+    }
+
+    #[test]
+    fn backfill_chunk_offsets_fills_null_rows() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        let text = "特征值分解把矩阵拆成旋转与缩放。相似变换保持特征值。";
+        let srcid = insert_source(&c, &sid, None, "讲义.md", "md", None).unwrap();
+        // insert WITHOUT offsets (the pre-0046 shape).
+        insert_chunk(&c, &srcid, &sid, None, 0, "特征值分解把矩阵拆成旋转与缩放。", None, 2, &[0u8; 8]).unwrap();
+        c.execute("UPDATE sources SET content=?1 WHERE id=?2", rusqlite::params![text, srcid]).unwrap();
+        let n = backfill_chunk_offsets(&c).unwrap();
+        assert_eq!(n, 1);
+        let (a, b): (Option<i64>, Option<i64>) = c
+            .query_row("SELECT char_start, char_end FROM chunks WHERE source_id=?1", [&srcid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let (a, b) = (a.unwrap() as usize, b.unwrap() as usize);
+        let sliced: String = text.chars().skip(a).take(b - a).collect();
+        assert_eq!(sliced, "特征值分解把矩阵拆成旋转与缩放。");
+        // Second run updates nothing.
+        assert_eq!(backfill_chunk_offsets(&c).unwrap(), 0);
     }
 
     #[test]

@@ -1132,8 +1132,9 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
         {
             let c = state.db.lock().unwrap();
             repo::clear_chunks(&c, &id)?;
-            for (i, (chunk, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
-                repo::insert_chunk(
+            let spans = repo::locate_chunks(&text, &chunks);
+            for (i, ((chunk, vec), span)) in chunks.iter().zip(vectors.iter()).zip(spans.iter()).enumerate() {
+                repo::insert_chunk_at(
                     &c,
                     &id,
                     &src.subject_id,
@@ -1143,6 +1144,7 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
                     None,
                     vec.len() as i64,
                     &f32s_to_blob(vec),
+                    *span,
                 )?;
             }
             let chunk_count = repo::count_chunks(&c, &id)?;
@@ -1453,8 +1455,9 @@ pub async fn add_source(
         // One transaction for all chunk inserts + finalize: a 200-chunk PDF was 200
         // separate auto-commits (one WAL fsync each) — batching cuts that to one.
         let tx = c.transaction()?;
-        for (i, (chunk, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
-            repo::insert_chunk(
+        let spans = repo::locate_chunks(&text, &chunks);
+        for (i, ((chunk, vec), span)) in chunks.iter().zip(vectors.iter()).zip(spans.iter()).enumerate() {
+            repo::insert_chunk_at(
                 &tx,
                 &source_id,
                 &input.subject_id,
@@ -1464,6 +1467,7 @@ pub async fn add_source(
                 None,
                 vec.len() as i64,
                 &f32s_to_blob(vec),
+                *span,
             )?;
         }
         let chunk_count = repo::count_chunks(&tx, &source_id)?;
@@ -2000,6 +2004,8 @@ pub async fn chat_answer(
             chunk_id: h.id.clone(),
             source_name: h.source_name.clone(),
             loc: h.loc.clone(),
+            char_start: h.char_start,
+            char_end: h.char_end,
             snippet: truncate(&h.text, 160),
             score: h.score,
             cited: text.contains(&format!("⟦{}", h.source_name)),
@@ -6426,6 +6432,14 @@ pub async fn export_calendar_ics(
 }
 
 // ---- portable archive `.cortex-pkg.tar.gz` (P0 #2) ---------------------
+
+/// Backfill char_start/char_end for chunks written before 0046. Idempotent;
+/// returns the number of chunks that got real offsets.
+#[tauri::command]
+pub fn backfill_chunk_offsets(state: State<AppState>) -> Result<usize> {
+    let c = state.db.lock().unwrap();
+    repo::backfill_chunk_offsets(&c)
+}
 
 /// Export the whole library as a portable, hash-verified archive.
 #[tauri::command]

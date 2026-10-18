@@ -97,6 +97,12 @@ pub struct ChunkHit {
     pub source_name: String,
     pub text: String,
     pub loc: Option<String>,
+    /// Character span of this chunk in the source's extracted text (0046) —
+    /// an external agent can slice-verify the passage with these.
+    #[serde(default)]
+    pub char_start: Option<i64>,
+    #[serde(default)]
+    pub char_end: Option<i64>,
     pub score: f32,
 }
 
@@ -125,6 +131,10 @@ pub struct Citation {
     pub chunk_id: String,
     pub source_name: String,
     pub loc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_start: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_end: Option<i64>,
     pub snippet: String,
     #[serde(default)]
     pub score: f32,

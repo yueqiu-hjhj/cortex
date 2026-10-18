@@ -483,6 +483,7 @@ pub fn run() {
             commands::recovery_list,
             commands::recovery_restore,
             commands::recovery_purge,
+            commands::backfill_chunk_offsets,
             commands::export_draft_tex,
             commands::export_calendar_ics,
             commands::pkg_export,

@@ -665,7 +665,11 @@
                           class="evidence-chip"
                           class:is-cited={c.cited}
                           class:is-uncited-chip={!c.cited}
-                          title={`${c.source_name}${c.loc ? " · " + c.loc : ""}\n${c.snippet}`}
+                          title={`${c.source_name}${c.loc ? " · " + c.loc : ""}${
+                        c.char_start != null && c.char_end != null
+                          ? ` · chars ${c.char_start}-${c.char_end}`
+                          : ""
+                      }\n${c.snippet}`}
                           onclick={() => openEvidence(c)}
                         >
                           <Icon name={c.cited ? "book" : "warn"} size={11} />
