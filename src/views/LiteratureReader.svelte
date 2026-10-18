@@ -153,6 +153,51 @@
     }
   }
 
+  // ── 中英对照（知源的核心精读 UX）：左原文、右译文，逐段对齐 ──────────────
+  // 翻译复用 literature_explain 的 translate: 模式；译文逐段懒取并缓存，
+  // 段落在同一网格行里天然对齐，不需要滚动同步。
+  let bilingual = $state(false);
+  let biTarget = $state<"zh" | "en">("zh");
+  let translations = $state<Record<number, string>>({});
+  let biPending = $state<Set<number>>(new Set());
+  // 只为当前正文缓存 —— 换一篇就从零开始。
+  let biKey = $state("");
+
+  function biDetectDirection(text: string): "zh" | "en" {
+    const head = text.slice(0, 400);
+    const ascii = [...head].filter((c) => c.charCodeAt(0) < 128).length;
+    return ascii > [...head].length * 0.6 ? "zh" : "en";
+  }
+
+  async function startBilingual() {
+    if (!rawText) return;
+    const key = `${rawText.length}:${rawText.slice(0, 64)}`;
+    if (biKey !== key) {
+      biKey = key;
+      translations = {};
+    }
+    biTarget = biDetectDirection(rawText);
+    bilingual = true;
+    const paras = rawText
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+    for (let i = 0; i < paras.length; i++) {
+      if (translations[i] !== undefined || biPending.has(i)) continue;
+      biPending = new Set([...biPending, i]);
+      try {
+        const t = await api.literatureExplain(paras[i], `translate:${biTarget}`);
+        translations = { ...translations, [i]: t.trim() };
+      } catch {
+        translations = { ...translations, [i]: "（翻译失败 — 检查模型配置）" };
+      } finally {
+        const next = new Set(biPending);
+        next.delete(i);
+        biPending = next;
+      }
+    }
+  }
+
   async function repairLayout() {
     if (!rawText) return;
     loading = true;
@@ -258,6 +303,11 @@
           <Icon name="check" size={12} /> 加载
         </button>
       {/if}
+      <button class="btn" class:btn--primary={!bilingual} disabled={!rawText || loading}
+              onclick={() => (bilingual ? (bilingual = false) : void startBilingual())}
+              title="逐段对照：原文在左，模型译文在右">
+        {bilingual ? "关闭对照" : "中英对照"}
+      </button>
       <button class="btn" disabled={!rawText || loading} onclick={() => void repairLayout()}>
         <Icon name="refresh" size={12} /> 修复排版
       </button>
@@ -311,7 +361,22 @@
       {:else}
         {#each rawText.split(/\n{2,}/) as para, i (i)}
           {#if para.trim()}
-            <p>{para.trim()}</p>
+            {#if bilingual}
+              <div class="bi-row">
+                <p class="bi-orig">{para.trim()}</p>
+                <p class="bi-trans">
+                  {#if translations[i] !== undefined}
+                    {translations[i]}
+                  {:else if biPending.has(i)}
+                    <span class="bi-wait mono">翻译中…</span>
+                  {:else}
+                    <span class="bi-wait mono">…</span>
+                  {/if}
+                </p>
+              </div>
+            {:else}
+              <p>{para.trim()}</p>
+            {/if}
           {/if}
         {/each}
         <div class="paper-foot mono">
@@ -552,4 +617,27 @@
   .fld-l { font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.04em; }
   .modal-meta { font-size: 11px; color: var(--fg-faint); }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  /* 中英对照：每段一行两栏，段级天然对齐 */
+  .bi-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--border);
+    align-items: start;
+  }
+  .bi-row:last-of-type { border-bottom: none; }
+  .bi-orig { margin: 0; }
+  .bi-trans {
+    margin: 0;
+    color: var(--fg-muted);
+    border-left: 2px solid color-mix(in oklab, var(--accent) 40%, transparent);
+    padding-left: 12px;
+  }
+  .bi-wait { font-size: 10px; opacity: 0.6; }
+  @media (max-width: 900px) {
+    .bi-row { grid-template-columns: 1fr; gap: 6px; }
+    .bi-trans { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 6px; }
+  }
+
 </style>
