@@ -32,6 +32,7 @@ mod video_overview;
 pub mod zotero;
 pub mod experiments;
 pub mod ics;
+pub mod mcp_server;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;

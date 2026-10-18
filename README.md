@@ -220,6 +220,41 @@ Open **Settings** in the app:
 
 > No keys? The app still runs end-to-end with a clearly-marked offline stub so you can explore the flow.
 
+## MCP server (use your library from Claude Code / Codex / Cursor)
+
+`cortex-mcp` is a read-only **MCP (Model Context Protocol) server over stdio**.
+Point any MCP client at it and your notebooks become tools inside that agent —
+no cloud account, no exports:
+
+```json
+{
+  "mcpServers": {
+    "cortex": { "command": "cortex-mcp" }
+  }
+}
+```
+
+```bash
+# optional explicit DB path (defaults to the app-data dir)
+cortex-mcp --db /path/to/cortex.db
+# or: CORTEX_DB=/path/to/cortex.db cortex-mcp
+```
+
+**Tools (13, all read-only):** `list_notebooks` · `search_notebook` ·
+`get_source` · `read_document` (char-paginated) · `search_notes` ·
+`get_knowledge_tree` · `list_wiki` · `get_wiki` · `wiki_reverse_links` ·
+`list_agents` · `agent_messages` · `cross_book_bridges` · `list_provenance`.
+
+**Boundaries — deliberately strict:**
+
+| Boundary | Why |
+|---|---|
+| READ-ONLY connection (`SQLITE_OPEN_READ_ONLY`) | The server cannot write, whatever a client asks |
+| No model calls | Retrieval is deterministic keyword search; the external agent does the thinking |
+| No filesystem paths in responses | `stored_path` / `origin` never leave the process |
+| No write tools (no wiki upsert, no agent run) | Same posture as KnowNote's `--mcp`; writes belong to the app UI |
+| Logs on stderr only | stdout is the JSON-RPC stream — a stray log line breaks the client |
+
 ## How it works
 
 ```
