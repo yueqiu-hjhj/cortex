@@ -3459,6 +3459,7 @@ fn bkt_update(p: f64, correct: bool) -> f64 {
     clamp01(posterior + (1.0 - posterior) * BKT_LEARN)
 }
 
+#[allow(dead_code)]
 fn coverage_step(observed: i64, total: i64) -> f64 {
     if total <= 0 {
         return 0.0;
@@ -3909,6 +3910,7 @@ fn insert_json_row(
 /// integers stay integers and NULLs survive the round-trip.
 pub(crate) fn snapshot_rows(conn: &Connection, table: &str, where_sql: &str, arg: &str) -> Result<Vec<serde_json::Value>> {
     use rusqlite::types::ValueRef;
+    #[allow(dead_code)]
     struct Col {
         name: String,
         real: bool,

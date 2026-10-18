@@ -287,6 +287,7 @@ pub struct UndoEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct AgentTool {
     pub id: String,
     pub name: String,

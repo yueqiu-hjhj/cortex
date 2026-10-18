@@ -534,6 +534,7 @@ fn comment_body(id: u32, author: &str, initials: &str, date: &str, text: &str) -
 
 /// Attach a comment to an existing paragraph: the range opens right after
 /// `<w:pPr>` (pPr must stay the first child) and closes before `</w:p>`.
+#[allow(dead_code)]
 fn annotate_paragraph(slot: &mut Slot, cid: u32) {
     let end_marker = format!(
         r#"<w:commentRangeEnd w:id="{cid}"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="{cid}"/></w:r>"#

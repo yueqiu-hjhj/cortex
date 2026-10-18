@@ -277,6 +277,7 @@ pub fn ensure(data_dir: &Path, spec: &BinSpec) -> Result<PathBuf> {
 /// Fetch every spec, in order. Failures are collected (per-tool) so a
 /// missing tool doesn't block the others; the BackupStatus UI surfaces them.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[allow(dead_code)]
 pub fn ensure_all(data_dir: &Path, specs: &[&BinSpec]) -> Vec<(String, Result<PathBuf>)> {
     specs
         .iter()
@@ -431,18 +432,21 @@ fn chmod_x(target: &Path) {
 // callers (mpv, backup) can pass the app data dir they already have.
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[allow(dead_code)]
 pub fn ensure_ytdlp(data_dir: &Path) -> Result<PathBuf> {
     let spec = BinSpec::for_target("yt-dlp");
     ensure(data_dir, &spec)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[allow(dead_code)]
 pub fn ensure_age(data_dir: &Path) -> Result<PathBuf> {
     let spec = BinSpec::for_target("age");
     ensure(data_dir, &spec)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[allow(dead_code)]
 pub fn ensure_rclone(data_dir: &Path) -> Result<PathBuf> {
     let spec = BinSpec::for_target("rclone");
     ensure(data_dir, &spec)

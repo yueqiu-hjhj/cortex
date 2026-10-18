@@ -199,6 +199,7 @@ fn answer_text(it: &Value) -> String {
         .unwrap_or_else(|| s(it.get("answer")))
 }
 
+#[allow(dead_code)]
 fn quiz_letter(it: &Value) -> Option<String> {
     let a = answer_text(it);
     if LETTERS.contains(&a.as_str()) {

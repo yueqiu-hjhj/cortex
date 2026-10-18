@@ -35,6 +35,7 @@ const DEFAULT_VISION_MODEL: &str = "openrouter:google/gemini-2.5-flash";
 /// Default fallback for `model_default` (text generation tasks: cheatsheet /
 /// glossary extraction / topic summary). Historically defaulted to the same
 /// fast chat model since most callers just need non-reasoning JSON output.
+#[allow(dead_code)]
 const DEFAULT_MODEL: &str = DEFAULT_CHAT_MODEL;
 
 /// Default faster-whisper model id sent to the remote (speaches) transcription

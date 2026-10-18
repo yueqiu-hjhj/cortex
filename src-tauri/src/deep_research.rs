@@ -22,6 +22,7 @@ use crate::literature::{self, LiteratureHit};
 use rusqlite::Connection;
 use serde::Serialize;
 
+#[allow(dead_code)]
 const DEFAULT_MAX_SOURCES: usize = 6;
 const MAX_CANDIDATES_SHOWN: usize = 24;
 const ABSTRACT_CHARS: usize = 400;
