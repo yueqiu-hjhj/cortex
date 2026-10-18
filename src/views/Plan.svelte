@@ -126,6 +126,27 @@
     void init();
   });
 
+  // ── D4: time-blocking write-back to Google Calendar ────────────────────
+  // Pushes planned blocks as events (idempotent), pulls reschedules made in
+  // Google back into the plan, removes slots for done/skipped blocks.
+  const tzOffsetMin = new Date().getTimezoneOffset();
+  let calSyncing = $state(false);
+  let calResult = $state<api.PlanSyncResult | null>(null);
+  let calError = $state<string | null>(null);
+  async function syncCalendar() {
+    if (calSyncing) return;
+    calSyncing = true;
+    calError = null;
+    try {
+      calResult = await api.planCalendarSync(tzOffsetMin, DAYS);
+      await load();
+    } catch (e) {
+      calError = String(e);
+    } finally {
+      calSyncing = false;
+    }
+  }
+
   async function autoPlan() {
     if (planning) return;
     planning = true;
@@ -231,8 +252,32 @@
       <button class="btn primary" disabled={planning} onclick={autoPlan}>
         {planning ? "排期中…" : "自动排期"}
       </button>
+      <button
+        class="btn"
+        disabled={calSyncing}
+        onclick={syncCalendar}
+        title="把计划块写进 Google 日历（Motion 式时间块）：已完成的自动移除，在日历里拖动的时间会同步回计划"
+      >
+        {calSyncing ? "同步中…" : "同步到日历"}
+      </button>
     </div>
   </header>
+
+  {#if calError}
+    <div class="calib-note" style="color:var(--err)">{calError}</div>
+  {/if}
+  {#if calResult}
+    <div class="calib-note">
+      <span class="calib-t">日历同步</span>
+      <span>
+        新建 {calResult.pushed} · 更新 {calResult.updated} · 移除 {calResult.removed} ·
+        从日历拖回调 {calResult.pulled} · 清理孤儿 {calResult.cleaned}
+      </span>
+      {#each calResult.notes as n}
+        <span class="calib-kinds" style="color:var(--warn)">{n}</span>
+      {/each}
+    </div>
+  {/if}
 
   <div class="bar">
     <div class="fill" style="width:{Math.min(100, capacityMinutes ? (plannedMinutes / capacityMinutes) * 100 : 0)}%"></div>

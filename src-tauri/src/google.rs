@@ -20,7 +20,7 @@ use crate::commands::http_client;
 use crate::db::AppState;
 use crate::error::{Error, Result};
 use crate::repo;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -800,6 +800,324 @@ fn format_date(ms: i64) -> String {
     let days = ms.div_euclid(86_400 * 1_000);
     let (y, m, d) = civil_from_days(days);
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ---- D4: plan-block time-blocking write-back ----------------------------
+
+/// Result of one plan-block ⇄ calendar reconciliation pass.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanSyncResult {
+    /// New Google events created for planned blocks.
+    pub pushed: i64,
+    /// Existing events PATCHed because the block changed locally.
+    pub updated: i64,
+    /// Events deleted because the block became done/skipped/moved.
+    pub removed: i64,
+    /// Blocks whose times moved IN Google Calendar — pulled back into the plan.
+    pub pulled: i64,
+    /// Google events whose block vanished locally — deleted from Google.
+    pub cleaned: i64,
+    /// Human-readable notes (skipped calendars, adopt-ins, …).
+    pub notes: Vec<String>,
+}
+
+/// Naive local epoch-ms for `day` (YYYY-MM-DD) at `minutes` past midnight.
+/// "Naive" = the civil time treated as UTC; the caller adds the device's
+/// offset (`new Date().getTimezoneOffset()`, UTC−local in minutes) to get the
+/// true UTC instant. Verified: local 09:00 at UTC+8 → offset −480 →
+/// naive(09:00Z) + (−480 min) = 01:00Z ✓.
+fn naive_ms(day: &str, minutes: i64) -> Option<i64> {
+    let mut d = day.split('-');
+    let y: i64 = d.next()?.parse().ok()?;
+    let m: i64 = d.next()?.parse().ok()?;
+    let day_num: i64 = d.next()?.parse().ok()?;
+    Some(days_from_civil(y, m, day_num) * 86_400 * 1_000 + minutes * 60 * 1_000)
+}
+
+/// Inverse: (day, minute-of-day) for a UTC instant, expressed in local time.
+fn day_min_from_epoch(epoch_ms: i64, tz_offset_min: i64) -> (String, i64) {
+    let local = epoch_ms - tz_offset_min * 60 * 1_000;
+    let days = local.div_euclid(86_400 * 1_000);
+    let (y, m, d) = civil_from_days(days);
+    let tod = local.rem_euclid(86_400 * 1_000) / 60_000;
+    (format!("{y:04}-{m:02}-{d:02}"), tod)
+}
+
+/// One Google event that carries our plan-block marker.
+struct MarkerEvent {
+    event_id: String,
+    start_ms: i64,
+    end_ms: Option<i64>,
+}
+
+/// Fetch the events in the range and index those carrying the
+/// `cortex_plan_block` private extended property by block id.
+fn pull_marker_events(
+    client: &reqwest::blocking::Client,
+    access: &str,
+    cal_id: &str,
+    start_rfc: &str,
+    end_rfc: &str,
+) -> Result<std::collections::HashMap<String, MarkerEvent>> {
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events?singleEvents=true&maxResults=250&orderBy=startTime&timeMin={}&timeMax={}",
+        pct(cal_id),
+        pct(start_rfc),
+        pct(end_rfc),
+    );
+    let resp = client.get(&url).bearer_auth(access).send()?;
+    let status = resp.status();
+    let json: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "读取日历事件失败 ({status}): {}",
+            truncate_resp(&json)
+        )));
+    }
+    let mut map = std::collections::HashMap::new();
+    if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
+        for ev in items {
+            if ev.get("status").and_then(|v| v.as_str()) == Some("cancelled") {
+                continue;
+            }
+            let Some(gid) = ev.get("id").and_then(|v| v.as_str()) else { continue };
+            let Some(block_id) = ev
+                .get("extendedProperties")
+                .and_then(|e| e.get("private"))
+                .and_then(|p| p.get("cortex_plan_block"))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let Some((start_ms, _)) = parse_endpoint(ev.get("start")) else { continue };
+            let end_ms = parse_endpoint(ev.get("end")).map(|(ms, _)| ms);
+            map.insert(
+                block_id.to_string(),
+                MarkerEvent { event_id: gid.to_string(), start_ms, end_ms },
+            );
+        }
+    }
+    Ok(map)
+}
+
+fn truncate_resp(json: &serde_json::Value) -> String {
+    serde_json::to_string(json).unwrap_or_default().chars().take(200).collect()
+}
+
+/// Delete one event from the push calendar.
+fn delete_event(client: &reqwest::blocking::Client, access: &str, cal_id: &str, event_id: &str) -> Result<bool> {
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+        pct(cal_id),
+        pct(event_id)
+    );
+    let resp = client.delete(&url).bearer_auth(access).send()?;
+    Ok(resp.status().is_success() || resp.status() == reqwest::StatusCode::GONE)
+}
+
+/// The full reconciliation pass (gap D4 — the Motion-style half of 规划性):
+/// planned blocks get calendar slots; a reschedule made in GOOGLE flows back
+/// into the block times; done/skipped blocks release their slots; events whose
+/// block vanished locally are cleaned up. Pure DB+HTTP; the command layer
+/// supplies credentials and the device timezone offset.
+pub fn sync_plan_blocks(
+    conn: &Connection,
+    client: &reqwest::blocking::Client,
+    access: &str,
+    cal_id: &str,
+    tz_offset_min: i64,
+    days: i64,
+) -> Result<PlanSyncResult> {
+    let days = days.clamp(1, 31);
+    let today_ms = now_ms() + tz_offset_min * 60 * 1_000;
+    let today_idx = today_ms.div_euclid(86_400 * 1_000);
+    let start_day = crate::workitems::format_day(today_idx);
+    let end_day = crate::workitems::format_day(today_idx + days - 1);
+    let blocks = crate::planner::blocks_for_sync(conn, &start_day, &end_day)?;
+
+    let range_start = format_rfc3339_utc(today_idx * 86_400 * 1_000 - tz_offset_min * 60 * 1_000);
+    let range_end = format_rfc3339_utc((today_idx + days) * 86_400 * 1_000 - tz_offset_min * 60 * 1_000);
+    let marker_map = pull_marker_events(client, access, cal_id, &range_start, &range_end)?;
+
+    let mut out = PlanSyncResult {
+        pushed: 0,
+        updated: 0,
+        removed: 0,
+        pulled: 0,
+        cleaned: 0,
+        notes: Vec::new(),
+    };
+    let mut live_markers: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for b in &blocks {
+        let naive_start = naive_ms(&b.day, b.start_min).unwrap_or_default();
+        let naive_end = naive_ms(&b.day, b.end_min).unwrap_or_default();
+        // True UTC instants for the API.
+        let start_epoch = naive_start + tz_offset_min * 60 * 1_000;
+        let end_epoch = naive_end + tz_offset_min * 60 * 1_000;
+        let snapshot = crate::planner::mapping_snapshot(conn, &b.id)?;
+        let remote = marker_map.get(&b.id);
+
+        // Terminal block → the calendar slot has no job anymore.
+        if b.status != "planned" {
+            let event_id = remote
+                .map(|e| e.event_id.clone())
+                .or_else(|| snapshot.as_ref().map(|s| s.event_id.clone()));
+            if let Some(eid) = event_id {
+                if delete_event(client, access, cal_id, &eid)? {
+                    out.removed += 1;
+                }
+            }
+            crate::planner::delete_mapping(conn, &b.id)?;
+            continue;
+        }
+
+        // Planned block with a remote slot: reconcile.
+        if let Some(ev) = remote {
+            live_markers.insert(b.id.clone());
+            // Did the user move it in Google? (compare LOCAL representations)
+            let (ev_day, ev_start_min) = day_min_from_epoch(ev.start_ms, tz_offset_min);
+            let ev_end_min = ev
+                .end_ms
+                .map(|e| day_min_from_epoch(e, tz_offset_min).1)
+                .unwrap_or(b.end_min);
+            if ev_day != b.day || ev_start_min != b.start_min {
+                // Google is the authority for WHEN (that's the point of
+                // time-blocking) — pull the move back into the plan.
+                conn.execute(
+                    "UPDATE plan_blocks SET day = ?2, start_min = ?3, end_min = ?4, \
+                       updated_at = ?5 WHERE id = ?1",
+                    params![b.id, ev_day, ev_start_min, ev_end_min, now_ms()],
+                )?;
+                crate::planner::upsert_mapping(
+                    conn, &b.id, &ev.event_id, &b.title, ev.start_ms,
+                    ev.end_ms.unwrap_or(ev.start_ms + 3_600_000),
+                )?;
+                out.pulled += 1;
+                continue;
+            }
+            // Otherwise: push local edits (title/time) when they differ from
+            // what we last wrote.
+            let needs_update = snapshot
+                .as_ref()
+                .map(|s| {
+                    s.synced_title.as_deref() != Some(b.title.as_str())
+                        || s.synced_start != Some(start_epoch)
+                        || s.synced_end != Some(end_epoch)
+                })
+                .unwrap_or(true);
+            if needs_update {
+                let url = format!(
+                    "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+                    pct(cal_id),
+                    pct(&ev.event_id)
+                );
+                let body = serde_json::json!({
+                    "summary": b.title,
+                    "start": { "dateTime": format_rfc3339_utc(start_epoch) },
+                    "end": { "dateTime": format_rfc3339_utc(end_epoch) },
+                });
+                let resp = client.patch(&url).bearer_auth(access).json(&body).send()?;
+                if resp.status().is_success() {
+                    crate::planner::upsert_mapping(
+                        conn, &b.id, &ev.event_id, &b.title, start_epoch, end_epoch,
+                    )?;
+                    out.updated += 1;
+                }
+            }
+            continue;
+        }
+
+        // Planned, mapped, but the event is GONE from Google (user deleted it
+        // there) → forget the mapping; it re-creates below.
+        if snapshot.is_some() {
+            crate::planner::delete_mapping(conn, &b.id)?;
+        }
+
+        // Planned, unmapped → create the slot.
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+            pct(cal_id)
+        );
+        let body = serde_json::json!({
+            "summary": b.title,
+            "start": { "dateTime": format_rfc3339_utc(start_epoch) },
+            "end": { "dateTime": format_rfc3339_utc(end_epoch) },
+            "extendedProperties": { "private": { "cortex_plan_block": b.id } },
+        });
+        let resp = client
+            .post(&url)
+            .bearer_auth(access)
+            .json(&body)
+            .send()?;
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+        if status.is_success() {
+            if let Some(eid) = json.get("id").and_then(|v| v.as_str()) {
+                crate::planner::upsert_mapping(conn, &b.id, eid, &b.title, start_epoch, end_epoch)?;
+                out.pushed += 1;
+            }
+        } else {
+            out.notes.push(format!("创建「{}」的日历块失败 ({status})", truncate(&b.title, 24)));
+        }
+    }
+
+    // Orphan cleanup: Google events still carrying our marker for blocks that
+    // no longer exist (or moved out of the horizon) — delete them so the
+    // calendar doesn't accumulate ghosts of deleted plans.
+    let existing: std::collections::HashSet<String> =
+        blocks.iter().map(|b| b.id.clone()).collect();
+    for (block_id, ev) in &marker_map {
+        if !live_markers.contains(block_id) && !existing.contains(block_id) {
+            if delete_event(client, access, cal_id, &ev.event_id)? {
+                crate::planner::delete_mapping(conn, block_id)?;
+                out.cleaned += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// D4: reconcile plan_blocks with Google Calendar for the next `days` days —
+/// push slots, pull reschedules, remove completed slots, clean orphans.
+/// `tz_offset_minutes` is the DEVICE's `new Date().getTimezoneOffset()` so the
+/// block's local wall-clock times become correct UTC instants without a Rust
+/// timezone database.
+#[tauri::command]
+pub async fn plan_calendar_sync(
+    app: AppHandle,
+    tz_offset_minutes: i64,
+    days: Option<i64>,
+) -> Result<PlanSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<PlanSyncResult> {
+        let state = app.state::<AppState>();
+        let (client_id, client_secret, cal_id) = {
+            let c = state.db.lock().unwrap();
+            let (id, secret) = client_creds(&c)?.ok_or_else(|| {
+                Error::Other("Google Calendar is not configured — add credentials in Settings.".into())
+            })?;
+            (id, secret, calendar_id(&c)?)
+        };
+        let access = {
+            let c = state.db.lock().unwrap();
+            valid_access_token(&c, &client_id, &client_secret)?
+        };
+        let client = http_client(30);
+        // Network interleave with small DB critical sections — the lock is
+        // never held across a request (same discipline as google_sync).
+        let c = state.db.lock().unwrap();
+        sync_plan_blocks(&c, &client, &access, &cal_id, tz_offset_minutes, days.unwrap_or(7))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
 
 #[cfg(test)]

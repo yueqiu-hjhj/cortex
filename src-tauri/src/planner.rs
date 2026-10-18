@@ -26,7 +26,7 @@
 use crate::db::{new_id, now_ms};
 use crate::error::{Error, Result};
 use crate::workitems::{self, ItemInput, ItemQuery, PlanBlock};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -1280,5 +1280,180 @@ mod goal_tests {
         )
         .unwrap();
         assert_eq!(out.blocks.len(), 1, "the milestone should reach the calendar");
+    }
+}
+
+// -------------------------------------------------- D4: calendar write-back
+
+/// One block joined with its item title, shaped for the calendar write-back.
+#[derive(Debug, Clone)]
+pub struct BlockSyncRow {
+    pub id: String,
+    pub day: String,
+    pub start_min: i64,
+    pub end_min: i64,
+    pub status: String,
+    pub title: String,
+    pub updated_at: i64,
+}
+
+/// Planned and terminal blocks in a day range — the calendar sync reconciles
+/// all of them: planned → create/update, done/skipped/moved → remove the slot.
+pub fn blocks_for_sync(
+    conn: &Connection,
+    from_day: &str,
+    to_day: &str,
+) -> Result<Vec<BlockSyncRow>> {
+    let mut st = conn.prepare(
+        "SELECT b.id, b.day, b.start_min, b.end_min, b.status, b.updated_at, w.title \
+         FROM plan_blocks b JOIN work_items w ON w.id = b.item_id \
+         WHERE b.day >= ?1 AND b.day <= ?2 \
+         ORDER BY b.day, b.start_min",
+    )?;
+    let rows = st
+        .query_map([from_day, to_day], |r| {
+            Ok(BlockSyncRow {
+                id: r.get(0)?,
+                day: r.get(1)?,
+                start_min: r.get(2)?,
+                end_min: r.get(3)?,
+                status: r.get(4)?,
+                updated_at: r.get(5)?,
+                title: r.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// The Google event id a block was pushed as, if any.
+pub fn mapping_event_id(conn: &Connection, block_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT google_event_id FROM plan_block_events WHERE block_id = ?1",
+            [block_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok())
+}
+
+/// What the last push wrote to Google, for cheap change detection.
+#[derive(Debug, Clone)]
+pub struct MappingSnapshot {
+    pub event_id: String,
+    pub synced_title: Option<String>,
+    pub synced_start: Option<i64>,
+    pub synced_end: Option<i64>,
+}
+
+pub fn mapping_snapshot(conn: &Connection, block_id: &str) -> Result<Option<MappingSnapshot>> {
+    conn.query_row(
+        "SELECT google_event_id, synced_title, synced_start, synced_end \
+         FROM plan_block_events WHERE block_id = ?1",
+        [block_id],
+        |r| {
+            Ok(MappingSnapshot {
+                event_id: r.get(0)?,
+                synced_title: r.get(1)?,
+                synced_start: r.get(2)?,
+                synced_end: r.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn upsert_mapping(
+    conn: &Connection,
+    block_id: &str,
+    event_id: &str,
+    synced_title: &str,
+    synced_start: i64,
+    synced_end: i64,
+) -> Result<()> {
+    let now = crate::db::now_ms();
+    conn.execute(
+        "INSERT INTO plan_block_events (id, block_id, google_event_id, synced_title, \
+            synced_start, synced_end, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+         ON CONFLICT (block_id) DO UPDATE SET google_event_id = ?3, synced_title = ?4, \
+            synced_start = ?5, synced_end = ?6, updated_at = ?7",
+        params![
+            crate::db::new_id(),
+            block_id,
+            event_id,
+            synced_title,
+            synced_start,
+            synced_end,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_mapping(conn: &Connection, block_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM plan_block_events WHERE block_id = ?1", [block_id])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn mapping_roundtrips_and_deletes() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        assert!(mapping_event_id(&c, "b1").unwrap().is_none());
+        upsert_mapping(&c, "b1", "evt-1", "读论文", 1_000, 2_000).unwrap();
+        assert_eq!(mapping_event_id(&c, "b1").unwrap().as_deref(), Some("evt-1"));
+        // Upsert same block → replaces, never duplicates (UNIQUE block_id).
+        upsert_mapping(&c, "b1", "evt-2", "读论文", 3_000, 4_000).unwrap();
+        let snap = mapping_snapshot(&c, "b1").unwrap().unwrap();
+        assert_eq!(snap.event_id, "evt-2");
+        assert_eq!(snap.synced_start, Some(3_000));
+        delete_mapping(&c, "b1").unwrap();
+        assert!(mapping_snapshot(&c, "b1").unwrap().is_none());
+    }
+
+    #[test]
+    fn blocks_for_sync_joins_titles_and_filters_the_range() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let item = workitems::create_item(
+            &c,
+            &workitems::ItemInput {
+                kind: Some("task".into()),
+                title: "复习特征值".into(),
+                body: None,
+                status: None,
+                priority: Some("high".into()),
+                due_ms: None,
+                start_ms: None,
+                estimate_min: Some(45),
+                parent_id: None,
+                rrule: None,
+                subject_id: None,
+                topic_id: None,
+                goal_id: None,
+            },
+        )
+        .unwrap();
+        conn_execute_block(&c, &item.id, "2026-10-19", 540, 585);
+        conn_execute_block(&c, &item.id, "2026-10-20", 540, 585);
+        let rows = blocks_for_sync(&c, "2026-10-19", "2026-10-19").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "复习特征值");
+        assert_eq!(rows[0].start_min, 540);
+    }
+
+    fn conn_execute_block(c: &Connection, item_id: &str, day: &str, s: i64, e: i64) {
+        c.execute(
+            "INSERT INTO plan_blocks (id, item_id, day, start_min, end_min, status, origin, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'planned', 'manual', 1, 1)",
+            rusqlite::params![crate::db::new_id(), item_id, day, s, e],
+        )
+        .unwrap();
     }
 }

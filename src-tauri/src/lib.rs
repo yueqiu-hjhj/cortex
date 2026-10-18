@@ -541,6 +541,7 @@ pub fn run() {
             google::google_disconnect,
             google::google_sync,
             google::google_list_calendars,
+            google::plan_calendar_sync,
             // work items — the cross-subject spine (migration 0037)
             commands::list_work_items,
             commands::get_work_item,

@@ -801,6 +801,26 @@ export const deepResearch = (subjectId: string, topic: string, maxSources?: numb
     maxSources: maxSources ?? null,
   });
 
+// ---- D4: plan-block time-blocking write-back to Google Calendar ----
+export interface PlanSyncResult {
+  /** New Google events created for planned blocks. */
+  pushed: number;
+  /** Existing events PATCHed because the block changed locally. */
+  updated: number;
+  /** Events deleted because the block became done/skipped/moved. */
+  removed: number;
+  /** Blocks whose times moved IN Google — pulled back into the plan. */
+  pulled: number;
+  /** Google events whose block vanished locally — deleted. */
+  cleaned: number;
+  notes: string[];
+}
+export const planCalendarSync = (tzOffsetMinutes: number, days?: number) =>
+  invoke<PlanSyncResult>("plan_calendar_sync", {
+    tzOffsetMinutes,
+    days: days ?? null,
+  });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
