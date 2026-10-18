@@ -359,7 +359,7 @@ pub fn execute_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{append_message, list_messages, start_run, upsert_agent};
+    use crate::agents::{list_messages, start_run, upsert_agent};
 
     /// A scripted Llm: returns queued replies, recording every prompt.
     struct Scripted {

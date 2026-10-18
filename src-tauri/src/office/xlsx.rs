@@ -241,7 +241,7 @@ pub fn material_sheets(kind: &str, title: &str, meta: Option<&str>, payload: &Va
                     Cell::Text(s(it.get("explain"))),
                 ]);
             }
-            let mut bank = SheetSpec {
+            let bank = SheetSpec {
                 name: "题库".into(),
                 title: Some(merge_title(title, subtitle.as_deref())),
                 headers: vec!["#".into(), "题目".into(), "选项".into(), "答案".into(), "解析".into()],

@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn web_tokens_survive_only_in_web_mode() {
         let text = "外部说法⟦web · example.com⟧。";
-        let (out1, d1) = verify_named(text, &names(&[]), false);
+        let (_out1, d1) = verify_named(text, &names(&[]), false);
         assert_eq!(d1, 1);
         let (out2, d2) = verify_named(text, &names(&[]), true);
         assert_eq!(d2, 0);

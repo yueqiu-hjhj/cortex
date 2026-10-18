@@ -588,7 +588,7 @@ pub fn context_block(
             entries.sort_by_key(|(_, _, n)| -keyword_score(n, &terms));
         }
         let mut used = 0usize;
-        for (sid, name, node) in entries {
+        for (_sid, name, node) in entries {
             if used >= sources_budget {
                 break;
             }

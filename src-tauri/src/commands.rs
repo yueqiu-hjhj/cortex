@@ -910,7 +910,7 @@ pub async fn ai_suggest_glossary(state: State<'_, AppState>, text: String, max_t
         if offline_mode(&c) { return Err(Error::Other("离线模式下无法使用 AI 抽取".into())); }
         (repo::get_setting(&c, "model_default")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.into()), read_keys(&c)?)
     };
-    let mut model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+    let model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     let prompt = format!(
         "从下面的学习材料中抽出最重要的 {cap} 个术语（term）和一句话定义（definition）。\n\n要求：\n- 用材料原语言\n- 跳过停用词、人名、临时上下文\n- 优先定义名词、概念、原理、专有名词\n- definition 1-2 句，可独立理解\n- 严格只输出 JSON：{{\"terms\":[{{\"term\":\"...\",\"definition\":\"...\"}}]}}，不要任何额外文字或 markdown 围栏\n\n材料：\n{trimmed}"
     );
@@ -5950,7 +5950,7 @@ pub fn search_notebook_isolated(state: State<AppState>, subject_id: String, quer
     // never leak across subjects.
     let c = state.db.lock().unwrap();
     let chunks = crate::repo::keyword_search_chunks(&c, Some(&subject_id), None, &query, limit.unwrap_or(15) as usize)?;
-    let subjects = std::collections::HashSet::from([subject_id.clone()]);
+    let _subjects = std::collections::HashSet::from([subject_id.clone()]);
     Ok(chunks.into_iter().map(|h| crate::models::SearchHit {
         kind: "chunk".into(), id: h.id, subject_id: Some(subject_id.clone()),
         title: h.source_name, snippet: h.text, score: h.score,
@@ -6269,6 +6269,36 @@ pub fn experiment_update(
 pub fn experiment_delete(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
     crate::experiments::delete(&c, &id)
+}
+
+/// Export calendar events as an RFC 5545 .ics — the local, cloud-optional
+/// half of calendar interop (Apple Calendar / Outlook / Thunderbird / backup).
+/// Filters mirror list_events: subject, and an inclusive start range.
+#[tauri::command]
+pub async fn export_calendar_ics(
+    app: AppHandle,
+    dest: String,
+    subject_id: Option<String>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+) -> Result<usize> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<usize> {
+        let state = app.state::<AppState>();
+        let (events, now) = {
+            let c = state.db.lock().unwrap();
+            (
+                repo::list_events(&c, subject_id.as_deref(), from_ms, to_ms)?,
+                crate::db::now_ms(),
+            )
+        };
+        let n = events.len();
+        let ics = crate::ics::to_ics(&events, now);
+        std::fs::write(Path::new(&dest), ics)
+            .map_err(|e| Error::Other(format!("write {dest}: {e}")))?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("ics export failed: {e}")))?
 }
 
 /// Import the local Zotero library into the papers table (DOI-deduped).
@@ -6900,7 +6930,7 @@ pub async fn docx_review_edits(
             guard_offline_llm(&c, &spec)?;
             (spec, read_keys(&c)?)
         };
-        let mut model =
+        let model =
             llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
 
         let paras: Vec<String> = crate::office::docx::paragraph_texts(Path::new(&path))?

@@ -872,6 +872,20 @@ export const experimentUpdate = (
 ) => invoke<Experiment>("experiment_update", { id, patch });
 export const experimentDelete = (id: string) => invoke<void>("experiment_delete", { id });
 
+// ---- ICS export (RFC 5545) — local calendar interop without the cloud ----
+export const exportCalendarIcs = (
+  dest: string,
+  subjectId?: string | null,
+  fromMs?: number | null,
+  toMs?: number | null,
+) =>
+  invoke<number>("export_calendar_ics", {
+    dest,
+    subjectId: subjectId ?? null,
+    fromMs: fromMs ?? null,
+    toMs: toMs ?? null,
+  });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");

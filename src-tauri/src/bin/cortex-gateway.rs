@@ -246,7 +246,7 @@ fn answer(conn: &Connection, body: &Value) -> Result<Value, String> {
     }
 
     let hits = retrieve(conn, &query, TOP_K);
-    let (blocks, citations) = build_context(&hits);
+    let (blocks, _citations) = build_context(&hits);
     let system = if blocks.is_empty() {
         "You answer questions using your general knowledge. The user's local knowledge base \
          had no relevant material for this question — say so briefly."

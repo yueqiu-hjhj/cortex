@@ -31,6 +31,7 @@ mod deep_research;
 mod video_overview;
 pub mod zotero;
 pub mod experiments;
+pub mod ics;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -449,6 +450,7 @@ pub fn run() {
             commands::experiment_update,
             commands::experiment_delete,
             commands::export_draft_tex,
+            commands::export_calendar_ics,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

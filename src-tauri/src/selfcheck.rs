@@ -108,7 +108,7 @@ fn check_onnx_model_if_used(conn: &Connection, data_dir: &Path) -> Check {
 
 pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Result<Report> {
     let (version_check, v) = check_migration_version(conn, known_migrations);
-    let mut checks = vec![
+    let checks = vec![
         check_db_integrity(conn),
         version_check,
         check_data_dir_writable(data_dir),

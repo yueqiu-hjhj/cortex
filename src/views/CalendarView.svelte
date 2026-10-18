@@ -441,6 +441,30 @@
     if (mode === "month") return new Date(year, month, 1);
     return new Date(selectedDay);
   }
+  // ---- ICS export（RFC 5545）: 本地日历互操作，无需云端 ----
+  let icsBusy = $state(false);
+  async function exportIcs() {
+    if (icsBusy) return;
+    icsBusy = true;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const dest = await save({
+        defaultPath: "cortex-calendar.ics",
+        filters: [{ name: "iCalendar", extensions: ["ics"] }],
+      });
+      if (!dest) return;
+      const n = await api.exportCalendarIcs(dest, filterSubjectId ?? null, null, null);
+      app.pushToast({
+        kind: "success",
+        title: "ICS 已导出",
+        body: `${n} 个事件 → ${dest}`,
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "ICS 导出失败", body: String(e) });
+    } finally {
+      icsBusy = false;
+    }
+  }
 </script>
 
 <div class="cal">
@@ -472,6 +496,11 @@
           placeholder="全部科目"
         />
       </div>
+      <button class="btn btn--sm" type="button" disabled={icsBusy} onclick={exportIcs}
+              title="导出 .ics（RFC 5545），可导入 Apple Calendar / Outlook / Thunderbird">
+        <Icon name="upload" size={12} />
+        <span>{icsBusy ? "导出中…" : "ICS"}</span>
+      </button>
       <button class="btn btn--primary btn--sm" type="button" onclick={() => openCreate(addTarget())}>
         <Icon name="plus" size={12} />
         <span>新建</span>

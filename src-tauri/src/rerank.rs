@@ -102,7 +102,7 @@ pub fn rerank(query: &str, hits: &[ChunkHit], k: usize) -> Vec<ChunkHit> {
     let mut order: Vec<String> = Vec::new();
     let mut buckets: std::collections::HashMap<&str, Vec<&ChunkHit>> =
         std::collections::HashMap::new();
-    for (s, h) in scored {
+    for (_s, h) in scored {
         let sid = h.source_id.as_str();
         if !buckets.contains_key(sid) {
             order.push(h.source_id.clone());

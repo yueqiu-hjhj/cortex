@@ -425,7 +425,7 @@ fn is_han(c: char) -> bool {
 /// should find that chunk's source back" is a fair, checkable proxy.
 pub fn query_terms(text: &str) -> Vec<String> {
     let mut freq: Vec<(String, usize)> = Vec::new();
-    let mut bump = |freq: &mut Vec<(String, usize)>, t: String| {
+    let bump = |freq: &mut Vec<(String, usize)>, t: String| {
         if let Some(e) = freq.iter_mut().find(|(s, _)| *s == t) {
             e.1 += 1;
         } else {

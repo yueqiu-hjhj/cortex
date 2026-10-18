@@ -293,7 +293,7 @@ fn download(spec: &BinSpec) -> Result<Vec<u8>> {
         .map_err(|e| Error::Other(format!(
             "reqwest for {}: {e}", spec.name
         )))?;
-    let mut resp = client
+    let resp = client
         .get(spec.url)
         .send()
         .and_then(|r| r.error_for_status())
@@ -325,7 +325,7 @@ fn write_and_extract(spec: &BinSpec, target: &Path, bytes: &[u8]) -> Result<()> 
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn extract_tar_gz(spec: &BinSpec, target: &Path, bytes: &[u8]) -> Result<()> {
+fn extract_tar_gz(spec: &BinSpec, _target: &Path, _bytes: &[u8]) -> Result<()> {
     // age is published as a .zip on Windows and a .tar.gz on Linux/macOS. This
     // function is only called for the tarball case (write_and_extract's
     // ArchiveKind::TarGz arm). On Windows the age spec pins a zip so we

@@ -68,7 +68,7 @@ mod platform {
     }
 
     pub fn decrypt(cipher: &[u8]) -> Result<Vec<u8>> {
-        let mut input = blob_from(cipher);
+        let input = blob_from(cipher);
         let mut output = CRYPT_INTEGER_BLOB {
             cbData: 0,
             pbData: std::ptr::null_mut(),

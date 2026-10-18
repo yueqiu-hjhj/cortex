@@ -342,7 +342,7 @@ pub fn list_topics(conn: &Connection, subject_id: &str) -> Result<Vec<Topic>> {
     let tag_ids_by_source = tags_by_source(conn, Some(subject_id))?;
     let mut sources_by_topic: HashMap<String, Vec<Source>> = HashMap::new();
     let rows = stmt.query_map(params![subject_id], |r| {
-        let mut s = Source {
+        let s = Source {
             id: r.get(0)?, subject_id: r.get(1)?, topic_id: r.get(2)?,
             name: r.get(3)?, kind: r.get(4)?, status: r.get(5)?,
             meta: r.get(6)?, origin: r.get(7)?, error: r.get(8)?,
