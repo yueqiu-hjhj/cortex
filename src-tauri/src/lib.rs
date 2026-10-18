@@ -7,6 +7,7 @@ mod anki;
 mod asr;
 mod backup;
 mod calendar;
+mod clip_host;
 mod clip_server;
 mod commands;
 mod db;
@@ -134,7 +135,7 @@ pub fn run() {
             // page the user is reading. Binds on a detached thread, so
             // startup and first paint never wait on it. A bind failure
             // (port taken) is non-fatal: the app runs without clipping.
-            if let Err(e) = clip_server::start(app.handle().clone()) {
+            if let Err(e) = clip_host::start(app.handle().clone()) {
                 eprintln!("[clip] server did not start: {e}");
             }
 

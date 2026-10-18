@@ -21,20 +21,20 @@
 //! embed, which may load the ONNX model — runs on a detached thread AFTER the
 //! HTTP reply is sent, because the extension must never wait on the embedder.
 //!
-//! Testability: the whole request layer works on `&AppState` plus an
-//! `Option<&AppHandle>`, so the tests below drive real HTTP semantics (routing,
-//! status codes, JSON shape, DB writes) without booting a Tauri app. The
-//! AppHandle is only needed for the two things a headless test cannot have:
-//! progress events and the managed-state lookup.
+//! Testability: the whole request layer works on `&AppState` plus an optional
+//! `&dyn ClipHost`, so the tests below drive real HTTP semantics (routing,
+//! status codes, JSON shape, DB writes) without booting a Tauri app. The host
+//! half — managed-state lookup and progress events — lives behind the
+//! `ClipHost` trait and is implemented in `clip_host.rs`. Keeping this module
+//! free of `tauri::AppHandle` is deliberate: a Windows test binary that links
+//! Tauri's GUI stack fails to load with STATUS_ENTRYPOINT_NOT_FOUND.
 
 use crate::db::AppState;
 use crate::ingest;
 use crate::repo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::io::Read;
 use std::sync::OnceLock;
-use tauri::{AppHandle, Manager};
 
 /// Default loopback port. `CORTEX_CLIP_PORT` overrides it (tests, or a machine
 /// where 7878 is already taken).
@@ -42,7 +42,7 @@ pub const DEFAULT_PORT: u16 = 7878;
 
 /// Cap on a request body. A clip payload is a URL plus an optional selection;
 /// an unbounded read would let a bogus client pin a worker thread.
-const MAX_BODY_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_BODY_BYTES: u64 = 64 * 1024;
 
 /// Longest page title we keep as a source name.
 const MAX_TITLE_CHARS: usize = 280;
@@ -51,10 +51,38 @@ const MAX_TITLE_CHARS: usize = 280;
 /// surfaces exactly what arrived from the browser.
 const CLIP_TAG: &str = "clip";
 
-type HttpResponse = tiny_http::Response<std::io::Cursor<Vec<u8>>>;
+pub(crate) type HttpResponse = tiny_http::Response<std::io::Cursor<Vec<u8>>>;
 
-/// Bound address of the running clip server, filled in by `start`.
+/// Bound address of the running clip server, filled in by `clip_host::start`.
 static BOUND_ADDR: OnceLock<String> = OnceLock::new();
+
+/// The host half of a clip. `clip_server` owns the HTTP protocol; `clip_host`
+/// owns everything that needs a running Tauri app. Routing therefore stays
+/// testable with a mock host and never names `tauri::AppHandle`.
+pub(crate) trait ClipHost {
+    /// Hand the slow chunk + embed half to the host. Must return immediately:
+    /// the HTTP reply has already gone out by the time this runs.
+    fn schedule_embed(
+        &self,
+        source_id: &str,
+        subject_id: &str,
+        topic_id: Option<&str>,
+        text: &str,
+    );
+}
+
+/// Port the listener should try, honoring `CORTEX_CLIP_PORT`.
+pub(crate) fn configured_port() -> u16 {
+    std::env::var("CORTEX_CLIP_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// Record the address `clip_host::start` actually bound, for `status()`.
+pub(crate) fn set_bound_addr(addr: String) {
+    let _ = BOUND_ADDR.set(addr);
+}
 
 /// `127.0.0.1:<port>` of the running clip server, or None when it never bound.
 pub fn clip_server_addr() -> Option<String> {
@@ -211,7 +239,11 @@ fn resolve_subject(state: &AppState, requested: Option<&str>) -> std::result::Re
     }
 }
 
-fn handle_clip(state: &AppState, app: Option<&AppHandle>, req: ClipRequest) -> ClipResponse {
+fn handle_clip(
+    state: &AppState,
+    host: Option<&dyn ClipHost>,
+    req: ClipRequest,
+) -> ClipResponse {
     let url = req.url.trim().to_string();
     if url.is_empty() {
         return ClipResponse::fail(None, "url is required");
@@ -298,31 +330,11 @@ fn handle_clip(state: &AppState, app: Option<&AppHandle>, req: ClipRequest) -> C
     };
 
     // Chunk + embed out-of-band: the ONNX embedder can take minutes on a cold
-    // start, which is exactly what the extension must not wait for. (No app
-    // handle in tests → nothing to emit progress to, so skip it.)
+    // start, which is exactly what the extension must not wait for. The host
+    // decides how to schedule it; tests pass a mock that only records the call.
     if has_body {
-        if let Some(app) = app {
-            let app_bg = app.clone();
-            let id = source_id.clone();
-            let subject = subject_id.clone();
-            let topic = topic_id.clone();
-            let text = body.clone();
-            let spawned = std::thread::Builder::new()
-                .name("cortex-clip-embed".into())
-                .spawn(move || {
-                    if let Err(e) = crate::commands::finish_text_ingest(
-                        &app_bg,
-                        &id,
-                        &subject,
-                        topic.as_deref(),
-                        &text,
-                    ) {
-                        eprintln!("[clip] embedding source {id} failed: {e}");
-                    }
-                });
-            if let Err(e) = spawned {
-                eprintln!("[clip] could not spawn the embed worker: {e}");
-            }
+        if let Some(host) = host {
+            host.schedule_embed(&source_id, &subject_id, topic_id.as_deref(), &body);
         }
     }
 
@@ -356,11 +368,11 @@ fn bound_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-/// The whole request layer. `app` is optional purely so tests can drive this
+/// The whole request layer. `host` is optional purely so tests can drive this
 /// without a Tauri runtime; only the background embed needs it.
-fn route(
+pub(crate) fn route(
     state: &AppState,
-    app: Option<&AppHandle>,
+    host: Option<&dyn ClipHost>,
     method: &str,
     path: &str,
     body: &[u8],
@@ -378,7 +390,7 @@ fn route(
         ("GET", "/subjects") => json_response(200, &handle_subjects(state)),
         ("POST", "/clip") => match serde_json::from_slice::<ClipRequest>(body) {
             Ok(req) => {
-                let resp = handle_clip(state, app, req);
+                let resp = handle_clip(state, host, req);
                 let code = if resp.ok { 200 } else { 400 };
                 json_response(code, &serde_json::to_value(&resp).unwrap_or_else(|_| json!({})))
             }
@@ -391,58 +403,359 @@ fn route(
     }
 }
 
-fn serve_request(app: AppHandle, mut request: tiny_http::Request) {
-    let method = request.method().as_str().to_string();
-    let raw_url = request.url().to_string();
-    let path = raw_url.split('?').next().unwrap_or("/").to_string();
-    let mut body = Vec::new();
-    {
-        let mut reader = request.as_reader().take(MAX_BODY_BYTES);
-        let _ = reader.read_to_end(&mut body);
+#[cfg(test)]
+mod clip_server_tests {
+    use super::*;
+    use std::io::Read;
+    use std::sync::Mutex;
+
+    /// A throwaway in-memory library with one subject, like a first-run user.
+    fn state_with_subject() -> (AppState, String) {
+        let st = AppState::in_memory().expect("in-memory db");
+        let id = {
+            let c = st.db.lock().unwrap();
+            repo::insert_subject(&c, "测试学科", None, Some("📘"), None).expect("insert subject")
+        };
+        (st, id)
     }
-    let response = {
-        // Scoped so the managed-state guard is dropped before the response is
-        // written back to the socket.
-        let state = app.state::<AppState>();
-        route(&state, Some(&app), &method, &path, &body)
-    };
-    if let Err(e) = request.respond(response) {
-        eprintln!("[clip] could not answer a request: {e}");
+
+    fn read_json(resp: HttpResponse) -> (u16, Value) {
+        let code = resp.status_code().0;
+        let mut buf = Vec::new();
+        resp.into_reader().read_to_end(&mut buf).unwrap();
+        let body = serde_json::from_slice(&buf).unwrap_or(Value::Null);
+        (code, body)
     }
-}
 
-/// Bind 127.0.0.1 and serve for the life of the process. Called once from the
-/// Tauri setup hook; the accept loop runs on its own thread so startup (and
-/// first paint) never waits on the listener.
-pub fn start(app: AppHandle) -> std::result::Result<u16, String> {
-    let port = std::env::var("CORTEX_CLIP_PORT")
-        .ok()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+    /// Records every `schedule_embed` call so a test can assert the protocol
+    /// layer handed off exactly the work it should — and nothing else.
+    #[derive(Debug, Clone, PartialEq)]
+    struct EmbedCall {
+        source_id: String,
+        subject_id: String,
+        topic_id: Option<String>,
+        text: String,
+    }
 
-    let server = tiny_http::Server::http(("127.0.0.1", port))
-        .map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
-    let bound = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
-    let _ = BOUND_ADDR.set(format!("127.0.0.1:{bound}"));
-    eprintln!("[clip] browser-clip server listening on 127.0.0.1:{bound}");
+    #[derive(Default)]
+    struct MockHost {
+        calls: Mutex<Vec<EmbedCall>>,
+    }
 
-    std::thread::Builder::new()
-        .name("cortex-clip-server".into())
-        .spawn(move || {
-            for request in server.incoming_requests() {
-                let app = app.clone();
-                // One thread per request: a clip does a blocking page fetch and
-                // must not stall the accept loop or a concurrent /health ping.
-                if let Err(e) = std::thread::Builder::new()
-                    .name("cortex-clip-req".into())
-                    .spawn(move || serve_request(app, request))
-                {
-                    eprintln!("[clip] could not spawn a request thread: {e}");
-                }
+    impl MockHost {
+        fn calls(&self) -> Vec<EmbedCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl ClipHost for MockHost {
+        fn schedule_embed(
+            &self,
+            source_id: &str,
+            subject_id: &str,
+            topic_id: Option<&str>,
+            text: &str,
+        ) {
+            self.calls.lock().unwrap().push(EmbedCall {
+                source_id: source_id.to_string(),
+                subject_id: subject_id.to_string(),
+                topic_id: topic_id.map(str::to_string),
+                text: text.to_string(),
+            });
+        }
+    }
+
+    const SAMPLE_PAGE: &str = "<html><head><title>Long-term memory in LLMs</title></head>\
+                    <body><article><h1>Retrieval</h1><p>Vector search beats keyword \
+                    search on paraphrase queries.</p></article></body></html>";
+
+    /// Serve `page` once from a throwaway loopback server, so the fetch +
+    /// readability-extract path runs end to end without touching the internet.
+    fn serve_one_page(page: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let server = tiny_http::Server::http(("127.0.0.1", 0)).unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/paper");
+        let httpd = std::thread::spawn(move || {
+            if let Ok(req) = server.recv() {
+                let _ = req.respond(
+                    tiny_http::Response::from_string(page).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap(),
+                    ),
+                );
             }
-        })
-        .map_err(|e| format!("spawn the clip server thread: {e}"))?;
+        });
+        (url, httpd)
+    }
 
-    Ok(bound)
+    #[test]
+    fn health_answers_ok_and_names_the_app() {
+        let st = AppState::in_memory().unwrap();
+        let (code, body) = read_json(route(&st, None, "GET", "/health", b""));
+        assert_eq!(code, 200);
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["app"], json!("cortex"));
+    }
+
+    #[test]
+    fn version_reports_the_port_it_defaults_to() {
+        let st = AppState::in_memory().unwrap();
+        let (code, body) = read_json(route(&st, None, "GET", "/version", b""));
+        assert_eq!(code, 200);
+        assert_eq!(body["clip_port"], json!(bound_port()));
+    }
+
+    #[test]
+    fn preflight_is_204_and_satisfies_chrome_pna() {
+        let st = AppState::in_memory().unwrap();
+        let resp = route(&st, None, "OPTIONS", "/clip", b"");
+        assert_eq!(resp.status_code().0, 204);
+        let has = |name: &'static str| resp.headers().iter().any(|h| h.field.equiv(name));
+        assert!(has("Access-Control-Allow-Origin"));
+        assert!(has("Access-Control-Allow-Methods"));
+        assert!(has("Access-Control-Allow-Private-Network"));
+    }
+
+    #[test]
+    fn json_replies_carry_cors_so_the_popup_can_read_them() {
+        let st = AppState::in_memory().unwrap();
+        let resp = route(&st, None, "GET", "/health", b"");
+        let has = |name: &'static str| resp.headers().iter().any(|h| h.field.equiv(name));
+        assert!(has("Content-Type"));
+        assert!(has("Access-Control-Allow-Origin"));
+    }
+
+    #[test]
+    fn unknown_paths_are_404_json() {
+        let st = AppState::in_memory().unwrap();
+        let (code, body) = read_json(route(&st, None, "GET", "/nope", b""));
+        assert_eq!(code, 404);
+        assert_eq!(body["ok"], json!(false));
+    }
+
+    #[test]
+    fn subjects_endpoint_feeds_the_pickers_dropdown() {
+        let (st, id) = state_with_subject();
+        let (code, body) = read_json(route(&st, None, "GET", "/subjects", b""));
+        assert_eq!(code, 200);
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["subjects"][0]["id"], json!(id));
+        assert_eq!(body["subjects"][0]["name"], json!("测试学科"));
+        assert_eq!(body["default_subject"], json!(id));
+    }
+
+    #[test]
+    fn a_query_string_does_not_break_routing() {
+        let st = AppState::in_memory().unwrap();
+        // serve_request strips the query before routing; make sure the strip is
+        // what actually happens rather than relying on route() ignoring it.
+        let raw = "/health?t=1";
+        let path = raw.split('?').next().unwrap();
+        let (code, _) = read_json(route(&st, None, "GET", path, b""));
+        assert_eq!(code, 200);
+    }
+
+    #[test]
+    fn clip_without_a_url_is_a_400() {
+        let st = AppState::in_memory().unwrap();
+        let (code, body) = read_json(route(&st, None, "POST", "/clip", br#"{"url":"   "}"#));
+        assert_eq!(code, 400);
+        assert_eq!(body["ok"], json!(false));
+        assert!(body["error"].as_str().unwrap().contains("url"));
+    }
+
+    #[test]
+    fn clip_with_a_malformed_body_is_a_400() {
+        let st = AppState::in_memory().unwrap();
+        let (code, body) = read_json(route(&st, None, "POST", "/clip", b"{not json"));
+        assert_eq!(code, 400);
+        assert!(body["error"].as_str().unwrap().contains("bad request body"));
+    }
+
+    #[test]
+    fn an_empty_library_is_told_to_make_a_subject_first() {
+        let st = AppState::in_memory().unwrap();
+        // Port 1 on loopback refuses instantly, so the fetch fails offline and
+        // this never touches the network.
+        let (code, body) = read_json(
+            route(&st, None, "POST", "/clip", br#"{"url":"http://127.0.0.1:1/x"}"#),
+        );
+        assert_eq!(code, 400);
+        assert!(
+            body["error"].as_str().unwrap().contains("no subjects"),
+            "unexpected error: {body}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_page_still_saves_the_link_under_the_clip_tag() {
+        let (st, id) = state_with_subject();
+        let body = format!(r#"{{"url":"http://127.0.0.1:1/nope","subject_id":"{id}"}}"#);
+        let (code, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["ok"], json!(true));
+        assert!(
+            out["warning"].as_str().unwrap_or("").contains("link only"),
+            "expected a link-only warning, got {out}"
+        );
+
+        let source_id = out["source_id"].as_str().unwrap();
+        let c = st.db.lock().unwrap();
+        let src = repo::get_source(&c, source_id).unwrap();
+        assert_eq!(src.kind, "web");
+        assert_eq!(src.status, "draft");
+        assert_eq!(src.origin.as_deref(), Some("http://127.0.0.1:1/nope"));
+        assert!(src.tags.iter().any(|t| t == CLIP_TAG), "{:?}", src.tags);
+        // The fallback also lands in the subject the extension asked for.
+        assert_eq!(src.subject_id, id);
+    }
+
+    #[test]
+    fn a_selection_survives_a_page_we_cannot_read() {
+        let (st, id) = state_with_subject();
+        let body = format!(
+            r#"{{"url":"http://127.0.0.1:1/x","subject_id":"{id}","selection":"  勾选的重点  ","selection_only":true}}"#
+        );
+        let (code, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["ok"], json!(true));
+
+        let source_id = out["source_id"].as_str().unwrap();
+        let c = st.db.lock().unwrap();
+        let src = repo::get_source(&c, source_id).unwrap();
+        assert_eq!(src.content.as_deref(), Some("勾选的重点"));
+    }
+
+    #[test]
+    fn the_tab_title_is_folded_into_the_source_name() {
+        let (st, id) = state_with_subject();
+        let body = format!(
+            r#"{{"url":"http://127.0.0.1:1/y","subject_id":"{id}","title":"为什么我存这个"}}"#
+        );
+        let (_, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        let name = out["title"].as_str().unwrap();
+        assert!(name.starts_with("为什么我存这个 — "), "got {name}");
+    }
+
+    #[test]
+    fn an_overlong_title_is_capped() {
+        let (st, id) = state_with_subject();
+        let long = "长".repeat(400);
+        let body = format!(
+            r#"{{"url":"http://127.0.0.1:1/long","subject_id":"{id}","title":"{long}"}}"#
+        );
+        let (code, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        assert_eq!(code, 200, "{out}");
+        let name = out["title"].as_str().unwrap();
+        assert_eq!(
+            name.chars().count(),
+            MAX_TITLE_CHARS,
+            "got {} chars",
+            name.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_readable_page_is_extracted_stored_and_named_after_it() {
+        let (url, httpd) = serve_one_page(SAMPLE_PAGE);
+        let (st, id) = state_with_subject();
+        let body = format!(r#"{{"url":"{url}","subject_id":"{id}"}}"#);
+        let (code, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        httpd.join().unwrap();
+
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["ok"], json!(true));
+        assert!(out["warning"].is_null(), "unexpected warning: {out}");
+        assert!(
+            out["title"].as_str().unwrap().contains("Long-term memory"),
+            "{out}"
+        );
+
+        let source_id = out["source_id"].as_str().unwrap();
+        let c = st.db.lock().unwrap();
+        let src = repo::get_source(&c, source_id).unwrap();
+        assert_eq!(src.kind, "web");
+        assert_eq!(src.origin.as_deref(), Some(url.as_str()));
+        assert!(src.content.as_deref().unwrap_or("").contains("Vector search"));
+        assert!(src.tags.iter().any(|t| t == CLIP_TAG));
+        // Content arrived, so the row is awaiting its background embed, not a
+        // dead "draft".
+        assert_eq!(src.status, "ingesting");
+    }
+
+    #[test]
+    fn a_readable_clip_schedules_the_background_embed() {
+        let (url, httpd) = serve_one_page(SAMPLE_PAGE);
+        let (st, id) = state_with_subject();
+        let host = MockHost::default();
+        let body = format!(r#"{{"url":"{url}","subject_id":"{id}"}}"#);
+        let (code, out) = read_json(route(
+            &st,
+            Some(&host as &dyn ClipHost),
+            "POST",
+            "/clip",
+            body.as_bytes(),
+        ));
+        httpd.join().unwrap();
+
+        assert_eq!(code, 200, "{out}");
+        let calls = host.calls();
+        assert_eq!(calls.len(), 1, "expected one hand-off, got {calls:?}");
+        assert_eq!(calls[0].source_id, out["source_id"].as_str().unwrap());
+        assert_eq!(calls[0].subject_id, id);
+        assert_eq!(calls[0].topic_id, None);
+        assert!(
+            calls[0].text.contains("Vector search"),
+            "unexpected embed text: {:?}",
+            calls[0].text
+        );
+    }
+
+    #[test]
+    fn a_link_only_clip_does_not_schedule_an_embed() {
+        let (st, id) = state_with_subject();
+        let host = MockHost::default();
+        let body = format!(r#"{{"url":"http://127.0.0.1:1/nope","subject_id":"{id}"}}"#);
+        let (code, out) = read_json(route(
+            &st,
+            Some(&host as &dyn ClipHost),
+            "POST",
+            "/clip",
+            body.as_bytes(),
+        ));
+        assert_eq!(code, 200, "{out}");
+        assert!(
+            host.calls().is_empty(),
+            "a link-only clip has no text to embed"
+        );
+    }
+
+    #[test]
+    fn a_clip_can_target_a_topic() {
+        let (st, id) = state_with_subject();
+        let topic = {
+            let c = st.db.lock().unwrap();
+            repo::insert_topic(&c, &id, "第 3 讲", None, &[]).unwrap()
+        };
+        let body = format!(
+            r#"{{"url":"http://127.0.0.1:1/z","subject_id":"{id}","topic_id":"{topic}"}}"#
+        );
+        let (_, out) = read_json(route(&st, None, "POST", "/clip", body.as_bytes()));
+        let source_id = out["source_id"].as_str().unwrap();
+        let c = st.db.lock().unwrap();
+        let src = repo::get_source(&c, source_id).unwrap();
+        assert_eq!(src.topic_id.as_deref(), Some(topic.as_str()));
+    }
+
+    #[test]
+    fn the_first_subject_is_the_fallback_when_the_popup_sends_none() {
+        let (st, id) = state_with_subject();
+        let (_, out) = read_json(
+            route(&st, None, "POST", "/clip", br#"{"url":"http://127.0.0.1:1/fallback"}"#),
+        );
+        let source_id = out["source_id"].as_str().unwrap();
+        let c = st.db.lock().unwrap();
+        let src = repo::get_source(&c, source_id).unwrap();
+        assert_eq!(src.subject_id, id);
+    }
 }
 
