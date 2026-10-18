@@ -8,6 +8,9 @@
   import ChatPanel from "../components/ChatPanel.svelte";
   import { isMobile } from "../lib/platform";
   import { tick } from "svelte";
+  // pdf.js's own .textLayer styles (positioned transparent spans over the
+  // canvas) — required for the text layer to be selectable AND invisible.
+  import "pdfjs-dist/web/pdf_viewer.css";
 
   // ---- state ----
   let chunks = $state<ChunkInfo[]>([]);
@@ -81,15 +84,17 @@
   // Anything with a dedicated preview skips the chunk-list fallback.
   const hasPreview = $derived(isPdfDoc || isImage || isAudio || isText);
 
-  // ---- mobile PDF rendering ----
-  // iOS WKWebView only renders the FIRST page of an <iframe> PDF and won't scroll,
-  // so on mobile we render every page to a canvas with PDF.js into a scroll column.
-  // Desktop keeps the native <iframe> preview.
+  // ---- PDF rendering (all platforms) ----
+  // Desktop used to keep a native <iframe>, but an iframe's PDF plugin hides
+  // its text layer from us — no selection, no annotation. PDF.js canvas +
+  // TextLayer gives EVERY platform real text selection, which the 摘录 flow
+  // (gap ②读) builds on. WKWebView additionally needs this because its iframe
+  // only renders page 1.
   let pdfBox = $state<HTMLDivElement | null>(null);
   let pdfRendering = $state(false);
   let pdfError = $state<string | null>(null);
   $effect(() => {
-    if (!(isMobile && isPdfDoc && assetUrl && pdfBox)) return;
+    if (!(isPdfDoc && assetUrl && pdfBox)) return;
     const url = assetUrl;
     const box = pdfBox;
     let cancelled = false;
@@ -110,15 +115,38 @@
           const page = await doc.getPage(n);
           const base = page.getViewport({ scale: 1 });
           const cssWidth = box.clientWidth || 360;
-          const vp = page.getViewport({ scale: (cssWidth / base.width) * dpr });
+          const scale = (cssWidth / base.width) * dpr;
+          const vp = page.getViewport({ scale });
+          // Page wrapper: canvas + invisible text layer stacked on top.
+          const wrap = document.createElement("div");
+          wrap.className = "sv-pdf-page-wrap";
+          wrap.dataset.page = String(n);
+          wrap.style.position = "relative";
           const canvas = document.createElement("canvas");
           canvas.className = "sv-pdf-page";
           canvas.width = vp.width;
           canvas.height = vp.height;
+          canvas.style.width = `${cssWidth}px`;
+          canvas.style.height = "auto";
           const ctx = canvas.getContext("2d");
           if (!ctx) continue;
-          box.appendChild(canvas);
+          // The invisible text layer makes the rendered page SELECTABLE —
+          // the anchor of the 摘录 (excerpt) flow. Both CSS vars are set
+          // because pdf.js renamed --scale-factor → --total-scale-factor
+          // across major versions.
+          const textDiv = document.createElement("div");
+          textDiv.className = "textLayer sv-text-layer";
+          textDiv.style.setProperty("--scale-factor", String(scale));
+          textDiv.style.setProperty("--total-scale-factor", String(scale));
+          wrap.appendChild(canvas);
+          wrap.appendChild(textDiv);
+          box.appendChild(wrap);
           await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+          const tl = new pdfjs.TextLayer({
+            textContentSource: page.streamTextContent(),
+            container: textDiv,
+          } as any);
+          await tl.render();
         }
       } catch (e) {
         if (!cancelled) pdfError = String(e);
@@ -128,6 +156,41 @@
     })();
     return () => { cancelled = true; };
   });
+
+  // ---- selection → excerpt (②读 → ④引) ----------------------------------
+  // The TextLayer spans are selectable; on mouseup we find which page the
+  // selection lives in and offer 摘录 (with the page number auto-filled —
+  // excerpts keep their page so drafts can cite "p.12").
+  let pdfSel = $state<{ text: string; page: number; x: number; y: number } | null>(null);
+  let excerptFlash = $state<string | null>(null);
+  function onPdfMouseUp(ev: MouseEvent) {
+    const s = window.getSelection();
+    const text = s?.toString().replace(/\s+/g, " ").trim() ?? "";
+    if (!s || s.isCollapsed || text.length < 2) { pdfSel = null; return; }
+    const anchor = s.anchorNode;
+    const el = anchor instanceof Element ? anchor : anchor?.parentElement ?? null;
+    const pageWrap = el?.closest("[data-page]") as HTMLElement | null;
+    if (!pageWrap || !pdfBox?.contains(pageWrap)) { pdfSel = null; return; }
+    const rect = s.getRangeAt(0).getBoundingClientRect();
+    pdfSel = { text, page: Number(pageWrap.dataset.page), x: rect.left + rect.width / 2, y: rect.top - 10 };
+  }
+  function copyPdfSelection() {
+    if (pdfSel) void navigator.clipboard.writeText(pdfSel.text);
+    pdfSel = null;
+  }
+  async function excerptPdfSelection() {
+    if (!pdfSel || !app.activeSource) return;
+    try {
+      await api.excerptAdd(pdfSel.text, undefined, app.activeSource.id, pdfSel.page);
+      excerptFlash = `已存为摘录（p.${pdfSel.page}）`;
+      setTimeout(() => (excerptFlash = null), 2600);
+      window.getSelection()?.removeAllRanges();
+      pdfSel = null;
+    } catch (e) {
+      excerptFlash = `摘录失败：${String(e)}`;
+      setTimeout(() => (excerptFlash = null), 4000);
+    }
+  }
 
   // ---- load chunks on mount / when the active source changes ----
   // Re-runs reactively whenever app.activeSource (or its id) changes. We only
@@ -291,18 +354,27 @@
           </p>
         </div>
       {:else if isPdfDoc && assetUrl}
-        <!-- PDF / rendered slide preview (also covers pptx & docx via rendered PDF) -->
-        {#if isMobile}
-          <!-- All pages via PDF.js (WKWebView's iframe shows only page 1) -->
-          <div class="sv-pdf-pages" bind:this={pdfBox}></div>
-          {#if pdfRendering}
-            <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted);text-align:center;padding:12px">正在渲染页面…</p>
-          {/if}
-          {#if pdfError}
-            <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--err,var(--warn));text-align:center;padding:12px">Couldn't render PDF: {pdfError}</p>
-          {/if}
-        {:else}
-          <iframe class="sv-frame" src={assetUrl} title={src?.name ?? "document"}></iframe>
+        <!-- PDF / rendered slide preview (also covers pptx & docx via rendered PDF).
+             PDF.js canvas + TextLayer on ALL platforms: real text selection → 摘录. -->
+        <div class="sv-pdf-pages" bind:this={pdfBox} onmouseup={onPdfMouseUp} role="presentation"></div>
+        {#if pdfRendering}
+          <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted);text-align:center;padding:12px">正在渲染页面…</p>
+        {/if}
+        {#if pdfError}
+          <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--err,var(--warn));text-align:center;padding:12px">Couldn't render PDF: {pdfError}</p>
+        {/if}
+        {#if pdfSel}
+          <div class="float" style="position:fixed" style:left="{pdfSel.x}px" style:top="{pdfSel.y}px" role="toolbar">
+            <button class="fb" onclick={excerptPdfSelection} title="存为该来源的摘录（页码自动带上）">
+              <Icon name="book" size={11} /> 摘录
+            </button>
+            <button class="fb" onclick={copyPdfSelection}><Icon name="check" size={11} /> 复制</button>
+          </div>
+        {/if}
+        {#if excerptFlash}
+          <div class="float" style="position:fixed;left:50%;top:64px;transform:translateX(-50%)">
+            <span class="fb mono">{excerptFlash}</span>
+          </div>
         {/if}
       {:else if isImage && assetUrl}
         <!-- Image preview, centered & fit -->
@@ -411,6 +483,54 @@
 </div>
 
 <style>
+  /* Selection toolbar + flash — the LiteratureReader float look, scoped here. */
+  .float {
+    position: fixed;
+    z-index: 60;
+    display: flex;
+    gap: 4px;
+    background: var(--surface, #171d1a);
+    border: 1px solid var(--border, #2a3530);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.35));
+  }
+  .fb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: none;
+    background: transparent;
+    color: var(--fg, #d7e0db);
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .fb:hover { background: var(--surface-2, #1e2622); color: var(--accent, #2dd5b7); }
+
+  /* Page column: each canvas wrapped with its (invisible) text layer. */
+  :global(.sv-pdf-page-wrap) {
+    position: relative;
+    margin: 0 auto 14px;
+    width: fit-content;
+    max-width: 100%;
+  }
+  :global(.sv-text-layer) {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    opacity: 1;
+    line-height: 1;
+  }
+  :global(.sv-text-layer span) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0 0;
+  }
+
   /* PDF / image previews fill the pane edge-to-edge instead of the padded,
      centered "document" column used by the chunk list. */
   .sv-doc--flush {
