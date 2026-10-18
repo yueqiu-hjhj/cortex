@@ -45,6 +45,12 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "multipart"] }
+# Loopback HTTP server for the browser-extension clip flow. Only listens on
+# 127.0.0.1:7878 while the desktop app is running; the extension hits it from
+# the omnibox / context menu / popup. tiny_http is small (sync, thread-pool
+# inside) so the Tauri runtime doesn'"'"'t have to take on tokio dependencies
+# it doesn'"'"'t otherwise need.
+tiny_http = { version = "0.12", default-features = false }
 # Read Anki `.apkg` archives on import (an apkg is a ZIP holding a SQLite
 # collection). Pure-Rust deflate only — no system zlib, no extra C deps. The
 # export path hand-rolls a STORED zip writer; reading needs real unzip, hence
@@ -58,6 +64,19 @@ flate2 = "1"
 # CLI isn't present (iOS/Android, or a desktop without poppler). Handles text-layer
 # PDFs entirely in-process; scanned PDFs still need OCR (homelab ingest service).
 pdf-extract = "0.10"
+
+# A2/A3 office output + format coverage:
+# calamine reads .xlsx/.xls (A3 ingest), rust_xlsxwriter writes workbooks with
+# real formulas and charts (A2), lopdf does PDF merge/split/watermark/AcroForm
+# (A2), csv parses CSV/TSV (A3), image converts TIFF/BMP scans to PNG for the
+# vision-OCR path (A3). docx/pptx write-back is hand-rolled OOXML over the
+# existing `zip` crate — tracked changes and comments need XML surgery no Rust
+# crate does well, and the same primitives build clean documents.
+calamine = "0.36"
+csv = "1.4"
+rust_xlsxwriter = "0.100"
+lopdf = "0.45"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 # Local zero-config embeddings: ONNX model + HF tokenizer.
 # ort provides the ONNX Runtime bindings (statically links the native runtime);
 # tokenizers handles the HuggingFace 	okenizer.json that ships alongside the

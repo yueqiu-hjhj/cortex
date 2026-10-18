@@ -6,6 +6,7 @@
 use crate::embed::Embedder;
 use crate::error::{Error, Result};
 use crate::models::AddSourceInput;
+use calamine::Reader;
 use std::path::Path;
 
 /// Detect the source kind from explicit input, then path/url extension.
@@ -35,7 +36,9 @@ pub fn detect_kind(input: &AddSourceInput) -> String {
             "epub" => "epub",
             "md" | "markdown" => "md",
             "txt" | "text" | "" => "txt",
-            "png" | "jpg" | "jpeg" | "webp" => "image",
+            "png" | "jpg" | "jpeg" | "webp" | "gif" | "tiff" | "tif" | "bmp" => "image",
+            "xlsx" | "xlsm" | "xls" | "ods" => "xlsx",
+            "csv" | "tsv" => "csv",
             "m4a" | "mp3" | "wav" | "ogg" | "opus" => "audio",
             other => other,
         }
@@ -91,6 +94,20 @@ pub fn parse(kind: &str, input: &AddSourceInput) -> Result<(String, Option<Strin
                 .as_deref()
                 .ok_or_else(|| Error::Other("epub source needs a file path".into()))?;
             epub_to_text(p)
+        }
+        "xlsx" => {
+            let p = input
+                .path
+                .as_deref()
+                .ok_or_else(|| Error::Other("xlsx source needs a file path".into()))?;
+            spreadsheet_to_text(p)
+        }
+        "csv" => {
+            let p = input
+                .path
+                .as_deref()
+                .ok_or_else(|| Error::Other("csv source needs a file path".into()))?;
+            Ok((csv_to_text(p)?, None))
         }
         "yt" => {
             let url = input
@@ -808,6 +825,217 @@ pub fn image_mime(path: &str) -> &'static str {
     }
 }
 
+/// (mime, bytes) for the vision-OCR path. TIFF/BMP scans (typical scanner and
+/// 文献 exports) are rejected by most vision APIs — decode and re-encode as
+/// PNG first; everything else passes through unchanged.
+pub fn image_for_ocr(path: &str) -> Result<(&'static str, Vec<u8>)> {
+    let bytes = std::fs::read(path)?;
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if matches!(ext.as_str(), "tiff" | "tif" | "bmp") {
+        Ok(("image/png", image_to_png_bytes(&bytes)?))
+    } else {
+        Ok((image_mime(path), bytes))
+    }
+}
+
+/// Decode any image (TIFF/BMP/WebP/GIF…) and re-encode as PNG bytes, so the
+/// stored original can render in a browser `<img>` and re-OCR cleanly.
+pub fn image_to_png(path: &str) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(path)?;
+    image_to_png_bytes(&bytes)
+}
+
+fn image_to_png_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| Error::Other(format!("unreadable image: {e}")))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| Error::Other(format!("png encode failed: {e}")))?;
+    Ok(png.into_inner())
+}
+
+/// Render one spreadsheet cell to display text: numbers lose their trailing
+/// `.0`, Excel date serials decode to ISO dates (the 1900 date system with the
+/// fake 1900-02-29 folded into 1899-12-30 as epoch), errors render as #REF!.
+fn cell_str(d: &calamine::Data) -> String {
+    match d {
+        calamine::Data::Empty => String::new(),
+        calamine::Data::Int(i) => i.to_string(),
+        calamine::Data::Float(f) => fmt_num(*f),
+        calamine::Data::String(s) => s.clone(),
+        calamine::Data::Bool(b) => b.to_string(),
+        calamine::Data::DateTime(dt) => {
+            if dt.is_datetime() {
+                date_from_serial(dt.as_f64())
+            } else {
+                fmt_num(dt.as_f64())
+            }
+        }
+        calamine::Data::DateTimeIso(s) => s.clone(),
+        calamine::Data::DurationIso(s) => s.clone(),
+        calamine::Data::Error(e) => format!("#{e}"),
+    }
+}
+
+fn fmt_num(f: f64) -> String {
+    if f.is_finite() && (f - f.trunc()).abs() < 1e-9 && f.abs() < 1e15 {
+        format!("{}", f.trunc() as i64)
+    } else {
+        format!("{f}")
+    }
+}
+
+fn date_from_serial(serial: f64) -> String {
+    let days = serial.trunc() as i64;
+    let secs = ((serial - serial.trunc()) * 86_400.0).round() as i64;
+    if let (Ok(base), false) = (
+        time::Date::from_calendar_date(1899, time::Month::December, 30),
+        !(0..=100_000).contains(&days),
+    ) {
+        if let Some(d) = base.checked_add(time::Duration::days(days)) {
+            let mut out = d.to_string();
+            if secs > 0 {
+                out.push_str(&format!(" {:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60));
+            }
+            return out;
+        }
+    }
+    fmt_num(serial)
+}
+
+/// Markdown-table cell: pipes and newlines would break the table shape.
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', " ").replace('\r', "")
+}
+
+fn md_table(headers: &[String], rows: &[Vec<String>], width: usize) -> String {
+    let pad = |mut r: Vec<String>| {
+        r.resize(width, String::new());
+        r
+    };
+    let mut out = String::new();
+    out.push_str("| ");
+    out.push_str(&pad(headers.to_vec()).iter().take(width).map(|h| md_cell(h)).collect::<Vec<_>>().join(" | "));
+    out.push_str(" |\n| ");
+    out.push_str(&vec!["---"; width].join(" | "));
+    out.push_str(" |\n");
+    for r in rows {
+        out.push_str("| ");
+        out.push_str(&pad(r.clone()).iter().take(width).map(|c| md_cell(c)).collect::<Vec<_>>().join(" | "));
+        out.push_str(" |\n");
+    }
+    out
+}
+
+/// Parse a spreadsheet (.xlsx/.xlsm/.xls/.ods via calamine) into Markdown
+/// tables, one per sheet — chunkable, model-readable, and faithful to dates
+/// and numbers. Rows are capped per sheet so a 100k-row grade book can't
+/// monopolize the source (the cap is noted in the output, never silent).
+pub fn spreadsheet_to_text(path: &str) -> Result<(String, Option<String>)> {
+    const MAX_ROWS: usize = 5000;
+    const MAX_COLS: usize = 64;
+    let mut wb = calamine::open_workbook_auto(path)
+        .map_err(|e| Error::Other(format!("cannot open spreadsheet: {e}")))?;
+    let mut out = String::new();
+    let mut warnings: Vec<String> = Vec::new();
+    for name in wb.sheet_names() {
+        let range = match wb.worksheet_range(&name) {
+            Ok(r) => r,
+            Err(e) => {
+                warnings.push(format!("工作表 {name} 无法读取：{e}"));
+                continue;
+            }
+        };
+        let all: Vec<Vec<String>> = range
+            .rows()
+            .map(|r| r.iter().map(cell_str).collect())
+            .collect();
+        if all.iter().all(|r| r.iter().all(|c| c.trim().is_empty())) {
+            continue;
+        }
+        let width = all.iter().map(|r| r.len()).max().unwrap_or(0).min(MAX_COLS);
+        if width == 0 {
+            continue;
+        }
+        out.push_str(&format!("## 表格：{name}\n\n"));
+        let shown = all.len().min(MAX_ROWS);
+        let headers = &all[0];
+        let rows: Vec<Vec<String>> = all[1..shown].to_vec();
+        out.push_str(&md_table(headers, &rows, width));
+        if all.len() > MAX_ROWS {
+            out.push_str(&format!(
+                "\n（仅显示前 {MAX_ROWS} 行，共 {} 行）\n\n",
+                all.len()
+            ));
+        } else {
+            out.push('\n');
+        }
+    }
+    let text = out.trim().to_string();
+    if text.is_empty() {
+        return Err(Error::Other("spreadsheet has no readable sheets".into()));
+    }
+    let warning = if warnings.is_empty() {
+        None
+    } else {
+        Some(warnings.join("；"))
+    };
+    Ok((text, warning))
+}
+
+/// Parse a CSV/TSV into a Markdown table. Delimiter is sniffed from the first
+/// line (tab → TSV, then comma, then semicolon for Excel-localized exports).
+/// Non-UTF-8 bytes (GBK exports) decode lossily rather than failing ingest.
+pub fn csv_to_text(path: &str) -> Result<String> {
+    const MAX_ROWS: usize = 5000;
+    const MAX_COLS: usize = 64;
+    let raw = std::fs::read(path)?;
+    let raw = String::from_utf8_lossy(&raw);
+    let raw = raw.trim_start_matches('\u{feff}');
+    let first_line = raw.lines().next().unwrap_or("");
+    let delim = if first_line.contains('\t') {
+        b'\t'
+    } else if first_line.contains(',') {
+        b','
+    } else {
+        b';'
+    };
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(raw.as_bytes());
+    let mut all: Vec<Vec<String>> = Vec::new();
+    for rec in rdr.records() {
+        match rec {
+            Ok(r) => all.push(r.iter().map(|c| c.to_string()).collect()),
+            Err(_) => break, // malformed tail — keep what parsed
+        }
+    }
+    if all.iter().all(|r| r.iter().all(|c| c.trim().is_empty())) {
+        return Err(Error::Other("CSV has no data rows".into()));
+    }
+    let width = all.iter().map(|r| r.len()).max().unwrap_or(0).min(MAX_COLS);
+    if width == 0 {
+        return Err(Error::Other("CSV has no columns".into()));
+    }
+    let shown = all.len().min(MAX_ROWS);
+    let text = format!(
+        "{}{}",
+        md_table(&all[0], &all[1..shown], width),
+        if all.len() > MAX_ROWS {
+            format!("\n（仅显示前 {MAX_ROWS} 行，共 {} 行）\n", all.len())
+        } else {
+            String::new()
+        }
+    );
+    Ok(text)
+}
+
 /// Render up to `max_pages` of a PDF to PNG page images (bytes) via poppler's
 /// `pdftoppm`. Used to OCR scanned/image-only PDFs through a vision model.
 pub fn pdf_page_images(path: &str, max_pages: usize) -> Result<Vec<Vec<u8>>> {
@@ -1067,6 +1295,109 @@ mod tests {
     #[test]
     fn chunker_empty_input() {
         assert!(chunk_text("   ", 100, 10).is_empty());
+    }
+
+    #[test]
+    fn spreadsheet_and_csv_ingest() {
+        let dir = std::env::temp_dir().join(format!("cortex-xlsx-test-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Build a real grade-book xlsx with rust_xlsxwriter and parse it back.
+        let xlsx = dir.join("grades.xlsx");
+        {
+            let mut wb = rust_xlsxwriter::Workbook::new();
+            let ws = wb.add_worksheet().set_name("成绩").unwrap();
+            ws.write_string(0, 0, "姓名").unwrap();
+            ws.write_number(0, 1, 89.0).unwrap();
+            ws.write_string(1, 0, "小明").unwrap();
+            ws.write_number(1, 1, 92.5).unwrap();
+            wb.save(&xlsx).unwrap();
+        }
+        let (text, warning) = spreadsheet_to_text(xlsx.to_str().unwrap()).unwrap();
+        assert!(text.contains("## 表格：成绩"), "xlsx text: {text}");
+        assert!(text.contains("小明"));
+        assert!(text.contains("| 89 |"), "89.0 should render as 89: {text}");
+        assert!(text.contains("92.5"));
+        assert!(warning.is_none());
+
+        // CSV: comma dialect round-trips through the markdown table.
+        let csv = dir.join("t.csv");
+        std::fs::write(&csv, "a,b\n1,x\n2,y\n").unwrap();
+        let ctext = csv_to_text(csv.to_str().unwrap()).unwrap();
+        assert!(ctext.starts_with("| a | b |"), "csv: {ctext}");
+        assert!(ctext.contains("| 2 | y |"));
+
+        // TSV: tab-delimited is sniffed from the first line.
+        std::fs::write(&csv, "a\tb\n1\tx\n").unwrap();
+        let ttext = csv_to_text(csv.to_str().unwrap()).unwrap();
+        assert!(ttext.contains("| 1 | x |"), "tsv: {ttext}");
+
+        // Pipes in cells must not break the table shape.
+        std::fs::write(&csv, "a,b\n\"x|y\",1\n").unwrap();
+        let ptext = csv_to_text(csv.to_str().unwrap()).unwrap();
+        assert!(ptext.contains("x\\|y"), "escaped pipe: {ptext}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_kind_routes_new_formats() {
+        let mk = |path: &str| AddSourceInput {
+            subject_id: "s".into(),
+            topic_id: None,
+            name: None,
+            kind: None,
+            url: None,
+            path: Some(path.to_string()),
+            text: None,
+            tags: vec![],
+        };
+        for (path, kind) in [
+            ("C:\\t\\课程表.xlsx", "xlsx"),
+            ("C:\\t\\data.csv", "csv"),
+            ("C:\\t\\data.tsv", "csv"),
+            ("C:\\t\\scan.tif", "image"),
+            ("C:\\t\\scan.bmp", "image"),
+            ("C:\\t\\notes.md", "md"),
+        ] {
+            let got = detect_kind(&mk(path));
+            assert_eq!(got, kind, "{path} → {got}");
+        }
+    }
+
+    #[test]
+    fn tiff_and_bmp_convert_to_png_for_ocr() {
+        let dir = std::env::temp_dir().join(format!("cortex-img-test-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            8,
+            8,
+            image::Rgb([220, 40, 40]),
+        ));
+
+        // BMP → PNG for the vision path.
+        let mut bmp = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bmp, image::ImageFormat::Bmp).unwrap();
+        let bmp_path = dir.join("scan.bmp");
+        std::fs::write(&bmp_path, bmp.get_ref()).unwrap();
+        let (mime, bytes) = image_for_ocr(bmp_path.to_str().unwrap()).unwrap();
+        assert_eq!(mime, "image/png");
+        assert!(bytes.starts_with(b"\x89PNG"), "should be a PNG now");
+
+        // PNG passes through untouched.
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png_path = dir.join("shot.png");
+        std::fs::write(&png_path, png.get_ref()).unwrap();
+        let (mime, bytes) = image_for_ocr(png_path.to_str().unwrap()).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, png.get_ref().clone());
+
+        // The same conversion feeds the stored-original path (browser preview).
+        let converted = image_to_png(bmp_path.to_str().unwrap()).unwrap();
+        assert!(converted.starts_with(b"\x89PNG"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -16,6 +16,21 @@ pub enum Error {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("zip error: {0}")]
+    Zip(#[from] zip::result::ZipError),
+
+    #[error("xlsx error: {0}")]
+    Xlsx(#[from] rust_xlsxwriter::XlsxError),
+
+    #[error("pdf error: {0}")]
+    Pdf(#[from] lopdf::Error),
+
+    #[error("spreadsheet error: {0}")]
+    Xls(#[from] calamine::XlsError),
+
+    #[error("encoding error: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+
     #[error("not found: {0}")]
     NotFound(String),
 
