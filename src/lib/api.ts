@@ -1974,9 +1974,16 @@ export interface DraftParagraph {
   text: string;
   cites: number[];
 }
+export interface DraftSection {
+  heading: string;
+  paragraphs: DraftParagraph[];
+}
 export interface DraftPayload {
   thesis: string;
-  paragraphs: DraftParagraph[];
+  /** Legacy flat drafts (pre-sections). */
+  paragraphs?: DraftParagraph[];
+  /** Multi-section drafts (D-写): rendered as real headings everywhere. */
+  sections?: DraftSection[];
   references: DraftReference[];
 }
 export interface ResearchDraft {
@@ -2013,6 +2020,9 @@ export const exportMaterialPptx = (materialId: string, dest: string) =>
 /** Research draft → Word (.docx) with citation numbers and the reference table. */
 export const exportDraftDocx = (draftId: string, dest: string) =>
   invoke<void>("export_draft_docx", { draftId, dest });
+/** Export a draft as a COMPILABLE .tex (ctexart; xelatex for Chinese). */
+export const exportDraftTex = (draftId: string, dest: string) =>
+  invoke<void>("export_draft_tex", { draftId, dest });
 
 /** Visible paragraph texts of an existing .docx (edit anchors match these). */
 export const docxReadParagraphs = (path: string) =>

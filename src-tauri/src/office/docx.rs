@@ -358,6 +358,17 @@ pub fn draft_blocks(title: &str, meta: Option<&str>, payload: &serde_json::Value
     if !thesis.is_empty() {
         b.push(Block::Emph(thesis));
     }
+    // Multi-section drafts (D-写): each section becomes a real Heading.
+    for sec in arr(payload, "sections") {
+        let heading = s(sec.get("heading"));
+        if !heading.is_empty() {
+            b.push(Block::Heading(heading, 2));
+        }
+        for p in arr(&sec, "paragraphs") {
+            b.push(Block::Para(s(p.get("text"))));
+        }
+    }
+    // Legacy flat drafts keep rendering their paragraphs.
     for p in arr(payload, "paragraphs") {
         b.push(Block::Para(s(p.get("text"))));
     }

@@ -448,6 +448,7 @@ pub fn run() {
             commands::experiment_list,
             commands::experiment_update,
             commands::experiment_delete,
+            commands::export_draft_tex,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

@@ -6488,13 +6488,15 @@ pub async fn generate_draft(
 
         let n = refs.len();
         let mut system = format!(
-            "You write a short literature-review style passage from numbered excerpts. \
+            "You write a structured literature-review style passage from numbered excerpts. \
              Output ONLY JSON of this exact shape:\n\
-             {{\"thesis\":string,\"paragraphs\":[{{\"text\":string,\"cites\":[int]}}]}}\n\
+             {{\"thesis\":string,\"sections\":[{{\"heading\":string,\"paragraphs\":[{{\"text\":string,\"cites\":[int]}}]}}]}}\n\
              Rules:\n\
              - \"thesis\" is ONE sentence stating the passage's overall claim.\n\
-             - 1-3 \"paragraphs\", each 3-6 sentences of flowing academic prose — NO markdown, \
-             NO bullet points, NO headings.\n\
+             - 2-5 \"sections\" organized like a real review (背景与问题 / 方法与证据 / 分歧与共识 / \
+             缺口与下一步 — pick what the excerpts actually support), each \"heading\" a short \
+             noun phrase, each section 1-3 \"paragraphs\" of 3-6 sentences of flowing academic \
+             prose — NO markdown, NO bullet points.\n\
              - Cite with the bracket numbers of the excerpts: write [1] [2] at the point of \
              citation inside \"text\"; \"cites\" lists every number cited in that paragraph.\n\
              - Use ONLY the numbers [1]-[{n}] from the given excerpts; never invent, renumber, \
@@ -6518,8 +6520,8 @@ pub async fn generate_draft(
             .map_err(|_| Error::Other("model returned unstructured output; try again".into()))?;
         let body: crate::drafts::DraftBody = serde_json::from_value(payload.clone())
             .map_err(|_| Error::Other("model output does not match the draft shape; try again".into()))?;
-        if body.paragraphs.is_empty() {
-            return Err(Error::Other("model returned no paragraphs; try again".into()));
+        if body.paragraphs.is_empty() && body.sections.is_empty() {
+            return Err(Error::Other("model returned no sections or paragraphs; try again".into()));
         }
 
         // Out-of-range citation numbers are dropped, not fatal — a paragraph
@@ -6775,6 +6777,28 @@ pub async fn export_draft_docx(app: AppHandle, draft_id: String, dest: String) -
         let payload = d.payload.as_ref().unwrap_or(&empty);
         let blocks = crate::office::docx::draft_blocks(&d.title, d.meta.as_deref(), payload);
         crate::office::docx::save_document(Path::new(&dest), &blocks)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("export failed: {e}")))?
+}
+
+/// Export a draft as a COMPILABLE .tex (ctexart — xelatex handles Chinese).
+/// Deterministic: sections map to \section, prose is escaped outside math
+/// spans, and the bibliography is generated from the payload's excerpt-backed
+/// references — [n] in the text matches [n] in thebibliography by position.
+#[tauri::command]
+pub async fn export_draft_tex(app: AppHandle, draft_id: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let state = app.state::<AppState>();
+        let d = {
+            let c = state.db.lock().unwrap();
+            crate::drafts::get(&c, &draft_id)?
+        };
+        let empty = serde_json::json!({});
+        let payload = d.payload.as_ref().unwrap_or(&empty);
+        let tex = crate::drafts::to_latex(&d.title, d.meta.as_deref(), payload);
+        std::fs::write(Path::new(&dest), tex)
+            .map_err(|e| Error::Other(format!("write {dest}: {e}")))
     })
     .await
     .map_err(|e| Error::Other(format!("export failed: {e}")))?

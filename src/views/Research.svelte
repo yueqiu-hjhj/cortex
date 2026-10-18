@@ -185,7 +185,10 @@
     const refs = (p.references ?? [])
       .map((r) => `[${r.n}] ${r.authors ?? "佚名"}${r.year ? ` (${r.year})` : ""}. ${r.title}.`)
       .join("\n");
-    return [p.thesis, ...p.paragraphs.map((x) => x.text), "", "参考文献", refs]
+    const secs = (p.sections ?? []).map(
+      (s) => `## ${s.heading}\n\n${(s.paragraphs ?? []).map((x) => x.text).join("\n\n")}`,
+    );
+    return [p.thesis, ...secs, ...(p.paragraphs ?? []).map((x) => x.text), "", "参考文献", refs]
       .filter(Boolean)
       .join("\n\n");
   }
@@ -211,6 +214,22 @@
       if (!dest) return;
       await api.exportDraftDocx(d.id, dest);
       say(`成稿已导出 → ${dest}`);
+    } catch (e) {
+      draftError = String(e);
+    }
+  }
+
+  async function exportDraftTex(d: api.ResearchDraft) {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe = d.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "draft";
+      const dest = await save({
+        defaultPath: `${safe}.tex`,
+        filters: [{ name: "LaTeX (ctexart, xelatex 编译)", extensions: ["tex"] }],
+      });
+      if (!dest) return;
+      await api.exportDraftTex(d.id, dest);
+      say(`LaTeX 已导出 → ${dest}`);
     } catch (e) {
       draftError = String(e);
     }
@@ -1024,6 +1043,14 @@
         {#if showingDraft.payload?.thesis}
           <p class="thesis">{showingDraft.payload.thesis}</p>
         {/if}
+        {#each showingDraft.payload?.sections ?? [] as sec (sec.heading)}
+          <h4 class="dsec">{sec.heading}</h4>
+          {#each sec.paragraphs ?? [] as para}
+            <p class="dpara">
+              {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+            </p>
+          {/each}
+        {/each}
         {#each showingDraft.payload?.paragraphs ?? [] as para}
           <p class="dpara">
             {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
@@ -1043,6 +1070,7 @@
         <div class="matrix-modal-actions">
           <button class="btn" onclick={() => copyDraft(showingDraft)}>复制全文</button>
           <button class="btn" onclick={() => exportDraft(showingDraft)}>导出 docx</button>
+          <button class="btn" onclick={() => exportDraftTex(showingDraft)} title="ctexart + thebibliography，xelatex 可直接编译">导出 LaTeX</button>
           <button class="btn primary" onclick={closeDraftModal}>完成</button>
         </div>
       </div>

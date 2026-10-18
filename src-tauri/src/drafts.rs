@@ -36,11 +36,23 @@ pub struct Draft {
     pub created_at: i64,
 }
 
-/// What the model returns: {thesis, paragraphs:[{text, cites}]}.
+/// What the model returns: {thesis, paragraphs:[{text, cites}]} — or, for
+/// multi-section drafts, {thesis, sections:[{heading, paragraphs:[…]}]}.
+/// `paragraphs` stays for backward compatibility with drafts written before
+/// sections existed; renderers handle both.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DraftBody {
     #[serde(default)]
     pub thesis: String,
+    #[serde(default)]
+    pub paragraphs: Vec<DraftPara>,
+    #[serde(default)]
+    pub sections: Vec<DraftSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DraftSection {
+    pub heading: String,
     #[serde(default)]
     pub paragraphs: Vec<DraftPara>,
 }
@@ -132,8 +144,7 @@ pub fn save(
     excerpt_ids: &[String],
     meta: &str,
     payload: &serde_json::Value,
-) -> Result<String> {
-    let id = new_id();
+) -> Result<String> {    let id = new_id();
     conn.execute(
         "INSERT INTO drafts (id, title, excerpt_ids, meta, payload, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -185,6 +196,148 @@ fn row_to_draft(r: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
         payload: payload_raw.and_then(|p| serde_json::from_str(&p).ok()),
         created_at: r.get(5)?,
     })
+}
+
+
+// ---- LaTeX export (multi-section drafts → compilable .tex) -----------------
+
+/// Escape LaTeX special characters OUTSIDE math spans. Math (\(…\), $$…$$,
+/// $…$) passes through verbatim — escaping inside it would destroy the
+/// equations the model already wrote in LaTeX. Bracket citations [1] survive
+/// escaping untouched (brackets are not special).
+pub fn latex_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    // Math states: display $$…$$, inline-paren \(…\), single $…$.
+    let mut math_until: Option<&str> = None;
+    while i < n {
+        if math_until.is_none() {
+            // Detect math openers.
+            if chars[i] == '\\' && i + 1 < n && chars[i + 1] == '(' {
+                math_until = Some("\\)");
+                out.push_str("\\(");
+                i += 2;
+                continue;
+            }
+            if chars[i] == '$' && i + 1 < n && chars[i + 1] == '$' {
+                math_until = Some("$$");
+                out.push_str("$$");
+                i += 2;
+                continue;
+            }
+            if chars[i] == '$' {
+                math_until = Some("$");
+                out.push('$');
+                i += 1;
+                continue;
+            }
+            match chars[i] {
+                '&' => out.push_str("\\&"),
+                '%' => out.push_str("\\%"),
+                '#' => out.push_str("\\#"),
+                '_' => out.push_str("\\_"),
+                '{' => out.push_str("\\{"),
+                '}' => out.push_str("\\}"),
+                '~' => out.push_str("\\textasciitilde{}"),
+                '^' => out.push_str("\\textasciicircum{}"),
+                '\\' => out.push_str("\\textbackslash{}"),
+                c => out.push(c),
+            }
+            i += 1;
+        } else {
+            let closer = math_until.unwrap();
+            let cl: Vec<char> = closer.chars().collect();
+            let m = cl.len();
+            if i + m <= n && chars[i..i + m] == cl[..] {
+                for _ in 0..m {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                math_until = None;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Render a draft payload as a COMPILABLE .tex (ctexart handles Chinese via
+/// xelatex). Deterministic: the reference list comes from the payload's
+/// references (built from real excerpts at generation time), never from the
+/// model. Multi-section drafts become \section blocks; legacy flat drafts
+/// render as plain paragraphs.
+pub fn to_latex(title: &str, meta: Option<&str>, payload: &serde_json::Value) -> String {
+    let s = |v: Option<&serde_json::Value>| {
+        v.and_then(|x| x.as_str()).unwrap_or("").to_string()
+    };
+    let arr = |v: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        v.get(key).and_then(|x| x.as_array()).cloned().unwrap_or_default()
+    };
+
+    let mut out = String::new();
+    out.push_str("\\documentclass[UTF8,12pt]{ctexart}\n");
+    out.push_str("\\usepackage[a4paper,margin=2.5cm]{geometry}\n\n");
+    out.push_str(&format!("\\title{{{}}}\n", latex_escape(title)));
+    out.push_str("\\date{}\n\n\\begin{document}\n\\maketitle\n\n");
+
+    if let Some(m) = meta.filter(|m| !m.trim().is_empty()) {
+        out.push_str(&format!("\\begin{{center}}\\itshape {}\\end{{center}}\n\n", latex_escape(m)));
+    }
+    let thesis = s(payload.get("thesis"));
+    if !thesis.trim().is_empty() {
+        out.push_str(&format!("\\noindent\\textbf{{{} }}\n\n", latex_escape(&thesis)));
+    }
+
+    let flat: Vec<String> = arr(payload, "paragraphs")
+        .iter()
+        .map(|p| s(p.get("text")))
+        .filter(|t| !t.trim().is_empty())
+        .collect();
+    for t in &flat {
+        out.push_str(&latex_escape(t));
+        out.push_str("\n\n");
+    }
+    for sec in arr(payload, "sections") {
+        let heading = s(sec.get("heading"));
+        if !heading.is_empty() {
+            out.push_str(&format!("\\section{{{}}}\n\n", latex_escape(&heading)));
+        }
+        for p in arr(&sec, "paragraphs") {
+            let t = s(p.get("text"));
+            if !t.trim().is_empty() {
+                out.push_str(&latex_escape(&t));
+                out.push_str("\n\n");
+            }
+        }
+    }
+
+    let refs = arr(payload, "references");
+    if !refs.is_empty() {
+        out.push_str(&format!("\\begin{{thebibliography}}{{{}}}\n", refs.len()));
+        for r in &refs {
+            let n = r.get("n").and_then(|x| x.as_i64()).unwrap_or(0);
+            let authors = s(r.get("authors"));
+            let year = r.get("year").and_then(|x| x.as_i64());
+            let page = r.get("page").and_then(|x| x.as_i64());
+            let title_ = s(r.get("title"));
+            let line = format!(
+                "{}{}. {}.{}",
+                if authors.is_empty() { "佚名".to_string() } else { authors },
+                year.map(|y| format!(" ({y})")).unwrap_or_default(),
+                title_,
+                page.map(|p| format!(" p.{p} 摘录")).unwrap_or_default()
+            );
+            out.push_str(&format!("\\bibitem{{r{}}} {}\n", n, latex_escape(&line)));
+        }
+        out.push_str("\\end{thebibliography}\n");
+    }
+
+    out.push_str("\\end{document}\n");
+    out
 }
 
 #[cfg(test)]
@@ -295,5 +448,50 @@ mod tests {
         assert_eq!(list(&c).unwrap().len(), 1);
         delete(&c, &id).unwrap();
         assert!(list(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn latex_escape_spares_math_spans() {
+        assert_eq!(latex_escape("a & b"), "a \\& b");
+        assert_eq!(latex_escape("x_1 #2"), "x\\_1 \\#2");
+        // Inline \(…\) math passes verbatim, including specials.
+        assert_eq!(latex_escape("损失 \\(L = \\frac{a}{b}\\) 收敛"), "损失 \\(L = \\frac{a}{b}\\) 收敛");
+        // $$…$$ display math too.
+        assert_eq!(latex_escape("$$e^{i\\pi}+1=0$$"), "$$e^{i\\pi}+1=0$$");
+        // Single $…$.
+        assert_eq!(latex_escape("$\\alpha$ 与 $\\beta$"), "$\\alpha$ 与 $\\beta$");
+        // Citations [1] untouched.
+        assert_eq!(latex_escape("如 [1] 所示"), "如 [1] 所示");
+    }
+
+    #[test]
+    fn latex_document_has_sections_and_bibliography() {
+        let payload = serde_json::json!({
+            "thesis": "核心论点。",
+            "sections": [
+                { "heading": "背景", "paragraphs": [
+                    { "text": "Transformer 改变了领域 [1]，准确率 88.2% & 显著。", "cites": [1] }
+                ]},
+                { "heading": "缺口", "paragraphs": [
+                    { "text": "仍缺少跨语言验证 [1]。", "cites": [1] }
+                ]}
+            ],
+            "references": [
+                { "n": 1, "authors": "Vaswani, A.", "year": 2017, "title": "Attention", "page": 3 }
+            ]
+        });
+        let tex = to_latex("综述：注意力", Some("由 1 条摘录生成"), &payload);
+        assert!(tex.starts_with("\\documentclass[UTF8,12pt]{ctexart}"));
+        assert!(tex.contains("\\section{背景}"));
+        assert!(tex.contains("\\section{缺口}"));
+        // The & inside prose is escaped, but math-span-free text keeps [1].
+        assert!(tex.contains("88.2\\% \\& 显著"));
+        assert!(tex.contains("\\bibitem{r1} Vaswani, A. (2017). Attention. p.3 摘录"));
+        assert!(tex.trim_end().ends_with("\\end{document}"));
+        // Legacy flat drafts still render (no sections key).
+        let legacy = serde_json::json!({ "thesis": "t", "paragraphs": [ { "text": "一段话", "cites": [1] } ] });
+        let tex2 = to_latex("旧稿", None, &legacy);
+        assert!(!tex2.contains("\\section"));
+        assert!(tex2.contains("一段话"));
     }
 }
