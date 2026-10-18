@@ -569,6 +569,28 @@
   // them again here would just duplicate the detail panel.
   let knConcepts = $derived(knNodes.filter((n) => n.kind === "concept"));
 
+
+  // ── XMind export: take the framework to XMind/FreeMind ──────────────────
+  let xmindBusy = $state(false);
+  async function exportXmind() {
+    const sid = app.activeSubjectId;
+    if (!sid || xmindBusy) return;
+    xmindBusy = true;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const dest = await save({
+        defaultPath: `${app.activeSubject?.name ?? "knowledge"}.xmind`,
+        filters: [{ name: "XMind", extensions: ["xmind"] }],
+      });
+      if (!dest) return;
+      const n = await api.exportKnowledgeXmind(sid, dest);
+      app.pushToast({ kind: "success", title: "XMind 已导出", body: `${n} 个节点 → ${dest}` });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "XMind 导出失败", body: String(e) });
+    } finally {
+      xmindBusy = false;
+    }
+  }
 </script>
 
 <div class="ng">
@@ -632,6 +654,9 @@
       <Icon name="reader" size={13} /> Labels
     </button>
     <button class="tgl" onclick={refit} title="重置视图"><Icon name="refresh" size={13} /> 适配</button>
+    <button class="tgl" onclick={exportXmind} disabled={xmindBusy} title="导出知识框架为 .xmind（XMind 2020+ 可直接打开）">
+      <Icon name="doc" size={13} /> {xmindBusy ? "导出中…" : "XMind"}
+    </button>
     <div class="ng-search">
       <Icon name="search" size={13} />
       <input placeholder="搜索节点…" bind:value={query} />

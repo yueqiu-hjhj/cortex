@@ -934,6 +934,10 @@ export const pkgVerify = (path: string) =>
 export const pkgImport = (path: string, targetDir: string, force?: boolean) =>
   invoke<PkgImportResult>("pkg_import", { path, targetDir, force: force ?? null });
 
+/** Export the knowledge framework as a real .xmind (2020+ format). */
+export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
+  invoke<number>("export_knowledge_xmind", { subjectId, dest });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");

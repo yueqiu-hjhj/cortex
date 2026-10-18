@@ -35,6 +35,7 @@ pub mod ics;
 pub mod mcp_server;
 pub mod pkg;
 pub mod note_links;
+pub mod xmind;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -484,6 +485,7 @@ pub fn run() {
             commands::pkg_import,
             notes::note_backlinks,
             notes::note_resolve_link,
+            commands::export_knowledge_xmind,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

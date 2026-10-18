@@ -6359,6 +6359,34 @@ pub async fn pkg_import(
     .map_err(|e| Error::Other(format!("pkg import failed: {e}")))?
 }
 
+/// Export a subject's knowledge framework as a real .xmind (2020+ format).
+/// Returns the node count written.
+#[tauri::command]
+pub async fn export_knowledge_xmind(
+    app: AppHandle,
+    subject_id: String,
+    dest: String,
+) -> Result<usize> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<usize> {
+        let state = app.state::<AppState>();
+        let (graph, title) = {
+            let c = state.db.lock().unwrap();
+            let graph = repo::get_knowledge_graph(&c, &subject_id)?;
+            let title = repo::get_subject(&c, &subject_id)
+                .map(|s| s.name)
+                .unwrap_or_else(|_| "知识框架".into());
+            (graph, title)
+        };
+        let n = graph.nodes.len();
+        let bytes = crate::xmind::to_xmind(&graph, &title)?;
+        std::fs::write(Path::new(&dest), bytes)
+            .map_err(|e| Error::Other(format!("write {dest}: {e}")))?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("xmind export failed: {e}")))?
+}
+
 /// Import the local Zotero library into the papers table (DOI-deduped).
 /// Reads a COPY of zotero.sqlite — Zotero's own library is never touched.
 #[tauri::command]
