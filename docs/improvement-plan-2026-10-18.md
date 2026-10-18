@@ -117,6 +117,8 @@
 
 ### 批次三（约 2–3 周）——「Agent 平台 + 综述工作流」
 
+**✅ 多 Agent 共享上下文已完成（`ea30a1b`,P0 #4)**：0047 thread_id + thread_messages(带 agent 归属)+ history_for_run(execute_run 读全线程) + agents_switch_agent + Agents UI 切换器/继续此线程/消息归属徽标。剩 PRISMA 8 维与 CI gates 未做。
+
 #### 3.1 多 Agent 共享上下文（P0 #4，1.5–2 周）
 - `agent_runs` 增加 `thread_id`：同一 thread 内切换 agent 时，把前序消息作为共享上下文注入（引用式，不复制）。
 - UI：对话内 agent 切换器（课程助教 → 复习教练 → 文档助手），切换不丢上下文；每条消息标注由哪个 agent 产生。
