@@ -755,6 +755,75 @@
       backingUp = false;
     }
   }
+  // ---- portable archive (.cortex-pkg.tar.gz, P0 #2) ----
+  let pkgBusy = $state<null | "export" | "import" | "verify">(null);
+  let pkgInfo = $state<api.PkgExportResult | null>(null);
+  async function exportPkg() {
+    if (pkgBusy) return;
+    pkgBusy = "export";
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const dest = await save({
+        defaultPath: "cortex-library.cortex-pkg.tar.gz",
+        filters: [{ name: "Cortex 归档", extensions: ["gz", "tar.gz"] }],
+      });
+      if (!dest) return;
+      const r = await api.pkgExport(dest, true);
+      pkgInfo = r;
+      app.pushToast({
+        kind: "success",
+        title: "归档已导出",
+        body: `${r.files} 个附件 · ${(r.bytes / 1048576).toFixed(1)} MB · sha256 ${r.sha256.slice(0, 12)}…`,
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "导出失败", body: String(e) });
+    } finally {
+      pkgBusy = null;
+    }
+  }
+  async function verifyPkg() {
+    if (pkgBusy) return;
+    pkgBusy = "verify";
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({ multiple: false, filters: [{ name: "Cortex 归档", extensions: ["gz", "tar.gz"] }] });
+      if (!path || typeof path !== "string") return;
+      const r = await api.pkgVerify(path);
+      app.pushToast({
+        kind: r.ok ? "success" : "error",
+        title: r.ok ? "归档完整" : "归档有问题",
+        body: r.ok
+          ? `${r.files} 个文件校验通过 · ${r.counts?.sources ?? 0} 个来源`
+          : r.problems.slice(0, 3).join("；"),
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "校验失败", body: String(e) });
+    } finally {
+      pkgBusy = null;
+    }
+  }
+  async function importPkg() {
+    if (pkgBusy) return;
+    pkgBusy = "import";
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({ multiple: false, filters: [{ name: "Cortex 归档", extensions: ["gz", "tar.gz"] }] });
+      if (!path || typeof path !== "string") return;
+      const target = await open({ directory: true, multiple: false, title: "选择导入到哪个空目录" });
+      if (!target || typeof target !== "string") return;
+      const r = await api.pkgImport(path, target, false);
+      app.pushToast({
+        kind: "success",
+        title: "归档已导入",
+        body: `${r.files} 个附件 · ${r.counts.sources} 个来源 · ${r.counts.notes} 条笔记 → ${target}`,
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "导入失败（未通过校验则不写入）", body: String(e) });
+    } finally {
+      pkgBusy = null;
+    }
+  }
+
   function fmtBackupTime(ms: number | null): string {
     if (!ms) return "never";
     return new Date(ms).toLocaleString();
@@ -2488,6 +2557,42 @@ Notes: {about}</pre>
           </div>
         </section>
         {/if}
+
+        <section class="set-group">
+          <div class="set-group-h svc-h">
+            <div>
+              <h3 class="set-group-t">可移植归档</h3>
+              <p class="set-group-d">把整个库打成一个 <span class="mono">.cortex-pkg.tar.gz</span>：数据库快照 + 附件 + 每文件 SHA-256。可 grep、可 diff、可换机迁移；与上面的加密云端备份互补。</p>
+            </div>
+          </div>
+          <div class="set-card">
+            <div class="set-row">
+              <div>
+                <div class="set-row-t">导出 / 校验 / 导入</div>
+                <div class="set-row-d">
+                  导入会先逐文件校验哈希，被篡改的归档直接拒绝；附件缺失默认拒绝导出（可选跳过并记录）。
+                  {#if pkgInfo}
+                    <br />最近导出：<span class="mono">{pkgInfo.files}</span> 个附件 ·
+                    <span class="mono">{(pkgInfo.bytes / 1048576).toFixed(1)} MB</span> ·
+                    sha256 <span class="mono">{pkgInfo.sha256.slice(0, 16)}…</span>
+                  {/if}
+                </div>
+              </div>
+              <div class="row-inline">
+                <button class="btn btn--primary" disabled={pkgBusy !== null} onclick={exportPkg}>
+                  <Icon name={pkgBusy === "export" ? "refresh" : "doc"} size={12} />
+                  {pkgBusy === "export" ? "导出中…" : "导出归档"}
+                </button>
+                <button class="btn" disabled={pkgBusy !== null} onclick={verifyPkg}>
+                  <Icon name="check" size={12} /> {pkgBusy === "verify" ? "校验中…" : "校验"}
+                </button>
+                <button class="btn" disabled={pkgBusy !== null} onclick={importPkg}>
+                  <Icon name="upload" size={12} /> {pkgBusy === "import" ? "导入中…" : "导入"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
 
       </div>
 

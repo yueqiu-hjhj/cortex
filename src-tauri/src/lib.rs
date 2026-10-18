@@ -33,6 +33,7 @@ pub mod zotero;
 pub mod experiments;
 pub mod ics;
 pub mod mcp_server;
+pub mod pkg;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -477,6 +478,9 @@ pub fn run() {
             commands::experiment_delete,
             commands::export_draft_tex,
             commands::export_calendar_ics,
+            commands::pkg_export,
+            commands::pkg_verify,
+            commands::pkg_import,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

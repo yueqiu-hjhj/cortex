@@ -6302,6 +6302,49 @@ pub async fn export_calendar_ics(
     .map_err(|e| Error::Other(format!("ics export failed: {e}")))?
 }
 
+// ---- portable archive `.cortex-pkg.tar.gz` (P0 #2) ---------------------
+
+/// Export the whole library as a portable, hash-verified archive.
+#[tauri::command]
+pub async fn pkg_export(
+    app: AppHandle,
+    dest: String,
+    force_orphans: Option<bool>,
+) -> Result<crate::pkg::PkgExportResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::pkg::PkgExportResult> {
+        let state = app.state::<AppState>();
+        let data_dir = state
+            .data_dir
+            .clone()
+            .ok_or_else(|| Error::Other("in-memory build has no data dir".into()))?;
+        crate::pkg::export(&data_dir, Path::new(&dest), force_orphans.unwrap_or(false), &mut |_, _| {})
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pkg export failed: {e}")))?
+}
+
+/// Verify an archive without extracting anything.
+#[tauri::command]
+pub async fn pkg_verify(path: String) -> Result<crate::pkg::PkgVerifyResult> {
+    tauri::async_runtime::spawn_blocking(move || crate::pkg::verify(Path::new(&path)))
+        .await
+        .map_err(|e| Error::Other(format!("pkg verify failed: {e}")))?
+}
+
+/// Verify + extract an archive into `target_dir` (a NEW directory).
+#[tauri::command]
+pub async fn pkg_import(
+    path: String,
+    target_dir: String,
+    force: Option<bool>,
+) -> Result<crate::pkg::PkgImportResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pkg::import(Path::new(&path), Path::new(&target_dir), force.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pkg import failed: {e}")))?
+}
+
 /// Import the local Zotero library into the papers table (DOI-deduped).
 /// Reads a COPY of zotero.sqlite — Zotero's own library is never touched.
 #[tauri::command]

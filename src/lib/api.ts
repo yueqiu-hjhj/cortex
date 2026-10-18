@@ -886,6 +886,42 @@ export const exportCalendarIcs = (
     toMs: toMs ?? null,
   });
 
+// ---- portable archive `.cortex-pkg.tar.gz` (P0 #2) ----
+export interface PkgCounts {
+  subjects: number;
+  sources: number;
+  chunks: number;
+  notes: number;
+  papers: number;
+}
+export interface PkgExportResult {
+  out: string;
+  files: number;
+  bytes: number;
+  orphans: string[];
+  sha256: string;
+  counts: PkgCounts;
+}
+export interface PkgVerifyResult {
+  ok: boolean;
+  files: number;
+  problems: string[];
+  counts: PkgCounts | null;
+  created_at: number | null;
+  app_version: string | null;
+}
+export interface PkgImportResult {
+  files: number;
+  counts: PkgCounts;
+  repointed: number;
+}
+export const pkgExport = (dest: string, forceOrphans?: boolean) =>
+  invoke<PkgExportResult>("pkg_export", { dest, forceOrphans: forceOrphans ?? null });
+export const pkgVerify = (path: string) =>
+  invoke<PkgVerifyResult>("pkg_verify", { path });
+export const pkgImport = (path: string, targetDir: string, force?: boolean) =>
+  invoke<PkgImportResult>("pkg_import", { path, targetDir, force: force ?? null });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
