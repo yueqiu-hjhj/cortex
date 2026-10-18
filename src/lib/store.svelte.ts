@@ -575,7 +575,7 @@ class AppStore {
   // the ChatPanel that started it unmounts. Resolves once typed-out + persisted.
   async sendChat(params: {
     subjectId: string;
-    level: "subject" | "topic" | "source";
+    level: "subject" | "topic" | "source" | "none";
     query: string;
     sourceId?: string;
     sourceIds?: string[];

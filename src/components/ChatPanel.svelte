@@ -16,7 +16,7 @@
     { compact?: boolean; popout?: boolean; onClose?: () => void; onFullscreen?: () => void } = $props();
 
   // ── scope state ──────────────────────────────────────────────────────────
-  type Level = "subject" | "topic" | "source" | "sources";
+  type Level = "subject" | "topic" | "source" | "sources" | "none";
 
   interface ChatMessage {
     role: "system" | "user" | "assistant";
@@ -244,7 +244,8 @@
     | { kind: "subject"; label: string }
     | { kind: "tag"; label: string; tag: string }
     | { kind: "topic"; label: string; topicId: string }
-    | { kind: "source"; label: string; src: Source };
+    | { kind: "source"; label: string; src: Source }
+    | { kind: "none" };
 
   // Distinct tags across the subject's topics — chat scoped to a tag covers every
   // source under topics carrying it (e.g. tag "A2" → all your A2 exam material).
@@ -265,6 +266,8 @@
         out.push({ kind: "source", label: s.name, src: s });
       }
     }
+    // Explicit third state (Gloss): answer from the model alone.
+    out.push({ kind: "none" });
     return out;
   });
 
@@ -276,6 +279,7 @@
       return opts.findIndex((o) => o.kind === "source" && o.src.id === curSrcObj.id);
     if (level === "topic" && curTopic)
       return opts.findIndex((o) => o.kind === "topic" && o.topicId === curTopic.id);
+    if (level === "none") return opts.length - 1;
     return 0;
   });
 
@@ -290,7 +294,9 @@
   function applyOption(o: ScopeOption) {
     // Silent scope change — no system message in the thread.
     picked = {}; // single-select clears any multi-source pick
-    if (o.kind === "subject") {
+    if (o.kind === "none") {
+      level = "none";
+    } else if (o.kind === "subject") {
       level = "subject";
     } else if (o.kind === "topic") {
       topicId = o.topicId;
@@ -394,14 +400,16 @@
     api.addChatMessage(sid, "user", text).catch(() => {}); // persist
 
     const multi = level === "sources" && pickedIds.length > 0;
-    const sendLevel: "subject" | "topic" | "source" =
+    const sendLevel: "subject" | "topic" | "source" | "none" =
       multi || effLevel === "sources"
         ? "subject"
-        : effLevel === "topic"
-          ? "topic"
-          : effLevel === "source"
-            ? "source"
-            : "subject";
+        : effLevel === "none"
+          ? "none"
+          : effLevel === "topic"
+            ? "topic"
+            : effLevel === "source"
+              ? "source"
+              : "subject";
     const sourceId = !multi && sendLevel === "source" && curSrcObj ? curSrcObj.id : undefined;
     // Fire-and-forget: the store keeps running even if we unmount.
     app.sendChat({ subjectId: sid, level: sendLevel, query: text, sourceId, sourceIds: multi ? pickedIds : undefined, web: webOn });
@@ -814,7 +822,11 @@
               onmouseenter={() => (switcherSel = i)}
               onclick={() => onSwitcherRow(o)}
             >
-              {#if o.kind === "subject"}
+              {#if o.kind === "none"}
+                <Icon name="x" size={11} color="var(--fg-faint)" />
+                <span class="scopesw-label">不检索 — 只用模型通用知识回答</span>
+                <span class="scopesw-kindtag mono">显式三态</span>
+              {:else if o.kind === "subject"}
                 <Icon name="diamond" size={12} color="var(--accent)" />
                 <span class="scopesw-label">Whole subject — {o.label}</span>
               {:else if o.kind === "tag"}

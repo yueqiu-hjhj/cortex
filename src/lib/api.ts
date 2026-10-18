@@ -374,7 +374,8 @@ export const envProbe = () => invoke<Record<string, boolean>>("env_probe");
 // ---- AI ----
 export const chatAnswer = (
   subjectId: string,
-  level: "subject" | "topic" | "source",
+  /** "none" = explicit no-retrieval scope (Gloss 三态): model-only answer. */
+  level: "subject" | "topic" | "source" | "none",
   query: string,
   sourceId?: string,
   sourceIds?: string[],

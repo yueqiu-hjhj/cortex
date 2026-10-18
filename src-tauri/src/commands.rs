@@ -1787,13 +1787,20 @@ pub async fn chat_answer(
         .as_ref()
         .map(|v| v.iter().cloned().collect());
 
+    // Explicit no-retrieval scope (Gloss's third state): the question is
+    // answered from the model alone, and the retrieval metadata says so —
+    // the session ring and the red 未检索 badge make the downgrade visible.
+    let none_scope = level == "none";
+
     // The "stub" embedder (and an empty/unset provider) produces meaningless
     // vectors, so cosine search returns irrelevant chunks. In that case rely on
     // keyword search only. With a real embedder, run BOTH and merge by id so
     // retrieval is robust either way.
     let embeddings_reliable = !embed_provider.is_empty() && embed_provider != "stub";
 
-    let mut hits: Vec<ChunkHit> = if embeddings_reliable {
+    let mut hits: Vec<ChunkHit> = if none_scope {
+        Vec::new()
+    } else if embeddings_reliable {
         let embedder =
             embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
         let qvec = embedder.embed(&[query.clone()])?.pop().unwrap_or_default();
