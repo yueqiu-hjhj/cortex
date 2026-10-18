@@ -110,6 +110,11 @@ export interface ChatAnswer {
   model: string;
   images?: WebImage[];
   uncited?: boolean;
+  /** Retrieval found nothing and web/framework had nothing either — the answer
+   *  is general knowledge by construction; every citation token was stripped. */
+  abstained?: boolean;
+  /** ⟦…⟧ tokens naming sources that were never retrieved — removed from text. */
+  fabricated_dropped?: number;
 }
 export interface CsItem { t: string; d: string }
 export interface CsSection { id: string; title: string; state: string; items: CsItem[]; image?: string | null }

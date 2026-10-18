@@ -26,6 +26,7 @@ pub mod vocab;
 pub mod obsidian;
 pub mod agents;
 mod agent_exec;
+pub mod citecheck;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;

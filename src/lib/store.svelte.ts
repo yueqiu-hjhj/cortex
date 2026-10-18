@@ -589,7 +589,13 @@ class AppStore {
       if (this.#chatCancelled) return;
       const imgs = result.images ?? [];
       const citations = result.citations ?? [];
-      const { body, sugg } = this.#splitChatSuggestions(result.text);
+      // Zero-hit abstention (backend-verified): retrieval found nothing and web
+      // had nothing either, so the answer is general knowledge by construction.
+      // The badge is backend-controlled provenance, persisted with the message.
+      const badge = result.abstained
+        ? "> ⚠️ 知识库零命中 —— 以下为通用回答，不含你的资料。\n\n"
+        : "";
+      const { body, sugg } = this.#splitChatSuggestions(badge + result.text);
       await new Promise<void>((resolve) => {
         let i = 0;
         this.#chatTypeIv = setInterval(() => {

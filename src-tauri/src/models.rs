@@ -145,6 +145,15 @@ pub struct ChatAnswer {
     /// True when no retrieved source was cited in the answer text.
     #[serde(default)]
     pub uncited: bool,
+    /// True when retrieval found NOTHING (and web/framework had nothing either):
+    /// the answer is ungrounded by construction, so every citation token was
+    /// stripped and the UI should badge it "知识库零命中".
+    #[serde(default)]
+    pub abstained: bool,
+    /// Number of ⟦…⟧ citation tokens whose source name was NOT in the retrieved
+    /// set — fabricated citations, removed from the text before it is shown.
+    #[serde(default)]
+    pub fabricated_dropped: usize,
 }
 
 /// A persisted chat message (belongs to one conversation thread).

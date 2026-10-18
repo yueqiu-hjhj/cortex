@@ -267,7 +267,17 @@ fn answer(conn: &Connection, body: &Value) -> Result<Value, String> {
     .ok_or_else(|| {
         "no chat model configured — add an API key in the Cortex desktop app (Settings → API keys)".to_string()
     })?;
-    let answer = model.complete(&system, &query).map_err(|e| e.to_string())?;
+    let raw_answer = model.complete(&system, &query).map_err(|e| e.to_string())?;
+
+    // Citation existence verification: a [n] beyond the retrieved set is a
+    // ghost — strip it, and expose only the citations actually cited. With
+    // zero hits every [n] is fabricated by definition (max = 0 strips all),
+    // which is the honest shape for "nothing in your KB covers this".
+    let (answer, cited_idx) = cortex_lib::citecheck::verify_numbered(&raw_answer, hits.len());
+    let citations: Vec<Value> = cited_idx
+        .iter()
+        .filter_map(|&n| hits.get(n - 1).cloned())
+        .collect();
 
     Ok(json!({
         "id": format!("chatcmpl-cortex-{}", std::time::SystemTime::now()
@@ -286,7 +296,11 @@ fn answer(conn: &Connection, body: &Value) -> Result<Value, String> {
             "finish_reason": "stop",
         }],
         "usage": { "prompt_tokens": null, "completion_tokens": null, "total_tokens": null },
-        "cortex": { "retrieved": hits.len() },
+        "cortex": {
+            "retrieved": hits.len(),
+            "abstained": hits.is_empty(),
+            "citations": citations,
+        },
     }))
 }
 

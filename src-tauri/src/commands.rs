@@ -1889,6 +1889,26 @@ pub async fn chat_answer(
 
     let text = model.complete(system, &user)?;
 
+    // Citation existence verification (the mechanical half of trustworthy RAG):
+    // a ⟦…⟧ token naming a source that is not in the retrieved set is a
+    // fabrication — strip it before the user ever sees it. When retrieval found
+    // NOTHING and web/framework had nothing either, every token is fabricated by
+    // definition, and the answer is flagged as ungrounded (abstained) so the UI
+    // can badge it honestly instead of dressing up general knowledge.
+    let mut abstained = false;
+    let mut fabricated_dropped = 0usize;
+    let valid_names: Vec<String> = hits.iter().map(|h| h.source_name.clone()).collect();
+    let grounded = !context.is_empty() || !web_block.is_empty() || !framework_block.is_empty();
+    let text = if grounded {
+        let (cleaned, dropped) =
+            crate::citecheck::verify_named(&text, &valid_names, web_on && !web_block.is_empty());
+        fabricated_dropped = dropped;
+        cleaned
+    } else {
+        abstained = true;
+        crate::citecheck::verify_named(&text, &[], false).0
+    };
+
     let citations: Vec<Citation> = hits
         .iter()
         .take(6)
@@ -1910,6 +1930,8 @@ pub async fn chat_answer(
         model: model.name(),
         images,
         uncited,
+        abstained,
+        fabricated_dropped,
     })
     })
     .await
