@@ -28,6 +28,8 @@ pub fn create_note(
         &title,
         &body,
     )?;
+    // [[double links]] index — rebuilt on every save (0045).
+    crate::note_links::rebuild(&c, &id, &body)?;
     repo::get_note(&c, &id)
 }
 
@@ -52,7 +54,22 @@ pub fn update_note(
 ) -> Result<Note> {
     let c = state.db.lock().unwrap();
     repo::update_note(&c, &id, &title, &body)?;
+    crate::note_links::rebuild(&c, &id, &body)?;
     repo::get_note(&c, &id)
+}
+
+/// Notes that link to `title` via [[double links]] (backlinks panel).
+#[tauri::command]
+pub fn note_backlinks(state: State<AppState>, title: String) -> Result<Vec<crate::note_links::Backlink>> {
+    let c = state.db.lock().unwrap();
+    crate::note_links::backlinks(&c, &title)
+}
+
+/// Resolve a link target to an existing note (id, title) — click-through.
+#[tauri::command]
+pub fn note_resolve_link(state: State<AppState>, target: String) -> Result<Option<(String, String)>> {
+    let c = state.db.lock().unwrap();
+    crate::note_links::resolve(&c, &target)
 }
 
 #[tauri::command]

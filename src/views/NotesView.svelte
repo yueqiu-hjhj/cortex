@@ -29,6 +29,73 @@
 
   const selected = $derived(notes.find((n) => n.id === selectedId) ?? null);
 
+  // ── wiki-style [[double links]] (0045) ───────────────────────────────────
+  // The index lives in Rust (rebuilt on save); here we only need the CURRENT
+  // note's outlinks (parsed locally, resolved against existing notes) and its
+  // backlinks (queried by title).
+  interface OutLink { target: string; alias: string | null; resolvedId: string | null }
+  let outlinks = $state<OutLink[]>([]);
+  let backlinks = $state<api.Backlink[]>([]);
+
+  function parseWikilinks(text: string): { target: string; alias: string | null }[] {
+    const out: { target: string; alias: string | null }[] = [];
+    const re = /\[\[([^\[\]]+?)\]\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const inner = m[1].trim();
+      if (!inner) continue;
+      const [t, a] = inner.split("|").map((x) => x.trim());
+      if (!t) continue;
+      if (!out.some((x) => x.target === t && x.alias === (a || null))) {
+        out.push({ target: t, alias: a || null });
+      }
+    }
+    return out;
+  }
+
+  async function refreshLinks() {
+    if (!selectedId) { outlinks = []; backlinks = []; return; }
+    const parsed = parseWikilinks(body);
+    const resolved: OutLink[] = [];
+    for (const p of parsed) {
+      const r = await api.noteResolveLink(p.target).catch(() => null);
+      resolved.push({ ...p, resolvedId: r?.[0] ?? null });
+    }
+    outlinks = resolved;
+    backlinks = title.trim()
+      ? await api.noteBacklinks(title).catch(() => [])
+      : [];
+  }
+  // Re-run whenever the selected note or its title changes (debounced via tick
+  // of the same derived inputs); body changes only re-parse on save to avoid
+  // hammering the backend while typing.
+  $effect(() => {
+    void selectedId;
+    void title;
+    void refreshLinks();
+  });
+
+  async function openLinked(id: string) {
+    let n = notes.find((x) => x.id === id) ?? null;
+    if (!n) {
+      // The list is scoped to the active subject; a cross-subject link still
+      // opens (the note is injected into the local list for viewing).
+      n = await api.getNote(id).catch(() => null);
+      if (n) notes = [n, ...notes];
+    }
+    if (n) select(n);
+  }
+  async function createLinked(target: string) {
+    try {
+      const n = await api.createNote(target, "", app.activeSubjectId ?? null);
+      await load(app.activeSubjectId ?? null);
+      select(n);
+      app.pushToast({ kind: "success", title: "已新建笔记", body: target });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "新建失败", body: String(e) });
+    }
+  }
+
   // (Re)load notes whenever the active subject changes.
   $effect(() => {
     const sid = app.activeSubjectId ?? null;
@@ -93,6 +160,7 @@
       const updated = await api.updateNote(id, title, body);
       notes = notes.map((n) => (n.id === id ? updated : n));
       saved = true;
+      void refreshLinks();
     } catch (e) {
       app.pushToast({ kind: "error", title: "Save failed", body: String(e) });
     }
@@ -329,6 +397,38 @@
             {/if}
           </button>
         </div>
+
+        {#if outlinks.length || backlinks.length}
+          <div class="notes-links">
+            {#if outlinks.length}
+              <div class="nl-row">
+                <span class="nl-l">出链</span>
+                {#each outlinks as l (l.target + (l.alias ?? ""))}
+                  {#if l.resolvedId}
+                    <button class="nl-chip" type="button" onclick={() => openLinked(l.resolvedId!)}>
+                      <Icon name="link" size={10} /> {l.alias ?? l.target}
+                    </button>
+                  {:else}
+                    <button class="nl-chip nl-missing" type="button" title="目标笔记还不存在 — 点击新建"
+                            onclick={() => createLinked(l.target)}>
+                      <Icon name="plus" size={10} /> {l.alias ?? l.target}
+                    </button>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+            {#if backlinks.length}
+              <div class="nl-row">
+                <span class="nl-l">反向链接</span>
+                {#each backlinks as b (b.note_id)}
+                  <button class="nl-chip nl-back" type="button" onclick={() => openLinked(b.note_id)}>
+                    <Icon name="doc" size={10} /> {b.title || "未命名"}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
 
         <div class="notes-editor-wrap">
           <MarkdownEditor value={body} onChange={(v) => { body = v; markDirty(); }} />
@@ -869,4 +969,70 @@
     padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2);
   }
 
+
+  /* [[double links]] strip — outlinks (missing = dashed) + backlinks */
+  .notes-links {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-sunken);
+  }
+  .nl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .nl-l {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-right: 2px;
+  }
+  .nl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .nl-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .nl-chip.nl-missing { border-style: dashed; color: var(--fg-muted); }
+  .nl-chip.nl-back { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
+
+  /* [[double links]] strip — outlinks (missing = dashed) + backlinks */
+  .notes-links {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-sunken);
+  }
+  .nl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .nl-l {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-right: 2px;
+  }
+  .nl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .nl-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .nl-chip.nl-missing { border-style: dashed; color: var(--fg-muted); }
+  .nl-chip.nl-back { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
 </style>

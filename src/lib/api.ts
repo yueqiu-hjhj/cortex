@@ -1108,6 +1108,17 @@ export const listNotes = (subjectId?: string | null) =>
 export const getNote = (id: string) => invoke<Note>("get_note", { id });
 export const updateNote = (id: string, title: string, body: string) =>
   invoke<Note>("update_note", { id, title, body });
+
+// ---- wiki-style [[double links]] between notes (0045) ----
+export interface Backlink {
+  note_id: string;
+  title: string;
+  alias: string | null;
+}
+export const noteBacklinks = (title: string) =>
+  invoke<Backlink[]>("note_backlinks", { title });
+export const noteResolveLink = (target: string) =>
+  invoke<[string, string] | null>("note_resolve_link", { target });
 export const deleteNote = (id: string) => invoke<void>("delete_note", { id });
 export const noteToSource = (id: string) =>
   invoke<IngestResult>("note_to_source", { id });
