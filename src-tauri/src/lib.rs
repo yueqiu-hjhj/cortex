@@ -36,6 +36,7 @@ pub mod mcp_server;
 pub mod pkg;
 pub mod note_links;
 pub mod fallback;
+pub mod recovery;
 pub mod xmind;
 pub mod wiki;
 pub mod cross_book;
@@ -479,6 +480,9 @@ pub fn run() {
             commands::experiment_list,
             commands::experiment_update,
             commands::experiment_delete,
+            commands::recovery_list,
+            commands::recovery_restore,
+            commands::recovery_purge,
             commands::export_draft_tex,
             commands::export_calendar_ics,
             commands::pkg_export,

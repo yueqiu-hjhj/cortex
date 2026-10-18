@@ -761,6 +761,43 @@
   // ---- portable archive (.cortex-pkg.tar.gz, P0 #2) ----
   let pkgBusy = $state<null | "export" | "import" | "verify">(null);
   let pkgInfo = $state<api.PkgExportResult | null>(null);
+  // Recovery directories (.deleted-<id>) — Gloss-style delete safety net.
+  let deleted = $state<api.DeletedSubject[]>([]);
+  let recoveryBusy = $state<string | null>(null);
+  async function loadDeleted() {
+    deleted = await api.recoveryList().catch(() => []);
+  }
+  async function restoreDeleted(d: api.DeletedSubject) {
+    if (recoveryBusy) return;
+    recoveryBusy = d.dir_name;
+    try {
+      const [name, src, note] = await api.recoveryRestore(d.dir_name);
+      app.pushToast({ kind: "success", title: `已恢复「${name}」`, body: `${src} 个来源 · ${note} 条笔记` });
+      await loadDeleted();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "恢复失败", body: String(e) });
+    } finally {
+      recoveryBusy = null;
+    }
+  }
+  async function purgeDeleted(d: api.DeletedSubject) {
+    if (recoveryBusy) return;
+    const ok = await app.confirm?.({
+      title: "彻底删除？",
+      body: `将永久删除「${d.subject_name}」的恢复目录（含 ${d.sources} 个来源、${d.notes} 条笔记），不可恢复。`,
+    });
+    if (ok !== true) return;   // destructive: only an explicit yes proceeds
+    recoveryBusy = d.dir_name;
+    try {
+      await api.recoveryPurge(d.dir_name);
+      await loadDeleted();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "删除失败", body: String(e) });
+    } finally {
+      recoveryBusy = null;
+    }
+  }
+
   async function exportPkg() {
     if (pkgBusy) return;
     pkgBusy = "export";
@@ -2608,6 +2645,38 @@ Notes: {about}</pre>
                 </button>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h svc-h">
+            <div>
+              <h3 class="set-group-t">恢复目录</h3>
+              <p class="set-group-d">删除科目时完整快照（行 + 附件）会移到 <span class="mono">.deleted-&lt;id&gt;-&lt;ts&gt;</span>，不自动清除。恢复后索引需重新生成；确认不再需要再彻底删除。</p>
+            </div>
+            <div class="svc-tools">
+              <button class="btn btn--sm" onclick={loadDeleted}><Icon name="refresh" size={12} /> 刷新</button>
+            </div>
+          </div>
+          <div class="set-card">
+            {#if !deleted.length}
+              <p class="set-row-d" style="padding:6px 0">没有已删除的科目。</p>
+            {:else}
+              {#each deleted as d (d.dir_name)}
+                <div class="set-row">
+                  <div class="set-row-l">
+                    <div class="set-row-t">「{d.subject_name}」· {new Date(d.deleted_at).toLocaleString("zh-CN")}</div>
+                    <div class="set-row-d mono">{d.sources} 个来源 · {d.notes} 条笔记 · {(d.bytes / 1048576).toFixed(1)} MB</div>
+                  </div>
+                  <div class="set-row-r">
+                    <button class="btn btn--sm" disabled={recoveryBusy !== null} onclick={() => restoreDeleted(d)}>
+                      {recoveryBusy === d.dir_name ? "处理中…" : "恢复"}
+                    </button>
+                    <button class="btn btn--sm btn--danger" disabled={recoveryBusy !== null} onclick={() => purgeDeleted(d)}>清除</button>
+                  </div>
+                </div>
+              {/each}
+            {/if}
           </div>
         </section>
 

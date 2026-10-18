@@ -938,6 +938,23 @@ export const pkgImport = (path: string, targetDir: string, force?: boolean) =>
 export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
   invoke<number>("export_knowledge_xmind", { subjectId, dest });
 
+// ---- recovery directories (.deleted-<id>) ----
+export interface DeletedSubject {
+  dir_name: string;
+  path: string;
+  subject_name: string;
+  deleted_at: number;
+  sources: number;
+  notes: number;
+  bytes: number;
+}
+export const recoveryList = () =>
+  invoke<DeletedSubject[]>("recovery_list");
+export const recoveryRestore = (dirName: string) =>
+  invoke<[string, number, number]>("recovery_restore", { dirName });
+export const recoveryPurge = (dirName: string) =>
+  invoke<void>("recovery_purge", { dirName });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");

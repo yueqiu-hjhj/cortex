@@ -548,7 +548,43 @@ pub fn update_subject(
 #[tauri::command]
 pub fn delete_subject(state: State<AppState>, id: String) -> Result<String> {
     let c = state.db.lock().unwrap();
+    // Recovery directory (Gloss-grade safety): the full row set + attachments
+    // are staged into .deleted-<id>-<ts> BEFORE the physical delete, so the
+    // undo journal is not the only way back.
+    if let Some(dd) = state.data_dir.clone() {
+        crate::recovery::capture(&c, &dd, &id)?;
+    }
     repo::delete_subject_with_undo(&c, &id)
+}
+
+// ---- recovery directories (.deleted-<id>) --------------------------------
+
+#[tauri::command]
+pub fn recovery_list(state: State<AppState>) -> Result<Vec<crate::recovery::DeletedSubject>> {
+    let dd = state
+        .data_dir
+        .clone()
+        .ok_or_else(|| Error::Other("in-memory build has no data dir".into()))?;
+    crate::recovery::list(&dd)
+}
+
+#[tauri::command]
+pub fn recovery_restore(state: State<AppState>, dir_name: String) -> Result<(String, usize, usize)> {
+    let c = state.db.lock().unwrap();
+    let dd = state
+        .data_dir
+        .clone()
+        .ok_or_else(|| Error::Other("in-memory build has no data dir".into()))?;
+    crate::recovery::restore(&c, &dd, &dir_name)
+}
+
+#[tauri::command]
+pub fn recovery_purge(state: State<AppState>, dir_name: String) -> Result<()> {
+    let dd = state
+        .data_dir
+        .clone()
+        .ok_or_else(|| Error::Other("in-memory build has no data dir".into()))?;
+    crate::recovery::purge(&dd, &dir_name)
 }
 
 #[tauri::command]
