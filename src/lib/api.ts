@@ -479,6 +479,32 @@ export const synthesizeOverview = (
   segments: { speaker: string; text: string }[],
   force?: boolean
 ) => invoke<string>("synthesize_overview", { materialId, segments, force });
+
+// ---- Video overview (D1): rendered slides + TTS narration → MP4 ----
+export interface VideoSlideInput {
+  /** Frontend-canvas-rendered slide, as a data:image/png;base64 URL. */
+  png: string;
+  title: string;
+  bullets: string[];
+  notes: string;
+}
+export interface VideoOverviewResult {
+  path: string;
+  duration_secs: number;
+  slides: number;
+  /** True when ffmpeg had to be downloaded this run (first video only). */
+  ffmpeg_fetched: boolean;
+}
+export const synthesizeVideoOverview = (
+  materialId: string,
+  slides: VideoSlideInput[],
+  force?: boolean
+) =>
+  invoke<VideoOverviewResult>("synthesize_video_overview", {
+    materialId,
+    slides,
+    force,
+  });
 export const listMaterials = (subjectId: string) =>
   invoke<MaterialRec[]>("list_materials", { subjectId });
 export const deleteMaterial = (id: string) => invoke<string>("delete_material", { id });

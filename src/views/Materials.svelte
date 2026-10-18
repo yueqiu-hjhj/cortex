@@ -242,6 +242,7 @@
     <SlideshowView
       slides={matLaunch.payload?.slides ?? []}
       title={matLaunch.title}
+      materialId={matLaunch.id}
       onExit={() => (matLaunch = null)}
     />
   {:else if matLaunch.type === "mindmap"}

@@ -28,6 +28,7 @@ pub mod agents;
 mod agent_exec;
 pub mod citecheck;
 mod deep_research;
+mod video_overview;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -428,6 +429,7 @@ pub fn run() {
             commands::retrieval_eval_real,
             commands::agents_execute_run,
             commands::deep_research,
+            commands::synthesize_video_overview,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

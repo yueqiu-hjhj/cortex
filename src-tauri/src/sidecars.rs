@@ -147,6 +147,115 @@ pub fn bin_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("bin")
 }
 
+/// ffmpeg (and ffprobe) for the video-overview pipeline — the ONE sidecar that
+/// ships as two executables inside a single archive, so it gets its own ensure
+/// function: resolve via the normal lookup chain first (bundled → bin/ → PATH),
+/// and only on Windows fall back to downloading the gyan.dev essentials build
+/// ONCE, extracting both executables from the versioned inner directory.
+/// Non-Windows users without ffmpeg get an install hint instead of a 80 MB
+/// surprise download, since every Linux distro and brew has it.
+///
+/// `url_override` (settings key `sidecar_ffmpeg_url`) exists because the
+/// default host can be slow or blocked on some networks — the user can point
+/// at any zip containing `ffmpeg(.exe)` + `ffprobe(.exe)` at any depth.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub fn ensure_ffmpeg(data_dir: &Path, url_override: Option<&str>) -> Result<(PathBuf, PathBuf)> {
+    let exe = |name: &str| if cfg!(target_os = "windows") { format!("{name}.exe") } else { name.to_string() };
+    let dir = bin_dir(data_dir);
+    let ff = dir.join(exe("ffmpeg"));
+    let fp = dir.join(exe("ffprobe"));
+
+    // Existing installs win: runtime-fetched, or ffmpeg already on PATH.
+    if ff.is_file() && fp.is_file() {
+        return Ok((ff, fp));
+    }
+    if let (Some(f), Some(p)) = (
+        crate::ingest::tool_in("ffmpeg", Some(data_dir)),
+        crate::ingest::tool_in("ffprobe", Some(data_dir)),
+    ) {
+        return Ok((PathBuf::from(f), PathBuf::from(p)));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (&fp, &dir, url_override);
+        return Err(Error::Other(
+            "未找到 ffmpeg/ffprobe —— 请用系统包管理器安装（brew install ffmpeg / apt install ffmpeg），或放到 PATH 后重试。".into(),
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let spec = BinSpec {
+            name: "ffmpeg",
+            // GitHub release mirror of the gyan.dev essentials build — same
+            // artifact, tagged for determinism like the other specs. Networks
+            // where neither host is fast should set `sidecar_ffmpeg_url`.
+            url: "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip",
+            kind: ArchiveKind::Zip,
+            inner_name: "ffmpeg", // basename match; the path inside is versioned
+        };
+        let spec = match url_override {
+            Some(u) if !u.trim().is_empty() => spec.with_url(u),
+            _ => spec,
+        };
+        fs::create_dir_all(&dir).map_err(|e| {
+            Error::Other(format!("create {}: {e}", dir.display()))
+        })?;
+        let bytes = download(&spec).map_err(|e| Error::Other(format!(
+            "{e}\n（若此网络下载 ffmpeg 太慢，可在设置里加 sidecar_ffmpeg_url 指向任意包含 ffmpeg/ffprobe 的 zip 镜像。）"
+        )))?;
+        let got = extract_ffmpeg_pair(&bytes, &ff, &fp)?;
+        if got < 2 {
+            return Err(Error::Other(
+                "ffmpeg 压缩包里没找齐 ffmpeg.exe/ffprobe.exe —— 上游结构可能变了，请到设置里改 sidecar_ffmpeg_url。".into(),
+            ));
+        }
+        Ok((ff, fp))
+    }
+}
+
+/// Extract `ffmpeg(.exe)` and `ffprobe(.exe)` from an archive's bytes by
+/// BASENAME (the path inside the zip is versioned). Returns how many of the
+/// two were found. Pure function — unit-testable without a network.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn extract_ffmpeg_pair(bytes: &[u8], ff: &Path, fp: &Path) -> Result<usize> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(cursor)
+        .map_err(|e| Error::Other(format!("open ffmpeg zip: {e}")))?;
+    let ff_name = ff.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let fp_name = fp.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let mut got = 0usize;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| Error::Other(format!("zip entry: {e}")))?;
+        let base = Path::new(entry.name())
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let target = if base == ff_name {
+            Some(ff)
+        } else if base == fp_name {
+            Some(fp)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            let mut out = fs::File::create(target).map_err(|e| {
+                Error::Other(format!("create {}: {e}", target.display()))
+            })?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| Error::Other(format!("extract {base}: {e}")))?;
+            chmod_x(target);
+            got += 1;
+            if got == 2 {
+                break;
+            }
+        }
+    }
+    Ok(got)
+}
+
 /// Idempotent download: if `<bin_dir>/<spec.inner_name>` already exists,
 /// returns the path. Otherwise downloads `spec.url`, extracts if needed, and
 /// marks +x on Unix.
@@ -337,4 +446,58 @@ pub fn ensure_age(data_dir: &Path) -> Result<PathBuf> {
 pub fn ensure_rclone(data_dir: &Path) -> Result<PathBuf> {
     let spec = BinSpec::for_target("rclone");
     ensure(data_dir, &spec)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    /// Build an in-memory zip that mimics the gyan.dev essentials layout:
+    /// versioned directories, `bin/ffmpeg.exe` + `bin/ffprobe.exe` deep inside,
+    /// plus decoys that must NOT be extracted.
+    fn ffmpeg_zip_bytes() -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+        zip.start_file("ffmpeg-7.1.1-essentials_build/doc/README.txt", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"readme").unwrap();
+        zip.start_file("ffmpeg-7.1.1-essentials_build/bin/ffmpeg.exe", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"fake-ffmpeg-bytes").unwrap();
+        zip.start_file("ffmpeg-7.1.1-essentials_build/bin/ffprobe.exe", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"fake-ffprobe-bytes").unwrap();
+        zip.start_file("ffmpeg-7.1.1-essentials_build/bin/ffplay.exe", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"decoy").unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn ffmpeg_pair_extracts_by_basename_ignoring_versioned_paths() {
+        let dir = std::env::temp_dir().join(format!("cortex-ffmpeg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ff = dir.join("ffmpeg.exe");
+        let fp = dir.join("ffprobe.exe");
+        let got = extract_ffmpeg_pair(&ffmpeg_zip_bytes(), &ff, &fp).unwrap();
+        assert_eq!(got, 2);
+        assert_eq!(std::fs::read(&ff).unwrap(), b"fake-ffmpeg-bytes");
+        assert_eq!(std::fs::read(&fp).unwrap(), b"fake-ffprobe-bytes");
+        // The decoy must not have been extracted anywhere in the target dir.
+        assert!(!dir.join("ffplay.exe").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ffmpeg_pair_reports_short_extractions() {
+        let dir = std::env::temp_dir().join(format!("cortex-ffmpeg-test2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A zip with only ffmpeg → 1 of 2 → caller treats as upstream drift.
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+        zip.start_file("bin/ffmpeg.exe", opts).unwrap();
+        std::io::Write::write_all(&mut zip, b"x").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        let got = extract_ffmpeg_pair(&bytes, &dir.join("ffmpeg.exe"), &dir.join("ffprobe.exe")).unwrap();
+        assert_eq!(got, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -1,5 +1,7 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { convertFileSrc } from "@tauri-apps/api/core";
+  import * as api from "../lib/api";
 
   export interface Slide {
     title: string;
@@ -10,11 +12,130 @@
   let {
     slides,
     title = "Slideshow",
+    materialId,
     onExit,
-  }: { slides: Slide[]; title?: string; onExit?: () => void } = $props();
+  }: { slides: Slide[]; title?: string; materialId?: string; onExit?: () => void } = $props();
 
   let idx = $state(0);
   let showNotes = $state(false);
+
+  // ── Video overview (D1) ────────────────────────────────────────────────
+  // The slides get rasterized HERE on a canvas (the webview has the CJK fonts
+  // and the theme palette; a Rust text rasterizer would need a font stack for
+  // one feature), then the backend does TTS + ffmpeg muxing. First run only
+  // downloads ffmpeg; afterwards it is cached in <data>/bin/.
+  let videoBusy = $state(false);
+  let videoSrc = $state<string | null>(null);
+  let videoErr = $state<string | null>(null);
+  let videoNote = $state<string | null>(null);
+
+  function cssVar(name: string, fallback: string): string {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function wrapText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    maxW: number,
+    lh: number,
+    maxLines: number,
+  ): number {
+    // Greedy wrap honoring CJK: break anywhere when a word would overshoot.
+    let line = "";
+    let cy = y;
+    let lines = 0;
+    for (const ch of text) {
+      if (ctx.measureText(line + ch).width > maxW && line) {
+        ctx.fillText(line, x, cy);
+        cy += lh;
+        lines += 1;
+        line = ch;
+        if (lines >= maxLines - 1) {
+          ctx.fillText(line + "…", x, cy);
+          return cy + lh;
+        }
+      } else {
+        line += ch;
+      }
+    }
+    if (line) {
+      ctx.fillText(line, x, cy);
+      cy += lh;
+    }
+    return cy;
+  }
+
+  async function renderSlidePng(s: Slide, i: number): Promise<string> {
+    const W = 1280;
+    const H = 720;
+    const cv = document.createElement("canvas");
+    cv.width = W;
+    cv.height = H;
+    const ctx = cv.getContext("2d");
+    if (!ctx) throw new Error("canvas 2d 不可用");
+    const surface = cssVar("--surface", "#171d1a");
+    ctx.fillStyle = surface;
+    ctx.fillRect(0, 0, W, H);
+    // Accent top rule + footer band, matching the in-app slide chrome.
+    ctx.fillStyle = cssVar("--accent", "#2dd5b7");
+    ctx.fillRect(0, 0, W, 8);
+    ctx.fillStyle = cssVar("--border", "#2a3530");
+    ctx.fillRect(0, H - 4, W, 4);
+    // Slide number (top right)
+    ctx.fillStyle = cssVar("--fg-faint", "#5f6f68");
+    ctx.font = "500 26px ui-monospace, 'Cascadia Code', Menlo, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(`${i + 1} / ${slides.length}`, W - 44, 64);
+    ctx.textAlign = "left";
+    // Title (wrapped, max 3 lines)
+    ctx.fillStyle = cssVar("--fg-bright", "#e8f1ec");
+    ctx.font = "600 58px -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif";
+    const titleEnd = wrapText(ctx, s.title || "", 90, 168, W - 180, 74, 3);
+    // Bullets
+    ctx.font = "36px -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif";
+    ctx.fillStyle = cssVar("--fg", "#d7e0db");
+    let y = Math.max(titleEnd + 36, 300);
+    for (const b of s.bullets.slice(0, 7)) {
+      ctx.fillStyle = cssVar("--accent", "#2dd5b7");
+      ctx.beginPath();
+      ctx.arc(104, y - 12, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = cssVar("--fg", "#d7e0db");
+      y = wrapText(ctx, b, 130, y, W - 230, 50, 2) + 18;
+      if (y > H - 110) break;
+    }
+    // Footer: material title
+    ctx.fillStyle = cssVar("--fg-faint", "#5f6f68");
+    ctx.font = "500 24px ui-monospace, 'Cascadia Code', Menlo, monospace";
+    ctx.fillText(title.slice(0, 60), 90, H - 44);
+    return cv.toDataURL("image/png");
+  }
+
+  async function generateVideo() {
+    if (!materialId || videoBusy || slides.length === 0) return;
+    videoBusy = true;
+    videoErr = null;
+    videoNote = null;
+    try {
+      const inputs: api.VideoSlideInput[] = [];
+      for (let i = 0; i < slides.length; i++) {
+        const png = await renderSlidePng(slides[i], i);
+        inputs.push({ png, title: slides[i].title, bullets: slides[i].bullets, notes: slides[i].notes ?? "" });
+      }
+      const res = await api.synthesizeVideoOverview(materialId, inputs, false);
+      videoSrc = convertFileSrc(res.path);
+      videoNote = res.ffmpeg_fetched
+        ? "首次运行下载了 ffmpeg（约 80MB，已缓存，之后不再下载）。"
+        : null;
+    } catch (e) {
+      videoErr = String(e instanceof Error ? e.message : e);
+    } finally {
+      videoBusy = false;
+    }
+  }
 
   const current = $derived(slides[idx] ?? null);
   const hasPrev = $derived(idx > 0);
@@ -45,6 +166,16 @@
       </button>
     {/if}
     <span class="eyebrow" style="flex:1">{title}</span>
+    {#if materialId && slides.length > 0}
+      <button
+        class="btn btn--sm btn--primary"
+        disabled={videoBusy}
+        onclick={generateVideo}
+        title="渲染幻灯片 + 旁白合成为视频（首次运行会下载 ffmpeg）"
+      >
+        <Icon name="play" size={12} /> {videoBusy ? "视频合成中…" : "生成视频"}
+      </button>
+    {/if}
     {#if hasNotes}
       <button
         class="btn btn--sm btn--ghost{showNotes ? ' on' : ''}"
@@ -57,10 +188,29 @@
     <span class="mono faint" style="font-size: var(--t-xs);">{idx + 1} / {slides.length}</span>
   </div>
 
+  {#if videoErr}
+    <div class="ss-notes" style="border-color:var(--err);margin:12px 16px 0;">
+      <div class="ss-notes-h mono" style="color:var(--err)">视频生成失败</div>
+      <p class="ss-notes-body">{videoErr}</p>
+    </div>
+  {/if}
+
   {#if slides.length === 0}
     <div class="ss-empty">
       <Icon name="play" size={26} color="var(--fg-faint)" />
       <p class="mono faint" style="margin-top: 12px;">没有可用的幻灯片。</p>
+    </div>
+  {:else if videoSrc}
+    <!-- Generated video replaces the stage until the user backs out -->
+    <div class="ss-stage">
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video src={videoSrc} controls style="width:100%;max-width:1100px;border-radius:var(--rad-4);border:1px solid var(--border-strong);background:#000;margin:0 auto;"></video>
+      {#if videoNote}
+        <p class="mono faint" style="font-size: var(--t-xs); margin: 0;">{videoNote}</p>
+      {/if}
+      <button class="btn btn--ghost" style="align-self:center" onclick={() => (videoSrc = null)}>
+        返回幻灯片
+      </button>
     </div>
   {:else if current}
     <!-- ── Slide content ── -->

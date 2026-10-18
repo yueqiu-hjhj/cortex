@@ -3247,6 +3247,98 @@ pub struct TtsSegment {
     pub text: String,
 }
 
+#[derive(serde::Deserialize)]
+pub struct VideoSlideInput {
+    pub png: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub bullets: Vec<String>,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// Video overview (gap D1): turn a slideshow's slides into a narrated MP4 —
+/// NotebookLM's Video Overviews, local edition. The FRONTEND renders each
+/// slide to a 1280×720 PNG (the webview has the fonts and theme; a Rust text
+/// rasterizer would need a font stack for one feature); THIS side does TTS
+/// per slide (OpenAI, same voices as the audio overview), ffprobe duration
+/// probing, still-image encoding and the concat — ffmpeg arrives via the
+/// sidecar machinery (PATH first, one-time download on Windows).
+#[tauri::command]
+pub async fn synthesize_video_overview(
+    app: AppHandle,
+    material_id: String,
+    slides: Vec<VideoSlideInput>,
+    force: Option<bool>,
+) -> Result<crate::video_overview::VideoOverviewResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::video_overview::VideoOverviewResult> {
+        let state = app.state::<AppState>();
+        // OpenAI key + voice — same requirements as the audio overview, same
+        // error shape so the frontend can fall back to on-device speech.
+        let (key, voice, ffmpeg_url) = {
+            let c = state.db.lock().unwrap();
+            let key = read_keys(&c)?
+                .openai
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| {
+                    Error::Other(
+                        "Add an OpenAI API key in Settings to generate video narration (it uses the same cloud TTS as the audio overview)."
+                            .into(),
+                    )
+                })?;
+            let voice = repo::get_setting(&c, "tts_voice_a")?.unwrap_or_else(|| "alloy".into());
+            let ffmpeg_url = repo::get_setting(&c, "sidecar_ffmpeg_url")?.filter(|s| !s.trim().is_empty());
+            (key, voice, ffmpeg_url)
+        };
+        let data_dir = state
+            .data_dir
+            .clone()
+            .ok_or_else(|| Error::Other("in-memory build has no data dir".into()))?;
+        let work_root = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("video_overviews");
+        std::fs::create_dir_all(&work_root).ok();
+
+        // Narration fallback: notes (the generator's voiceover script) →
+        // bullets read aloud → title. Compose here so the video module stays
+        // media-mechanical.
+        let inputs: Vec<crate::video_overview::VideoSlideInput> = slides
+            .into_iter()
+            .map(|s| {
+                let narration = if !s.notes.trim().is_empty() {
+                    s.notes.trim().to_string()
+                } else if !s.bullets.is_empty() {
+                    s.bullets.join("。")
+                } else {
+                    s.title.trim().to_string()
+                };
+                crate::video_overview::VideoSlideInput { png: s.png, narration }
+            })
+            .collect();
+
+        let task_id = format!("vo-{material_id}");
+        let mut progress = |stage: &str, detail: &str, pct: u8| {
+            emit_progress(&app, &task_id, stage, detail, pct);
+        };
+        crate::video_overview::synthesize(
+            &data_dir,
+            &work_root,
+            &material_id,
+            &inputs,
+            &voice,
+            &key,
+            force.unwrap_or(false),
+            ffmpeg_url.as_deref(),
+            &mut progress,
+        )
+    })
+    .await
+    .map_err(|e| Error::Other(format!("video task failed: {e}")))?
+}
+
 /// Turn a generated two-host podcast script into a REAL audio file (NotebookLM
 /// style) using a cloud TTS — OpenAI's `/audio/speech` with the user's two
 /// configured voices. Returns the path to the cached mp3 under `$APPDATA/
