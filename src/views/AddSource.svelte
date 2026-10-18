@@ -7,7 +7,7 @@
   import Picker from "../components/Picker.svelte";
 
   // Current input method selected
-  let method = $state<"upload" | "url" | "text" | "record" | "photo" | null>(null);
+  let method = $state<"upload" | "url" | "text" | "record" | "photo" | "connector" | null>(null);
   // User-entered URL or text body
   let value = $state("");
   // Title for text pastes
@@ -19,6 +19,7 @@
     { id: "text"   as const, ico: "doc",    t: "粘贴文本",      d: "Markdown · 纯文本",         k: "t" },
     { id: "record" as const, ico: "record", t: "录制讲座",  d: "实时录音 + 转写",       k: "r" },
     { id: "photo"  as const, ico: "grid",   t: "拍照识别",      d: "白板 / 书页 OCR",       k: "o" },
+    { id: "connector" as const, ico: "link", t: "连接器导入",   d: "Zotero · Notion · GitHub",  k: "c" },
   ] as const;
   // Recording is available on mobile again: it captures audio and transcribes via the
   // homelab Whisper endpoint (remote-first). MobileShell mounts the Recorder view.
@@ -206,6 +207,96 @@
     }
   }
 
+  // ── D5: connector plugins (fetch + ingest primitives) ──
+  // Manifests in <data>/plugins/*.json contribute connectors; the host runs
+  // the declared fetch + field mapping and pushes every item through the same
+  // add_source pipeline as a pasted link. Dedup is by origin, so re-syncing
+  // never duplicates.
+  let connectors = $state<api.ConnectorInfo[]>([]);
+  let connsLoaded = $state(false);
+  let connEditing = $state<string | null>(null);
+  let connKey = $state("");
+  let connCfg = $state<Record<string, string>>({});
+  let connBusy = $state<string | null>(null);
+
+  $effect(() => {
+    if (method !== "connector" || connsLoaded) return;
+    let cancelled = false;
+    api.connectorList()
+      .then((r) => { if (!cancelled) { connectors = r ?? []; connsLoaded = true; } })
+      .catch(() => { if (!cancelled) connsLoaded = true; });
+    return () => { cancelled = true; };
+  });
+
+  function editConnector(c: api.ConnectorInfo) {
+    connEditing = c.id;
+    connKey = "";
+    connCfg = { ...c.config_values };
+  }
+
+  function cancelConnEdit() {
+    connEditing = null;
+    connKey = "";
+    connCfg = {};
+  }
+
+  async function reloadConnectors() {
+    try { connectors = (await api.connectorList()) ?? []; } catch { /* keep old list */ }
+  }
+
+  function startConnSync(c: api.ConnectorInfo) {
+    jobs.start({
+      kind: "connector",
+      label: `同步 ${c.label}`,
+      subjectId: selectedSubjectId,
+      topicId,
+      run: () => api.connectorSync(c.id, selectedSubjectId, topicId),
+      onDone: (result) => {
+        app.refresh();
+        const s = result as api.ConnectorSyncSummary;
+        app.pushToast({
+          kind: s.errors.length ? "warning" : "success",
+          title: `${c.label}：新增 ${s.imported} · 跳过 ${s.skipped}`,
+          body: s.errors.length ? s.errors[0] : `共拉取 ${s.fetched} 条`,
+        });
+      },
+    });
+    app.openSubject(selectedSubjectId);
+    app.setTab("sources");
+  }
+
+  async function syncConnector(c: api.ConnectorInfo) {
+    if (!guardSubject()) return;
+    if (connBusy) return;
+    startConnSync(c);
+  }
+
+  async function saveAndSync(c: api.ConnectorInfo) {
+    if (!guardSubject()) return;
+    if (connBusy) return;
+    connBusy = c.id;
+    try {
+      await api.connectorConfigure(c.id, connKey.trim(), connCfg);
+      app.pushToast({ kind: "success", title: `${c.label} 已连接`, body: "开始同步…" });
+      cancelConnEdit();
+      await reloadConnectors();
+      startConnSync(c);
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "连接器配置失败", body: String(e) });
+    } finally {
+      connBusy = null;
+    }
+  }
+
+  async function disconnectConnector(c: api.ConnectorInfo) {
+    try {
+      await api.connectorDisconnect(c.id);
+      await reloadConnectors();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "断开失败", body: String(e) });
+    }
+  }
+
   function handleBegin() {
     if (method === "upload") beginUpload();
     else if (method === "url") beginUrl();
@@ -362,7 +453,7 @@
         {#if method === null}
           <div class="addsrc-empty">
             <Icon name="plus" size={26} color="var(--fg-faint)" />
-            <p class="mono faint">在左侧选择来源类型，<br />或按对应按键（u · p · t · r · o）。</p>
+            <p class="mono faint">在左侧选择来源类型，<br />或按对应按键（u · p · t · r · o · c）。</p>
           </div>
         {:else if method === "url"}
           <span class="onb-label mono">链接</span>
@@ -400,6 +491,76 @@
             <Icon name="record" size={26} color="var(--accent)" />
             <p class="mono faint">正在打开讲座录音…</p>
           </div>
+        {:else if method === "connector"}
+          <span class="onb-label mono">连接器</span>
+          {#if !connsLoaded}
+            <p class="mono faint">读取连接器…</p>
+          {:else if connectors.length === 0}
+            <div class="addsrc-empty">
+              <Icon name="link" size={22} color="var(--fg-faint)" />
+              <p class="mono faint">还没有连接器。把连接器清单放进数据目录的<br /><code>plugins/</code> 文件夹后重启即可。</p>
+            </div>
+          {:else}
+            <div class="conn-list">
+              {#each connectors as c (c.id)}
+                <div class="conn-card">
+                  <div class="conn-head">
+                    <div class="conn-name">{c.label}</div>
+                    <div class="conn-meta mono">
+                      <span class="conn-pill{c.configured ? ' ok' : ''}">{c.configured ? "已连接" : "未配置"}</span>
+                      {c.plugin}
+                    </div>
+                  </div>
+                  {#if c.key_note}
+                    <div class="conn-note mono">Key 获取：{c.key_note}</div>
+                  {/if}
+                  {#if connEditing === c.id}
+                    <div class="conn-form">
+                      {#if c.auth_kind !== "none"}
+                        <span class="onb-label mono">API Key</span>
+                        <input class="input" type="password" placeholder={c.key_note || "粘贴 Key"} bind:value={connKey} />
+                      {/if}
+                      {#each c.config_fields as f (f.key)}
+                        <span class="onb-label mono">{f.label}</span>
+                        <!-- svelte-ignore a11y_autofocus -->
+                        <input class="input" placeholder={f.placeholder} bind:value={connCfg[f.key]} />
+                      {/each}
+                      <div class="conn-actions">
+                        <button class="btn btn--ghost btn--sm" onclick={cancelConnEdit}>取消</button>
+                        <button class="btn btn--primary btn--sm" disabled={connBusy === c.id || !selectedSubject} onclick={() => saveAndSync(c)}>
+                          保存并同步
+                        </button>
+                      </div>
+                    </div>
+                  {:else}
+                    {#if c.config_fields.length > 0 && c.configured}
+                      <div class="conn-cfg mono faint">
+                        {#each c.config_fields as f (f.key)}
+                          <span>{f.label}: {c.config_values[f.key] || "—"}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                    <div class="conn-actions">
+                      {#if c.configured}
+                        <button class="btn btn--sm" disabled={!selectedSubject || !!connBusy} onclick={() => syncConnector(c)}>
+                          <Icon name="refresh" size={12} /> 同步到本科目
+                        </button>
+                      {/if}
+                      <button class="btn btn--ghost btn--sm" onclick={() => editConnector(c)}>
+                        {c.configured ? "重新配置" : "配置"}
+                      </button>
+                      {#if c.configured}
+                        <button class="btn btn--ghost btn--sm conn-danger" onclick={() => disconnectConnector(c)}>断开</button>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+            <p class="mono faint addsrc-hint">
+              同步幂等：条目按来源去重，不会重复入库。text 条目直接入库为文本，url 条目走网页抓取管线。
+            </p>
+          {/if}
         {/if}
       </div>
 
@@ -410,6 +571,8 @@
           <button class="btn btn--primary" disabled={!value.trim() || !selectedSubject} onclick={handleBegin}>
             Ingest source <Icon name="arrowR" size={13} />
           </button>
+        {:else if method === "connector"}
+          <span class="mono faint">在上方连接器卡片里保存并同步。</span>
         {:else if method === "upload"}
           <button class="btn btn--primary" disabled={!selectedSubject} onclick={beginUpload}>
             Pick file(s) <Icon name="arrowR" size={13} />
@@ -483,6 +646,48 @@
   .addsrc-drop { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
   .addsrc-hint { font-size: var(--t-xs); margin: 2px 0 0; }
   .addsrc-foot { margin-top: 14px; display: flex; justify-content: flex-end; gap: 10px; flex: 0 0 auto; }
+
+  /* ---- D5: connector cards ---- */
+  .conn-list { display: flex; flex-direction: column; gap: 10px; }
+  .conn-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--surface-2, transparent);
+  }
+  .conn-head { display: flex; align-items: baseline; gap: 10px; }
+  .conn-name { font-weight: 600; font-size: 13.5px; color: var(--fg-bright); }
+  .conn-meta {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .conn-pill {
+    padding: 1px 8px;
+    border-radius: 99px;
+    border: 1px solid var(--border);
+    color: var(--fg-faint);
+  }
+  .conn-pill.ok {
+    border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+    color: var(--ok);
+  }
+  .conn-note { font-size: 10.5px; color: var(--fg-faint); }
+  .conn-cfg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: 10.5px;
+  }
+  .conn-form { display: flex; flex-direction: column; gap: 6px; }
+  .conn-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .conn-danger { color: var(--warn); }
   @media (max-width: 760px) {
     .addsrc { overflow: auto; }
     .addsrc-grid { grid-template-columns: 1fr; }

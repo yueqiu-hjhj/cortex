@@ -973,7 +973,7 @@ pub struct PaperMatrix {
     pub generated_at: i64,
 }
 
-fn collect_paper_card(conn: &Connection, paper_id: &str) -> Result<(Paper, String)> {
+pub fn collect_paper_card(conn: &Connection, paper_id: &str) -> Result<(Paper, String)> {
     let p = get_paper(conn, paper_id)?;
     let excerpts: Vec<Excerpt> = list_excerpts(conn, Some(paper_id))?;
     let mut card = String::new();

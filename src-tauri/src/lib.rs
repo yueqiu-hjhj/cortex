@@ -29,6 +29,7 @@ mod agent_exec;
 pub mod citecheck;
 mod deep_research;
 mod video_overview;
+pub mod zotero;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -36,7 +37,10 @@ pub mod planner;
 pub mod papers;
 pub mod plugins;
 pub mod providers;
+pub mod connectors;
 pub mod drafts;
+pub mod extraction;
+pub mod summary_tree;
 pub mod rerank;
 pub mod eval;
 pub mod llm;
@@ -111,7 +115,10 @@ pub fn run() {
                 _ => app.path().app_data_dir().expect("resolve app data dir"),
             };
             std::fs::create_dir_all(&dir).expect("create app data dir");
-            // plugins/*.json manifests — provider/material/leader contributions.
+            // Built-in connector manifest (Zotero/Notion/GitHub) — must land in
+            // plugins/ BEFORE ensure_loaded reads the directory.
+            crate::connectors::seed_builtin(&dir);
+            // plugins/*.json manifests — provider/material/leader/connector contributions.
             // Read once here so every later lookup is a lock-free read.
             crate::plugins::ensure_loaded(&dir);
             let db_path = dir.join("cortex.db");
@@ -426,10 +433,16 @@ pub fn run() {
             commands::verify_provider,
             commands::list_providers,
             commands::plugins_list,
+            // connector plugins (D5) — fetch + ingest primitives over manifests
+            connectors::connector_list,
+            connectors::connector_configure,
+            connectors::connector_disconnect,
+            connectors::connector_sync,
             commands::retrieval_eval_real,
             commands::agents_execute_run,
             commands::deep_research,
             commands::synthesize_video_overview,
+            commands::zotero_import,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,
@@ -599,6 +612,22 @@ pub fn run() {
             commands::pdf_form_fields,
             commands::pdf_fill_form,
             commands::docx_review_edits,
+            // extraction templates (D8) — Elicit-style field-wise paper extraction
+            extraction::extract_template_list,
+            extraction::extract_template_save,
+            extraction::extract_template_delete,
+            extraction::extract_run_create,
+            extraction::extract_run_list,
+            extraction::extract_run_delete,
+            extraction::extract_run_execute,
+            extraction::extract_run_retry,
+            extraction::extract_result_get,
+            extraction::extract_result_csv,
+            extraction::extract_result_csv_file,
+            extraction::extract_cell_set,
+            // summary tree (D6) — hierarchical digests + budgeted context
+            summary_tree::summary_tree_status,
+            summary_tree::summary_tree_build,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

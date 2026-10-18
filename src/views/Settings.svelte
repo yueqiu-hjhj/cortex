@@ -1784,7 +1784,8 @@ Notes: {about}</pre>
             {#if !plugins.length && !pluginErrors.length}
               <div class="set-row-d">
                 还没有插件。把 JSON 清单放进数据目录的 <code>plugins/</code> 文件夹后重启即可
-                —— 可以贡献新的模型服务商（OpenAI 兼容）、学习材料预设和 Space 菜单项。
+                —— 可以贡献新的模型服务商（OpenAI 兼容）、学习材料预设、Space 菜单项和数据源连接器
+                （Zotero / Notion / GitHub 等任何 JSON API）。
               </div>
             {:else}
               {#each plugins as pl}
@@ -1793,7 +1794,7 @@ Notes: {about}</pre>
                     <div class="set-row-t"><span class="row-keytitle">{pl.name}</span></div>
                     <div class="set-row-d mono">{pl.file}</div>
                     <div class="set-row-d">
-                      {pl.providers.length} 个服务商 · {pl.material_types.length} 个材料预设 · {pl.leader_keys.length} 个菜单项
+                      {pl.providers.length} 个服务商 · {pl.material_types.length} 个材料预设 · {pl.leader_keys.length} 个菜单项 · {pl.connectors.length} 个连接器
                     </div>
                   </div>
                 </div>

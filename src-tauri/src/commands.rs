@@ -1719,9 +1719,13 @@ pub async fn chat_answer(
 
     // Multi-source scope: restrict retrieval to exactly these source ids (the
     // chat scope-switcher's tick-list). Applied to BOTH retrieval paths in Rust.
-    let source_set: Option<std::collections::HashSet<String>> = source_ids
+    // `scope_ids` keeps the same selection for the summary-tree context layer.
+    let scope_ids: Option<Vec<String>> = source_ids
         .filter(|v| !v.is_empty())
-        .map(|v| v.into_iter().collect());
+        .or_else(|| scoped_source.map(|s| vec![s.to_string()]));
+    let source_set: Option<std::collections::HashSet<String>> = scope_ids
+        .as_ref()
+        .map(|v| v.iter().cloned().collect());
 
     // The "stub" embedder (and an empty/unset provider) produces meaningless
     // vectors, so cosine search returns irrelevant chunks. In that case rely on
@@ -1759,14 +1763,23 @@ pub async fn chat_answer(
         hits.truncate(6);
     }
 
-    let context = hits
-        .iter()
-        .map(|h| {
-            let loc = h.loc.as_deref().map(|l| format!(" · {l}")).unwrap_or_default();
-            format!("[{}{}]\n{}", h.source_name, loc, h.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    // Context: hierarchical summary tree (subject overview → topic/source
+    // digests) PLUS the retrieved chunks as the raw layer. Within the same
+    // ~18k budget the model now also sees the shape of the whole library, so
+    // "整本书/整学期" questions stop falling back to generic answers. With no
+    // tree built yet this degrades to exactly the old chunk-only context.
+    let (context, tree_source_names) = {
+        let c = state.db.lock().unwrap();
+        crate::summary_tree::context_block(
+            &c,
+            &subject_id,
+            &[],
+            scope_ids.as_deref(),
+            Some(&query),
+            &hits,
+            18000,
+        )?
+    };
 
     // Web mode: pull live web snippets (for grounding/examples) and — when the
     // question is visual — image results to show alongside the answer. Requires a
@@ -1897,7 +1910,14 @@ pub async fn chat_answer(
     // can badge it honestly instead of dressing up general knowledge.
     let mut abstained = false;
     let mut fabricated_dropped = 0usize;
-    let valid_names: Vec<String> = hits.iter().map(|h| h.source_name.clone()).collect();
+    // A source whose DIGEST (not raw chunks) entered the context is still a
+    // legitimate citation target — its name rides in on the summary-tree layer.
+    let mut valid_names: Vec<String> = hits.iter().map(|h| h.source_name.clone()).collect();
+    for name in tree_source_names {
+        if !valid_names.contains(&name) {
+            valid_names.push(name);
+        }
+    }
     let grounded = !context.is_empty() || !web_block.is_empty() || !framework_block.is_empty();
     let text = if grounded {
         let (cleaned, dropped) =
@@ -3028,13 +3048,25 @@ pub async fn generate_material(
         let c = state.db.lock().unwrap();
         // The user's explicit source selection is authoritative: scope context to
         // exactly those sources (ignoring topic, since a selection can span topics).
-        // Fall back to topic/subject scope only when nothing was selected.
+        // Fall back to topic/subject scope only when nothing was selected. Context
+        // comes from the summary tree when one has been built — the digests let a
+        // 18k-char budget cover whole-library shape instead of raw chunks alone —
+        // and degrades to the plain fair-allocation text when it isn't.
         let has_sel = source_ids.as_ref().map_or(false, |v| !v.is_empty());
-        let (ctx, _) = if has_sel {
-            repo::context_text(&c, &subject_id, None, source_ids.as_deref(), 18000)?
+        let sel_topics: Vec<String> = if has_sel {
+            Vec::new()
         } else {
-            repo::context_text(&c, &subject_id, topic_id.as_deref(), None, 18000)?
+            topic_id.clone().into_iter().collect()
         };
+        let (ctx, _) = crate::summary_tree::context_block(
+            &c,
+            &subject_id,
+            &sel_topics,
+            if has_sel { source_ids.as_deref() } else { None },
+            custom_prompt.as_deref(),
+            &[],
+            18000,
+        )?;
         let subj = repo::get_subject(&c, &subject_id)?;
         let tname = topic_id
             .as_ref()
@@ -6170,6 +6202,32 @@ pub fn materialize_goal(state: State<AppState>, req: crate::planner::GoalPlanReq
 pub fn paper_import(state: State<AppState>, input: crate::papers::PaperInput) -> Result<crate::papers::Paper> {
     let c = state.db.lock().unwrap();
     crate::papers::import_paper(&c, &input)
+}
+
+/// Import the local Zotero library into the papers table (DOI-deduped).
+/// Reads a COPY of zotero.sqlite — Zotero's own library is never touched.
+#[tauri::command]
+pub async fn zotero_import(
+    app: AppHandle,
+    db_path: Option<String>,
+    subject_id: Option<String>,
+) -> Result<crate::zotero::ZoteroImportResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::zotero::ZoteroImportResult> {
+        let state = app.state::<AppState>();
+        let mut progress = |_n: usize| {};
+        let result = {
+            let c = state.db.lock().unwrap();
+            crate::zotero::import(
+                &c,
+                db_path.as_deref().map(Path::new),
+                subject_id.as_deref(),
+                &mut progress,
+            )?
+        };
+        Ok(result)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("zotero task failed: {e}")))?
 }
 
 /// Deep Research (gap D2): 课题 → 多源文献发现 → AI 筛选 → 阅读清单 → 有据综述

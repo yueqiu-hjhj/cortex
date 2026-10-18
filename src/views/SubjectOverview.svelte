@@ -5,6 +5,7 @@
   // (Solid / Steady / Shaky / Cold) so students see the same vocabulary as
   // the neural graph.
   import { app } from "../lib/store.svelte";
+  import { jobs } from "../lib/jobs.svelte";
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
   import MindMapView from "../components/MindMapView.svelte";
@@ -278,6 +279,57 @@
     mapData = { central: `${s.glyph} ${s.name}`.trim(), branches };
     showMap = true;
   }
+
+  // ── 摘要树（D6）── 分级摘要缓存：科目总览 → 主题摘要 → 材料摘要，供
+  // chat / 材料生成的上下文组装在同样的预算里看到整库结构。构建是多次 LLM
+  // 摘要调用（长材料分片 Map-Reduce），走后台任务面板；新鲜节点自动跳过。
+  let sumStatus = $state<api.SummaryTreeStatus | null>(null);
+  let sumErr = $state<string | null>(null);
+  let sumBuilding = $state(false);
+  const sumPending = $derived(
+    sumStatus
+      ? sumStatus.topic_missing +
+        sumStatus.topic_stale +
+        sumStatus.source_missing +
+        sumStatus.source_stale +
+        (sumStatus.subject_missing ? 1 : 0)
+      : 0
+  );
+  $effect(() => {
+    const id = subj?.id;
+    if (!id) { sumStatus = null; sumErr = null; return; }
+    let cancelled = false;
+    sumStatus = null;
+    api.summaryTreeStatus(id)
+      .then((s) => { if (!cancelled) sumStatus = s; })
+      .catch((e) => { if (!cancelled) { sumStatus = null; sumErr = String(e); } });
+    return () => { cancelled = true; };
+  });
+  async function buildSumTree(force: boolean) {
+    const s = subj;
+    if (!s || sumBuilding) return;
+    sumBuilding = true;
+    sumErr = null;
+    jobs.start({
+      kind: "sumtree",
+      label: `${force ? "重建" : "构建"}摘要树 · ${s.name}`,
+      subjectId: s.id,
+      run: async () => {
+        try {
+          const r = await api.summaryTreeBuild(s.id, force);
+          sumStatus = r;
+          return r;
+        } finally {
+          sumBuilding = false;
+        }
+      },
+    });
+  }
+  function fmtChars(n: number): string {
+    if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
+    if (n > 0) return `${n} 字`;
+    return "0 字";
+  }
 </script>
 
 {#if showMap && mapData}
@@ -415,6 +467,82 @@
             {/each}
           </ul>
           {#if knSyncNote}<div class="ov-tree-foot mono">{knSyncNote}</div>{/if}
+        {/if}
+      </div>
+    </section>
+
+    <section class="ov-sumtree">
+      <div class="ov-tree-l">
+        <h3>摘要树</h3>
+        <p>
+          分级摘要缓存：科目总览 → 主题摘要 → 材料摘要。对话与材料生成按预算
+          先读摘要、需要时再展开原文，让小窗口模型也能回答整本书/整学期级别的
+          问题。材料更新后对应节点自动过期，重建时只补缺失与过期的。
+        </p>
+      </div>
+      <div class="ov-tree-card">
+        {#if sumErr}
+          <div class="ov-tree-mut err">{sumErr}</div>
+        {:else if !sumStatus}
+          <div class="ov-tree-mut">读取摘要树状态…</div>
+        {:else}
+          <div class="ov-sumtree-stats" role="img" aria-label="摘要树覆盖情况">
+            <div class="ov-sumtree-stat">
+              <span class="ov-sumtree-n mono">
+                {sumStatus.subject_missing ? "—" : (sumStatus.subject_ok ? "✓" : "旧")}
+              </span>
+              <span class="ov-sumtree-l">科目总览</span>
+            </div>
+            <div class="ov-sumtree-stat">
+              <span class="ov-sumtree-n mono">
+                {sumStatus.topic_fresh}<span class="ov-sumtree-dim">
+                  /{sumStatus.topic_fresh + sumStatus.topic_stale + sumStatus.topic_missing}
+                </span>
+              </span>
+              <span class="ov-sumtree-l">主题摘要</span>
+            </div>
+            <div class="ov-sumtree-stat">
+              <span class="ov-sumtree-n mono">
+                {sumStatus.source_fresh}<span class="ov-sumtree-dim">
+                  /{sumStatus.source_fresh + sumStatus.source_stale + sumStatus.source_missing}
+                </span>
+              </span>
+              <span class="ov-sumtree-l">材料摘要</span>
+            </div>
+            <div class="ov-sumtree-stat">
+              <span class="ov-sumtree-n mono">{fmtChars(sumStatus.total_chars)}</span>
+              <span class="ov-sumtree-l">已覆盖原文</span>
+            </div>
+          </div>
+          <div class="ov-sumtree-foot">
+            <span class="ov-sumtree-note">
+              {#if !sumStatus.model_configured}
+                还没有配置模型，构建摘要树需要先在设置里配好。
+              {:else if sumPending === 0}
+                全部新鲜 — 对话和材料生成已在用摘要树组装上下文。
+              {:else}
+                {sumPending} 个节点缺失或过期，构建只补这些。
+              {/if}
+            </span>
+            <button
+              class="btn btn--sm"
+              disabled={sumBuilding || !sumStatus.model_configured || sumPending === 0}
+              onclick={() => buildSumTree(false)}
+              title="只构建缺失与过期的节点"
+            >
+              <Icon name="refresh" size={13} /> {sumBuilding ? "构建中…" : "构建摘要树"}
+            </button>
+            {#if sumPending === 0}
+              <button
+                class="btn btn--sm btn--ghost"
+                disabled={sumBuilding || !sumStatus.model_configured}
+                onclick={() => buildSumTree(true)}
+                title="忽略缓存，全部重新摘要"
+              >
+                强制重建
+              </button>
+            {/if}
+          </div>
         {/if}
       </div>
     </section>
@@ -789,6 +917,58 @@
   }
   @media (max-width: 760px) {
     .ov-tree { grid-template-columns: 1fr; }
+  }
+
+  /* ---- summary tree (D6) ---- */
+  .ov-sumtree {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px 16px;
+    background: transparent;
+  }
+  .ov-sumtree .ov-tree-l h3 { margin: 0 0 4px; font-size: 13px; }
+  .ov-sumtree .ov-tree-l p { margin: 0; color: var(--fg-muted); font-size: 11.5px; line-height: 1.55; }
+  .ov-sumtree-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 4px 6px 10px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .ov-sumtree-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    text-align: center;
+  }
+  .ov-sumtree-n {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-bright);
+    line-height: 1.3;
+  }
+  .ov-sumtree-dim { font-size: 11px; color: var(--fg-faint); font-weight: 400; }
+  .ov-sumtree-l { font-size: 10.5px; color: var(--fg-faint); letter-spacing: 0.04em; }
+  .ov-sumtree-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 6px 2px;
+  }
+  .ov-sumtree-note {
+    flex: 1;
+    min-width: 0;
+    color: var(--fg-faint);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  @media (max-width: 760px) {
+    .ov-sumtree { grid-template-columns: 1fr; }
+    .ov-sumtree-stats { grid-template-columns: repeat(2, 1fr); }
   }
 
   /* ---- calibration panel ---- */

@@ -20,6 +20,9 @@ export type JobKind =
   | "mindmap"
   | "matrix"
   | "guide"
+  | "extract"
+  | "sumtree"
+  | "connector"
   | "source";
 
 export type JobStatus = "running" | "done" | "error";
@@ -52,6 +55,9 @@ const KIND_LABEL: Record<JobKind, string> = {
   mindmap: "mind map",
   matrix: "comparison matrix",
   guide: "study guide",
+  extract: "paper extraction",
+  sumtree: "summary tree",
+  connector: "connector sync",
   source: "source",
 };
 

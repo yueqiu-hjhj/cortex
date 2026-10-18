@@ -32,6 +32,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Re-exported so external code can walk `plugins::all()` connectors without
+/// importing the connectors module.
+pub use crate::connectors::PluginConnector;
 use std::sync::{OnceLock, RwLock};
 
 /// One OpenAI-compatible endpoint contributed by a plugin. Same wire contract
@@ -87,6 +91,7 @@ pub struct Plugin {
     pub providers: Vec<PluginProvider>,
     pub material_types: Vec<PluginMaterialType>,
     pub leader_keys: Vec<PluginLeaderKey>,
+    pub connectors: Vec<PluginConnector>,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +156,7 @@ pub fn ensure_loaded(data_dir: &Path) {
             providers: m.providers,
             material_types: m.material_types,
             leader_keys: m.leader_keys,
+            connectors: m.connectors,
         });
     }
     *slot().write().unwrap() = loaded;
@@ -166,6 +172,8 @@ struct Manifest {
     pub material_types: Vec<PluginMaterialType>,
     #[serde(default)]
     leader_keys: Vec<PluginLeaderKey>,
+    #[serde(default)]
+    connectors: Vec<PluginConnector>,
 }
 
 /// Reject the manifests that would misbehave before they are loaded. Cheap and
@@ -218,6 +226,81 @@ fn validate(m: &Manifest) -> Result<(), String> {
         }
         if !ids.insert(format!("l:{}", k.key)) {
             return Err(format!("leader key '{}' 重复", k.key));
+        }
+    }
+    for c in &m.connectors {
+        if c.id.trim().is_empty() || c.label.trim().is_empty() {
+            return Err(format!("connector '{}' 缺少 id 或 label", c.id));
+        }
+        if !ids.insert(format!("c:{}", c.id)) {
+            return Err(format!("connector id '{}' 在此清单中重复", c.id));
+        }
+        if !matches!(c.auth.kind.as_str(), "none" | "bearer" | "header" | "query") {
+            return Err(format!(
+                "connector '{}' 的 auth.kind '{}' 不是 none/bearer/header/query",
+                c.id, c.auth.kind
+            ));
+        }
+        if matches!(c.auth.kind.as_str(), "header" | "query") && c.auth.name.trim().is_empty() {
+            return Err(format!(
+                "connector '{}' 的 auth.kind={} 需要指明承载 Key 的 {} 名",
+                c.id,
+                c.auth.kind,
+                if c.auth.kind == "header" { "header" } else { "query 参数" }
+            ));
+        }
+        // URL 模板里的占位符必须能从 config 段满足（{cursor} 只在 POST body 里合法）。
+        let known: std::collections::HashSet<&str> =
+            c.config.iter().map(|f| f.key.as_str()).collect();
+        for k in crate::connectors::template_keys(&c.fetch.url) {
+            if !known.contains(k.as_str()) {
+                return Err(format!(
+                    "connector '{}' 的 fetch.url 用到 {{{}}}，但 config 段没有这个配置项",
+                    c.id, k
+                ));
+            }
+        }
+        if c.fetch.url.trim().is_empty() {
+            return Err(format!("connector '{}' 缺少 fetch.url", c.id));
+        }
+        if !matches!(c.fetch.page_mode.as_str(), "" | "none" | "offset" | "page" | "cursor") {
+            return Err(format!(
+                "connector '{}' 的 page_mode '{}' 不是 none/offset/page/cursor",
+                c.id, c.fetch.page_mode
+            ));
+        }
+        if matches!(c.fetch.page_mode.as_str(), "offset" | "page") && c.fetch.page_param.trim().is_empty() {
+            return Err(format!(
+                "connector '{}' 的 page_mode={} 需要 page_param",
+                c.id, c.fetch.page_mode
+            ));
+        }
+        if c.fetch.page_mode == "cursor" && c.fetch.next_cursor_path.trim().is_empty() {
+            return Err(format!(
+                "connector '{}' 的 cursor 分页需要 next_cursor_path",
+                c.id
+            ));
+        }
+        if c.fetch.fields.id.trim().is_empty() || c.fetch.fields.title.trim().is_empty() {
+            return Err(format!("connector '{}' 的 fields 需要 id 和 title 路径", c.id));
+        }
+        if !matches!(c.ingest.kind.as_str(), "text" | "url") {
+            return Err(format!(
+                "connector '{}' 的 ingest.kind '{}' 不是 text 或 url",
+                c.id, c.ingest.kind
+            ));
+        }
+        if c.ingest.kind == "text" && c.fetch.fields.text.trim().is_empty() {
+            return Err(format!(
+                "connector '{}' 是 text 入库，fields.text 路径不能为空",
+                c.id
+            ));
+        }
+        if c.ingest.kind == "url" && c.fetch.fields.url.trim().is_empty() {
+            return Err(format!(
+                "connector '{}' 是 url 入库，fields.url 路径不能为空",
+                c.id
+            ));
         }
     }
     Ok(())
@@ -302,5 +385,87 @@ mod tests {
     fn empty_optional_sections_are_fine() {
         let m = manifest(r#"{ "name": "bare" }"#).unwrap();
         assert!(m.providers.is_empty() && m.material_types.is_empty() && m.leader_keys.is_empty());
+    }
+
+    #[test]
+    fn a_connector_manifest_parses_and_validates() {
+        let m = manifest(
+            r#"{
+              "name": "research-pack",
+              "connectors": [{
+                "id": "github-issues", "label": "GitHub Issues",
+                "docs_url": "https://docs.github.com/rest",
+                "auth": { "kind": "bearer", "key_note": "github.com/settings/tokens" },
+                "config": [{ "key": "repo", "label": "仓库", "placeholder": "owner/name" }],
+                "fetch": {
+                  "url": "https://api.github.com/repos/{repo}/issues?state=open&per_page=50",
+                  "page_mode": "page", "page_param": "page", "page_size_param": "per_page",
+                  "page_size": 50,
+                  "fields": { "id": "number", "title": "title", "text": "body", "url": "html_url" }
+                },
+                "ingest": { "kind": "text" }
+              }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(m.connectors[0].id, "github-issues");
+        assert_eq!(m.connectors[0].auth.kind, "bearer");
+        assert_eq!(m.connectors[0].fetch.fields.id, "number");
+    }
+
+    #[test]
+    fn connector_url_placeholders_must_exist_in_config() {
+        let err = manifest(
+            r#"{ "name": "pack", "connectors": [{
+                 "id": "c", "label": "C",
+                 "auth": { "kind": "none" },
+                 "fetch": { "url": "https://x.test/{user_id}",
+                   "fields": { "id": "k", "title": "t", "text": "b" } },
+                 "ingest": { "kind": "text" } }] }"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("user_id"), "got: {err}");
+    }
+
+    #[test]
+    fn connector_kind_and_paths_are_checked() {
+        let err = manifest(
+            r#"{ "name": "pack", "connectors": [{
+                 "id": "c", "label": "C",
+                 "auth": { "kind": "magic" },
+                 "fetch": { "url": "https://x.test",
+                   "fields": { "id": "k", "title": "t", "text": "b" } },
+                 "ingest": { "kind": "text" } }] }"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("auth.kind"), "got: {err}");
+
+        let err = manifest(
+            r#"{ "name": "pack", "connectors": [{
+                 "id": "c", "label": "C",
+                 "auth": { "kind": "none" },
+                 "fetch": { "url": "https://x.test",
+                   "fields": { "id": "k", "title": "t" } },
+                 "ingest": { "kind": "text" } }] }"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("fields.text"), "got: {err}");
+    }
+
+    #[test]
+    fn connector_id_collisions_are_rejected() {
+        let err = manifest(
+            r#"{ "name": "pack", "connectors": [
+                 { "id": "c", "label": "C1",
+                   "auth": { "kind": "none" },
+                   "fetch": { "url": "https://x.test", "fields": { "id": "k", "title": "t", "text": "b" } },
+                   "ingest": { "kind": "text" } },
+                 { "id": "c", "label": "C2",
+                   "auth": { "kind": "none" },
+                   "fetch": { "url": "https://y.test", "fields": { "id": "k", "title": "t", "text": "b" } },
+                   "ingest": { "kind": "text" } }] }"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("重复"), "got: {err}");
     }
 }

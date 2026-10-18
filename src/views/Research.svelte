@@ -8,6 +8,7 @@
   // and every excerpt is kept verbatim so it can go straight into a draft.
   import * as api from "../lib/api";
   import { app } from "../lib/store.svelte";
+  import { jobs } from "../lib/jobs.svelte";
   import Icon from "../components/Icon.svelte";
   import MatrixView from "../components/MatrixView.svelte";
   import OfficeTools from "../components/OfficeTools.svelte";
@@ -215,6 +216,225 @@
     }
   }
 
+  // ----- D8: extraction templates (Elicit-style field-wise table) -----
+  // A template fixes the field list once (样本量 / 方法 / 效应量 …); a run
+  // applies it to every checked paper, one LLM call per paper, and every cell
+  // is individually editable — a manual edit is flagged `manual` and survives
+  // re-runs and retries. Reuses the same paper checkbox selection as the
+  // comparison matrix: the checked set IS the extraction workset.
+  let extractOpen = $state(false);
+  let extractView = $state<"pick" | "runs" | "result">("pick");
+  let extractTemplates = $state<api.ExtractTemplate[]>([]);
+  let extractRuns = $state<api.ExtractRun[]>([]);
+  let extractChosenId = $state<string | null>(null);
+  let extractRunTitle = $state("");
+  let extractResult = $state<api.ExtractResult | null>(null);
+  let extractBusy = $state(false);
+  let extractError = $state<string | null>(null);
+  let retryingItem = $state<string | null>(null);
+
+  // Template editor state (one form serves create + edit).
+  let tplFormOpen = $state(false);
+  let tplEditId = $state<string | null>(null);
+  let tplName = $state("");
+  let tplDesc = $state("");
+  let tplFields = $state<api.ExtractField[]>([{ key: "", prompt: "" }]);
+
+  const chosenTemplate = $derived(
+    extractTemplates.find((t) => t.id === extractChosenId) ?? null
+  );
+  const cellMap = $derived.by(() => {
+    const m = new Map<string, api.ExtractCell>();
+    if (extractResult) {
+      for (const c of extractResult.cells) m.set(`${c.item_id}\u0000${c.field_key}`, c);
+    }
+    return m;
+  });
+  const extractRunning = $derived(extractResult?.run.status === "running");
+
+  function cellVal(itemId: string, fieldKey: string): string {
+    return cellMap.get(`${itemId}\u0000${fieldKey}`)?.value ?? "";
+  }
+  function cellIsManual(itemId: string, fieldKey: string): boolean {
+    return cellMap.get(`${itemId}\u0000${fieldKey}`)?.source === "manual";
+  }
+
+  async function loadExtractData() {
+    try {
+      extractTemplates = await api.extractTemplateList();
+      extractRuns = await api.extractRunList();
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  function openExtract() {
+    extractOpen = true;
+    extractError = null;
+    void loadExtractData();
+  }
+
+  function closeExtract() {
+    extractOpen = false;
+    extractResult = null;
+    extractError = null;
+    tplFormOpen = false;
+    extractView = "pick";
+  }
+
+  function openTemplateForm(t?: api.ExtractTemplate) {
+    tplEditId = t?.id ?? null;
+    tplName = t?.name ?? "";
+    tplDesc = t?.description ?? "";
+    tplFields = t ? t.fields.map((f) => ({ ...f })) : [{ key: "", prompt: "" }];
+    tplFormOpen = true;
+  }
+
+  async function saveTemplate() {
+    extractBusy = true;
+    extractError = null;
+    try {
+      await api.extractTemplateSave(
+        tplEditId,
+        tplName.trim(),
+        tplDesc.trim() || null,
+        tplFields
+          .map((f) => ({ key: f.key.trim(), prompt: f.prompt.trim() }))
+          .filter((f) => f.key && f.prompt)
+      );
+      tplFormOpen = false;
+      await loadExtractData();
+      say("模板已保存");
+    } catch (e) {
+      extractError = String(e);
+    } finally {
+      extractBusy = false;
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    try {
+      await api.extractTemplateDelete(id);
+      if (extractChosenId === id) extractChosenId = null;
+      await loadExtractData();
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  async function startExtraction() {
+    if (!extractChosenId || matrixSelectionCount === 0 || extractBusy) return;
+    extractBusy = true;
+    extractError = null;
+    try {
+      const runId = await api.extractRunCreate(
+        extractChosenId,
+        matrixSelectionIds,
+        extractRunTitle.trim() || undefined
+      );
+      extractRunTitle = "";
+      // Open the (initially empty) table right away — cells fill in live.
+      extractResult = await api.extractResultGet(runId);
+      extractView = "result";
+      jobs.start({
+        kind: "extract",
+        label: `${chosenTemplate?.name ?? "提取"} · ${matrixSelectionCount} 篇`,
+        subjectId: app.activeSubject?.id ?? "",
+        run: () => api.extractRunExecute(runId),
+        onDone: () => void refreshRun(runId),
+      });
+    } catch (e) {
+      extractError = String(e);
+    } finally {
+      extractBusy = false;
+    }
+  }
+
+  async function refreshRun(runId: string) {
+    try {
+      const fresh = await api.extractResultGet(runId);
+      if (extractResult?.run.id === runId) extractResult = fresh;
+      extractRuns = await api.extractRunList();
+    } catch {
+      /* transient poll errors are non-fatal */
+    }
+  }
+
+  // While the open run is executing, poll so extracted cells appear live.
+  $effect(() => {
+    if (!extractOpen || !extractRunning || !extractResult) return;
+    const runId = extractResult.run.id;
+    const t = setInterval(() => void refreshRun(runId), 3000);
+    return () => clearInterval(t);
+  });
+
+  async function openRun(id: string) {
+    extractError = null;
+    try {
+      extractResult = await api.extractResultGet(id);
+      extractView = "result";
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  async function retryRow(itemId: string) {
+    if (!extractResult || retryingItem) return;
+    retryingItem = itemId;
+    extractError = null;
+    try {
+      await api.extractRunRetry(extractResult.run.id, itemId);
+      await refreshRun(extractResult.run.id);
+    } catch (e) {
+      extractError = String(e);
+    } finally {
+      retryingItem = null;
+    }
+  }
+
+  async function saveCell(itemId: string, fieldKey: string, value: string) {
+    if (!extractResult) return;
+    if (value === cellVal(itemId, fieldKey)) return;
+    try {
+      await api.extractCellSet(extractResult.run.id, itemId, fieldKey, value);
+      await refreshRun(extractResult.run.id);
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  async function deleteRun(id: string) {
+    try {
+      await api.extractRunDelete(id);
+      if (extractResult?.run.id === id) {
+        extractResult = null;
+        extractView = "runs";
+      }
+      await loadExtractData();
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  async function exportCsv() {
+    if (!extractResult) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe =
+        extractResult.run.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") ||
+        "extraction";
+      const dest = await save({
+        defaultPath: `${safe}.csv`,
+        filters: [{ name: "CSV 表格", extensions: ["csv"] }],
+      });
+      if (!dest) return;
+      await api.extractResultCsvFile(extractResult.run.id, dest);
+      say(`表格已导出 → ${dest}`);
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
   let quote = $state("");
   let page = $state<number | null>(null);
   let note = $state("");
@@ -407,6 +627,13 @@
         title={matrixSelectionCount === 0 ? "勾选至少一篇论文" : "按已勾选的 " + matrixSelectionCount + " 篇生成对比矩阵"}
       >
         {matrixBuilding ? "生成中…" : "对比矩阵 · " + matrixSelectionCount}
+      </button>
+      <button
+        class="btn"
+        onclick={openExtract}
+        title="结构化提取：按固定字段（样本量 / 方法 / 效应量 …）对勾选的论文逐篇提取成可校对表格"
+      >
+        提取表格
       </button>
       {#if matrixSelectionCount > 0}
         <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
@@ -727,6 +954,168 @@
         {/each}
         <div class="matrix-modal-actions">
           <button class="btn" onclick={closeDraftModal}>关闭</button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if extractOpen}
+  <div class="matrix-modal-bg" onclick={closeExtract} role="presentation"></div>
+  <div class="matrix-modal extract-modal" role="dialog" aria-label="结构化提取表格">
+    {#if extractError}
+      <div class="matrix-modal-bd err">
+        {extractError}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (extractError = null)}>返回</button>
+          <button class="btn" onclick={closeExtract}>关闭</button>
+        </div>
+      </div>
+    {:else if extractView === "pick"}
+      <div class="matrix-modal-bd">
+        <div class="shead">结构化提取 <span class="n">已勾选 {matrixSelectionCount} 篇</span></div>
+        <p class="dhint">和对比矩阵共用同一组勾选。选一个模板 → 对勾选的每篇论文各调用一次模型逐字段提取 → 单元格可手动修正（修正后不会被重跑覆盖）。</p>
+
+        {#if tplFormOpen}
+          <div class="tplform">
+            <input class="dt" bind:value={tplName} placeholder="模板名称，例如「RCT 方法学提取」" />
+            <input class="dt" bind:value={tplDesc} placeholder="模板说明（可选）" />
+            <div class="flds">
+              <div class="fld fld-head"><span>字段 key</span><span>提取要求（问模型的问题）</span><span></span></div>
+              {#each tplFields as f, i (i)}
+                <div class="fld">
+                  <input bind:value={f.key} placeholder="sample_size" />
+                  <input bind:value={f.prompt} placeholder="样本量与数据集规模" />
+                  <button class="x" title="删除字段" disabled={tplFields.length <= 1}
+                          onclick={() => (tplFields = tplFields.filter((_, j) => j !== i))}>
+                    <Icon name="x" size={10} />
+                  </button>
+                </div>
+              {/each}
+            </div>
+            <div class="matrix-modal-actions">
+              <button class="btn" onclick={() => tplFields = [...tplFields, { key: "", prompt: "" }]}>加字段</button>
+              <button class="btn" onclick={() => (tplFormOpen = false)}>取消</button>
+              <button class="btn primary" disabled={!tplName.trim() || extractBusy} onclick={saveTemplate}>
+                {extractBusy ? "保存中…" : "保存模板"}
+              </button>
+            </div>
+          </div>
+        {:else}
+          {#if !extractTemplates.length}
+            <p class="none">还没有模板。先建一个，把要提取的字段固定下来。</p>
+          {:else}
+            <div class="tpllist">
+              {#each extractTemplates as t (t.id)}
+                <div class="tplrow">
+                  <button type="button" class="tpl" class:on={extractChosenId === t.id} onclick={() => (extractChosenId = t.id)}>
+                    <div class="tplname">{t.name}</div>
+                    {#if t.description}<div class="tpldesc">{t.description}</div>{/if}
+                    <div class="tplflds">{#each t.fields as f (f.key)}<span class="chip">{f.key}</span>{/each}</div>
+                  </button>
+                  <div class="tpltools">
+                    <button class="x" title="编辑模板" onclick={() => openTemplateForm(t)}><Icon name="pencil" size={10} /></button>
+                    <button class="x" title="删除模板" onclick={() => deleteTemplate(t.id)}><Icon name="x" size={10} /></button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          <input class="dt" bind:value={extractRunTitle} placeholder="本次提取标题（可选，默认「模板名 · N 篇」）" />
+          <div class="matrix-modal-actions">
+            <button class="btn" onclick={() => openTemplateForm()}>新建模板</button>
+            <button class="btn" onclick={() => (extractView = "runs")}>提取历史</button>
+            <button class="btn" onclick={closeExtract}>取消</button>
+            <button class="btn primary" disabled={!extractChosenId || matrixSelectionCount === 0 || extractBusy}
+                    title={!extractChosenId ? "先选择一个模板" : matrixSelectionCount === 0 ? "先在论文列表勾选论文" : ""}
+                    onclick={startExtraction}>
+              {extractBusy ? "创建中…" : `开始提取 ${matrixSelectionCount} 篇`}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {:else if extractView === "runs"}
+      <div class="matrix-modal-bd">
+        <div class="shead">提取历史 <span class="n">{extractRuns.length}</span></div>
+        {#if !extractRuns.length}
+          <p class="none">还没有提取记录。</p>
+        {/if}
+        {#each extractRuns as r (r.id)}
+          <div class="lrow">
+            <button type="button" class="lbody" onclick={() => openRun(r.id)}>
+              <div class="ltitle">{r.title}</div>
+              <div class="lsub">
+                {r.template_name} · {r.item_ids.length} 篇 · {r.fields.length} 字段 ·
+                <span class:running={r.status === "running"} class:failed={r.status === "error"}>
+                  {r.status === "running" ? "提取中" : r.status === "error" ? "失败" : "完成"}
+                </span>
+                · {new Date(r.created_at).toLocaleString("zh-CN")}
+              </div>
+            </button>
+            <button class="x" title="删除记录" onclick={() => deleteRun(r.id)}><Icon name="x" size={10} /></button>
+          </div>
+        {/each}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (extractView = "pick")}>返回</button>
+          <button class="btn" onclick={closeExtract}>关闭</button>
+        </div>
+      </div>
+    {:else if extractResult}
+      <div class="matrix-modal-bd">
+        <div class="shead">
+          {extractResult.run.title}
+          <span class="n">{extractResult.items.length} 篇 · {extractResult.run.fields.length} 字段</span>
+          {#if extractRunning}<span class="runbadge"><span class="is-spin" style="width:10px;height:10px"></span>提取中…</span>
+          {:else if extractResult.run.status === "error"}<span class="runbadge failed">失败</span>{/if}
+        </div>
+        {#if extractResult.run.error}
+          <p class="dhint" style="color:var(--warn)">{extractResult.run.error}</p>
+        {/if}
+        <div class="xtable-wrap">
+          <table class="xtable">
+            <thead>
+              <tr>
+                <th class="sticky">论文</th>
+                {#each extractResult.run.fields as f (f.key)}
+                  <th title={f.prompt}>{f.key}</th>
+                {/each}
+                <th class="ops"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each extractResult.items as item (item.id)}
+                <tr>
+                  <td class="sticky">
+                    <div class="ptitle">{item.title}</div>
+                    <div class="faint">{[item.authors, item.year].filter(Boolean).join(" · ")}</div>
+                  </td>
+                  {#each extractResult.run.fields as f (f.key)}
+                    <td>
+                      <input
+                        value={cellVal(item.id, f.key)}
+                        placeholder={extractRunning ? "…" : "空"}
+                        onchange={(e) => saveCell(item.id, f.key, (e.target as HTMLInputElement).value)}
+                        title={cellIsManual(item.id, f.key) ? "手动修正过（重跑不会覆盖）" : "点击编辑并校对"}
+                      />
+                      {#if cellIsManual(item.id, f.key)}<span class="mflag" title="手动修正">手</span>{/if}
+                    </td>
+                  {/each}
+                  <td class="ops">
+                    <button class="x" title="重新提取这一行（手动修正过的格子不会被覆盖）"
+                            disabled={retryingItem === item.id || extractRunning}
+                            onclick={() => retryRow(item.id)}>
+                      <Icon name="refresh" size={11} />
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={exportCsv}>导出 CSV</button>
+          <button class="btn" onclick={() => { extractResult = null; extractView = "pick"; }}>再提一次</button>
+          <button class="btn primary" onclick={closeExtract}>完成</button>
         </div>
       </div>
     {/if}
@@ -1319,4 +1708,179 @@
     color: var(--fg-faint);
   }
   .lrow .x { margin-right: 10px; }
+
+  /* ----- D8: extraction templates ----- */
+  .extract-modal { inset: 7vh 9vw; }
+  .tpllist {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .tplrow {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .tpl {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: left;
+    padding: 9px 11px;
+    cursor: pointer;
+    color: inherit;
+  }
+  .tpl:hover { border-color: var(--border-strong); }
+  .tpl.on {
+    border-color: var(--accent-dim);
+    background: rgba(124, 92, 240, 0.08);
+  }
+  .tplname {
+    font-size: var(--t-sm);
+    color: var(--fg-bright);
+    line-height: 1.4;
+  }
+  .tpldesc {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .tplflds {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .chip {
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .tpltools {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .tplform {
+    margin-bottom: 10px;
+  }
+  .flds {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  .fld {
+    display: grid;
+    grid-template-columns: 150px 1fr 26px;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .fld:last-child { margin-bottom: 0; }
+  .fld input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: var(--t-xs);
+    padding: 5px 8px;
+    outline: none;
+    width: 100%;
+  }
+  .fld input:focus { border-color: var(--accent-dim); }
+  .fld-head {
+    font-size: 10px;
+    color: var(--fg-faint);
+    margin-bottom: 4px;
+  }
+  .fld-head span:nth-child(3) { width: 26px; }
+  .xtable-wrap {
+    overflow: auto;
+    max-height: 52vh;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .xtable {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+    font-size: var(--t-xs);
+  }
+  .xtable th,
+  .xtable td {
+    border-bottom: 1px solid var(--border);
+    padding: 7px 9px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .xtable th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    color: var(--fg-muted);
+    font-weight: 500;
+    font-family: var(--font-mono, monospace);
+    font-size: 10.5px;
+    z-index: 1;
+  }
+  .xtable .sticky {
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+    min-width: 190px;
+    max-width: 240px;
+    z-index: 0;
+  }
+  .xtable thead .sticky { z-index: 2; }
+  .xtable td .ptitle {
+    font-size: var(--t-xs);
+    color: var(--fg);
+    line-height: 1.45;
+  }
+  .xtable td input {
+    width: 100%;
+    min-width: 130px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--fg);
+    font-size: var(--t-xs);
+    line-height: 1.5;
+    padding: 3px 5px;
+    outline: none;
+  }
+  .xtable td input:hover { border-color: var(--border); }
+  .xtable td input:focus {
+    border-color: var(--accent-dim);
+    background: var(--bg);
+  }
+  .xtable .ops { width: 34px; text-align: center; }
+  .mflag {
+    font-size: 9px;
+    color: var(--accent);
+    border: 1px solid var(--accent-dim);
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-left: 4px;
+    white-space: nowrap;
+  }
+  .runbadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 10px;
+    font-size: 11px;
+    color: var(--accent);
+    vertical-align: middle;
+  }
+  .runbadge.failed { color: var(--err); }
+  .lsub .running { color: var(--accent); }
+  .lsub .failed { color: var(--err); }
 </style>

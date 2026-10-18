@@ -936,6 +936,7 @@ export interface Plugin {
   providers: PluginProvider[];
   material_types: PluginMaterialType[];
   leader_keys: PluginLeaderKey[];
+  connectors: ConnectorInfo[];
 }
 export interface PluginList { plugins: Plugin[]; errors: string[] }
 export const pluginsList = () => invoke<PluginList>("plugins_list");
@@ -2088,3 +2089,169 @@ export interface ClipServerStatus {
 /** Where (if anywhere) the browser-clip server is listening. */
 export const clipServerStatus = () =>
   invoke<ClipServerStatus>("clip_server_status");
+
+// ---- D8: extraction templates (Elicit-style table) --------------------------
+
+export interface ExtractField {
+  key: string;
+  prompt: string;
+}
+export interface ExtractTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  fields: ExtractField[];
+  created_at: number;
+  updated_at: number;
+}
+export interface ExtractRun {
+  id: string;
+  template_id: string;
+  template_name: string;
+  title: string;
+  fields: ExtractField[];
+  item_ids: string[];
+  model: string | null;
+  status: "running" | "done" | "error";
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+export interface ExtractCell {
+  item_id: string;
+  field_key: string;
+  value: string;
+  source: "model" | "manual";
+  updated_at: number;
+}
+export interface ExtractItem {
+  id: string;
+  title: string;
+  authors: string | null;
+  year: number | null;
+}
+export interface ExtractResult {
+  run: ExtractRun;
+  items: ExtractItem[];
+  cells: ExtractCell[];
+}
+
+export const extractTemplateList = () =>
+  invoke<ExtractTemplate[]>("extract_template_list");
+export const extractTemplateSave = (
+  id: string | null,
+  name: string,
+  description: string | null,
+  fields: ExtractField[],
+) =>
+  invoke<string>("extract_template_save", {
+    id,
+    name,
+    description,
+    fields,
+  });
+export const extractTemplateDelete = (id: string) =>
+  invoke<void>("extract_template_delete", { id });
+export const extractRunCreate = (
+  templateId: string,
+  itemIds: string[],
+  title?: string,
+) =>
+  invoke<string>("extract_run_create", {
+    templateId,
+    itemIds,
+    title: title ?? null,
+  });
+export const extractRunList = () => invoke<ExtractRun[]>("extract_run_list");
+export const extractRunDelete = (id: string) =>
+  invoke<void>("extract_run_delete", { id });
+export const extractRunExecute = (runId: string) =>
+  invoke<void>("extract_run_execute", { runId });
+export const extractRunRetry = (runId: string, itemId: string) =>
+  invoke<void>("extract_run_retry", { runId, itemId });
+export const extractResultGet = (runId: string) =>
+  invoke<ExtractResult>("extract_result_get", { runId });
+export const extractResultCsv = (runId: string) =>
+  invoke<string>("extract_result_csv", { runId });
+/** Write the run's table as a CSV file (RFC-4180 + BOM) at `dest`. */
+export const extractResultCsvFile = (runId: string, dest: string) =>
+  invoke<void>("extract_result_csv_file", { runId, dest });
+export const extractCellSet = (
+  runId: string,
+  itemId: string,
+  fieldKey: string,
+  value: string,
+) => invoke<void>("extract_cell_set", { runId, itemId, fieldKey, value });
+
+// ---- D6: summary tree --------------------------------------------------------
+
+export interface SummaryTreeStatus {
+  subject_ok: boolean;
+  subject_missing: boolean;
+  topic_fresh: number;
+  topic_stale: number;
+  topic_missing: number;
+  source_fresh: number;
+  source_stale: number;
+  source_missing: number;
+  /** Source-text chars covered by fresh source digests. */
+  total_chars: number;
+  model_configured: boolean;
+}
+
+export const summaryTreeStatus = (subjectId: string) =>
+  invoke<SummaryTreeStatus>("summary_tree_status", { subjectId });
+export const summaryTreeBuild = (subjectId: string, force?: boolean) =>
+  invoke<SummaryTreeStatus>("summary_tree_build", {
+    subjectId,
+    force: force ?? false,
+  });
+
+// ---- D5: connector plugins (fetch + ingest primitives) ------------------------
+
+export interface ConnectorConfigField {
+  key: string;
+  label: string;
+  placeholder: string;
+}
+
+export interface ConnectorInfo {
+  id: string;
+  label: string;
+  plugin: string;
+  docs_url: string;
+  /** none | bearer | header | query */
+  auth_kind: string;
+  key_note: string;
+  config_fields: ConnectorConfigField[];
+  configured: boolean;
+  /** Saved non-secret config values, for re-editing. */
+  config_values: Record<string, string>;
+}
+
+export interface ConnectorSyncSummary {
+  fetched: number;
+  imported: number;
+  skipped: number;
+  errors: string[];
+}
+
+export const connectorList = () =>
+  invoke<ConnectorInfo[]>("connector_list");
+export const connectorConfigure = (
+  connectorId: string,
+  key: string,
+  config: Record<string, string>,
+) => invoke<void>("connector_configure", { connectorId, key, config });
+export const connectorDisconnect = (connectorId: string) =>
+  invoke<void>("connector_disconnect", { connectorId });
+export const connectorSync = (
+  connectorId: string,
+  subjectId: string,
+  topicId?: string | null,
+) =>
+  invoke<ConnectorSyncSummary>("connector_sync", {
+    connectorId,
+    subjectId,
+    topicId: topicId ?? null,
+  });
