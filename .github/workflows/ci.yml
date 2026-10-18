@@ -1,0 +1,61 @@
+name: CI
+
+# Verifies the same five gates `npm run verify` runs locally, on every push to
+# main and on every PR. The gate uses the local CI mirror documented in
+# scripts/verify.mjs and src-tauri/src/lib.rs: structural lints that have no
+# good answer on a Tauri command surface (too_many_arguments,
+# type_complexity, redundant_locals) are allowed at the lib level; tests run
+# under #![cfg_attr(test, allow(clippy::all))] so test code is allowed to be
+# messier. The strict `-D warnings` only fails on lints that aren't
+# intentionally relaxed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (svelte-check + vite build + cargo check/test/clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain (pinned to what the repo uses)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux build dependencies for Tauri 2 (webkit + gtk)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl file pkg-config wget \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev \
+            libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: Run the local verify gate
+        run: node scripts/verify.mjs

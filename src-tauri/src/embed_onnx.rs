@@ -274,7 +274,7 @@ impl crate::embed::Embedder for OnnxEmbedder {
         let (out_shape, out_data) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|e| Error::Other(format!("extract: {e}")))?;
-        let dims: &[i64] = &out_shape;
+        let dims: &[i64] = out_shape;
         let seq_len = *dims.get(1).ok_or_else(|| Error::Other("bad output shape".into()))? as usize;
         let hidden = *dims.get(2).ok_or_else(|| Error::Other("bad output shape".into()))? as usize;
         let batch = encodings.len();

@@ -628,7 +628,7 @@ pub fn literature_search(
     }
 
     let fused = rrf_fuse(&all_lists);
-    let mut hits = rule_rerank(&fused, &keywords);
+    let mut hits = rule_rerank(&fused, keywords);
     hits.truncate(limit.max(1));
 
     Ok(LiteratureResult {

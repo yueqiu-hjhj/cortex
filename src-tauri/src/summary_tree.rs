@@ -504,7 +504,7 @@ pub fn context_block(
     } else if !topic_ids.is_empty() {
         all_sources
             .iter()
-            .filter(|(_, _, t)| t.as_deref().map_or(false, |t| topic_ids.iter().any(|x| x == t)))
+            .filter(|(_, _, t)| t.as_deref().is_some_and(|t| topic_ids.iter().any(|x| x == t)))
             .map(|(id, name, _)| (id.clone(), name.clone()))
             .collect()
     } else {
@@ -625,7 +625,7 @@ pub fn context_block(
                 }
             }
         } else {
-            let has_sel = source_ids.map_or(false, |v| !v.is_empty());
+            let has_sel = source_ids.is_some_and(|v| !v.is_empty());
             let (text, _) = if has_sel {
                 repo::context_text(conn, subject_id, None, source_ids, raw_budget)?
             } else if topic_ids.len() == 1 {

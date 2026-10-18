@@ -10,8 +10,8 @@
 
 use crate::error::{Error, Result};
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use serde::Serialize;
+use std::path::Path;
 
 const TABLES: [&str; 4] = ["subjects", "topics", "sources", "notes"];
 
@@ -218,7 +218,7 @@ pub fn list(data_dir: &Path) -> Result<Vec<DeletedSubject>> {
             bytes: dir_size(&dir),
         });
     }
-    out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    out.sort_by_key(|e| std::cmp::Reverse(e.deleted_at));
     Ok(out)
 }
 
@@ -262,12 +262,9 @@ pub fn restore(conn: &Connection, data_dir: &Path, dir_name: &str) -> Result<(St
     // Attachments back to the live sources dir.
     let live_sources = data_dir.join("sources");
     std::fs::create_dir_all(&live_sources).ok();
-    let mut files = 0usize;
     for f in std::fs::read_dir(dir.join("sources")).into_iter().flatten().flatten() {
         let dest = live_sources.join(f.file_name());
-        if std::fs::copy(f.path(), dest).is_ok() {
-            files += 1;
-        }
+        let _ = std::fs::copy(f.path(), dest);
     }
     let sources = snap.get("sources").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     let notes = snap.get("notes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);

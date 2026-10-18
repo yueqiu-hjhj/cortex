@@ -364,7 +364,7 @@ pub fn draft_blocks(title: &str, meta: Option<&str>, payload: &serde_json::Value
         if !heading.is_empty() {
             b.push(Block::Heading(heading, 2));
         }
-        for p in arr(&sec, "paragraphs") {
+        for p in arr(sec, "paragraphs") {
             b.push(Block::Para(s(p.get("text"))));
         }
     }
@@ -695,7 +695,7 @@ pub fn apply_edits(
                     skipped.push(anchor.chars().take(40).collect());
                 }
             }
-            "insert_after" | _ => {
+            _ => {
                 if edit.text.trim().is_empty() {
                     skipped.push(anchor.chars().take(40).collect());
                     continue;

@@ -5,6 +5,8 @@
 //! we never draw widget appearance ourselves.
 
 use crate::error::{Error, Result};
+use std::f64::consts::FRAC_1_SQRT_2;
+
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream, StringFormat};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -306,16 +308,17 @@ pub fn watermark(path: &Path, text: &str, dest: &Path) -> Result<()> {
         "BaseFont" => "Helvetica-Bold",
     });
 
-    for (_, page_id) in &pages {
+    for page_id in pages.values() {
         let (w, h) = page_size(&doc, *page_id);
         let fs = (w.min(h) * 0.12).clamp(24.0, 96.0);
         let len = text.chars().count() as f64;
         let text_w = fs * 0.55 * len;
-        let diag = text_w * 0.7071;
+        let diag = text_w * FRAC_1_SQRT_2;
         let tx = (w - diag) / 2.0;
         let ty = (h + diag) / 2.0 - fs;
         let content = format!(
-            "q /GSWM gs 0.55 0.55 0.55 rg BT /FWM {fs:.1} Tf 0.7071 0.7071 -0.7071 0.7071 {tx:.1} {ty:.1} Tm ({}) Tj ET Q",
+            "q /GSWM gs 0.55 0.55 0.55 rg BT /FWM {fs:.1} Tf {} {} -{} {} {tx:.1} {ty:.1} Tm ({}) Tj ET Q",
+            FRAC_1_SQRT_2, FRAC_1_SQRT_2, FRAC_1_SQRT_2, FRAC_1_SQRT_2,
             pdf_string_escape(text)
         );
         let stream_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
@@ -326,7 +329,7 @@ pub fn watermark(path: &Path, text: &str, dest: &Path) -> Result<()> {
         let mut res = match doc.get_object(*page_id).and_then(|o| o.as_dict())?.get(b"Resources") {
             Ok(Object::Reference(rid)) => doc
                 .get_object(*rid)
-                .and_then(|o| o.as_dict().map(|d| d.clone()))
+                .and_then(|o| o.as_dict().cloned())
                 .unwrap_or_else(|_| Dictionary::new()),
             Ok(Object::Dictionary(d)) => d.clone(),
             _ => Dictionary::new(),
@@ -438,7 +441,7 @@ fn field_kind(d: &Dictionary) -> String {
 pub fn form_fields(path: &Path) -> Result<Vec<PdfField>> {
     let doc = load_pdf(path)?;
     let mut fields: Vec<PdfField> = Vec::new();
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         let Ok(d) = obj.as_dict() else { continue };
         if !d.has(b"T") {
             continue;

@@ -463,7 +463,7 @@ fn ws_worker(app: AppHandle) {
                             || e.kind() == std::io::ErrorKind::TimedOut =>
                     {
                         // Quiet minute — ping to prove the pipe is alive.
-                        if ws.send(Message::Ping(vec![].into())).is_err() {
+                        if ws.send(Message::Ping(vec![])).is_err() {
                             return Err("ping failed".into());
                         }
                     }

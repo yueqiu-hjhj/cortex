@@ -442,7 +442,7 @@ fn parse_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         // Explicit thread id: the first run DEFINED it (we pass the run's own id prefix? no —
         // a caller-generated id); here we use the run's id as the thread handle.
         let thread = "th-1";
-        let r2 = start_run_in_thread(&c, "u1", &a.id, "特征值是什么？", Some(thread)).unwrap();
+        let _r2 = start_run_in_thread(&c, "u1", &a.id, "特征值是什么？", Some(thread)).unwrap();
         let r3 = start_run_in_thread(&c, "u1", &b.id, "换成复习教练：刚才的内容怎么考？", Some(thread)).unwrap();
         assert_eq!(r3.thread_id, thread);
         assert_ne!(r3.agent_id, a.id);

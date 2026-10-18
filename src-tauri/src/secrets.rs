@@ -34,7 +34,7 @@ mod platform {
     }
 
     pub fn encrypt(plain: &[u8]) -> Result<Vec<u8>> {
-        let mut input = blob_from(plain);
+        let input = blob_from(plain);
         let mut output = CRYPT_INTEGER_BLOB {
             cbData: 0,
             pbData: std::ptr::null_mut(),
@@ -47,7 +47,7 @@ mod platform {
         };
         let ok = unsafe {
             CryptProtectData(
-                &mut input,
+                &input,
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),

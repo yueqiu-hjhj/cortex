@@ -1188,7 +1188,7 @@ mod tests {
     #[test]
     fn daily_rule_expands_with_interval() {
         // Anchor: 2026-01-01 09:00 UTC.
-        let anchor = days_from_civil(2026, 1, 1) * DAY_MS + 9 * 3600_000;
+        let anchor = days_from_civil(2026, 1, 1) * DAY_MS + 9 * 3_600_000;
         let from = days_from_civil(2026, 1, 1) * DAY_MS;
         let to = days_from_civil(2026, 1, 7) * DAY_MS;
 
@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn weekly_rule_respects_byday() {
         // 2026-01-05 is a Monday.
-        let anchor = days_from_civil(2026, 1, 5) * DAY_MS + 8 * 3600_000;
+        let anchor = days_from_civil(2026, 1, 5) * DAY_MS + 8 * 3_600_000;
         let from = days_from_civil(2026, 1, 5) * DAY_MS;
         let to = days_from_civil(2026, 1, 19) * DAY_MS;
 
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn monthly_rule_lands_on_anchor_day() {
-        let anchor = days_from_civil(2026, 1, 15) * DAY_MS + 10 * 3600_000;
+        let anchor = days_from_civil(2026, 1, 15) * DAY_MS + 10 * 3_600_000;
         let from = days_from_civil(2026, 1, 1) * DAY_MS;
         let to = days_from_civil(2026, 4, 1) * DAY_MS;
         let hits = rrule_occurrences("FREQ=MONTHLY", anchor, from, to);
@@ -1236,7 +1236,7 @@ mod tests {
         create_item(&c, &late).unwrap();
 
         let mut due = base("due");
-        due.due_ms = Some(day_start + 3600_000);
+        due.due_ms = Some(day_start + 3_600_000);
         create_item(&c, &due).unwrap();
 
         let mut captured = base("captured");

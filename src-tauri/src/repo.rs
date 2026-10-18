@@ -1839,7 +1839,7 @@ pub fn insert_layered_memory(conn: &Connection, content: &str, layer: &str, conf
     if !matches!(layer, "declarative" | "inferred") || !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
         return Err(Error::Other("invalid memory layer or confidence".into()));
     }
-    if layer == "inferred" && source.is_none_or(|s| s.trim().is_empty()) {
+    if layer == "inferred" && source.as_ref().map_or(true, |s| s.trim().is_empty()) {
         return Err(Error::Other("inferred memory requires evidence".into()));
     }
     let tx = conn.unchecked_transaction()?;
@@ -3491,7 +3491,7 @@ const BKT_GUESS: f64 = 0.2;
 const BKT_MIN_CONFIDENCE: f64 = 0.3;
 
 fn clamp01(x: f64) -> f64 {
-    x.max(0.0).min(1.0)
+    x.clamp(0.0, 1.0)
 }
 
 fn bkt_update(p: f64, correct: bool) -> f64 {

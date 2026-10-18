@@ -54,7 +54,7 @@ pub fn xml_unescape(s: &str) -> String {
                     _ => {
                         if let Some(num) = ent.strip_prefix('#').and_then(|n| {
                             let n = n.strip_prefix('x').map(|h| u32::from_str_radix(h, 16).ok());
-                            n.unwrap_or_else(|| u32::from_str_radix(ent.trim_start_matches("#"), 10).ok())
+                            n.unwrap_or_else(|| ent.trim_start_matches("#").parse::<u32>().ok())
                         }) {
                             char::from_u32(num)
                         } else {

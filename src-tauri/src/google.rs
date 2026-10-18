@@ -1068,12 +1068,11 @@ pub fn sync_plan_blocks(
     let existing: std::collections::HashSet<String> =
         blocks.iter().map(|b| b.id.clone()).collect();
     for (block_id, ev) in &marker_map {
-        if !live_markers.contains(block_id) && !existing.contains(block_id) {
-            if delete_event(client, access, cal_id, &ev.event_id)? {
+        if !live_markers.contains(block_id) && !existing.contains(block_id)
+            && delete_event(client, access, cal_id, &ev.event_id)? {
                 crate::planner::delete_mapping(conn, block_id)?;
                 out.cleaned += 1;
             }
-        }
     }
     Ok(out)
 }

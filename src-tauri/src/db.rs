@@ -52,6 +52,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0045_note_links.sql"),
     include_str!("../migrations/0046_chunk_offsets.sql"),
     include_str!("../migrations/0047_agent_threads.sql"),
+    include_str!("../migrations/0048_prisma_extract.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.
@@ -73,7 +74,7 @@ fn register_sqlite_vec() {
     use std::sync::Once;
     static VEC_INIT: Once = Once::new();
     VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<*const (), rusqlite::auto_extension::RawAutoExtension>(
             sqlite_vec::sqlite3_vec_init as *const (),
         )));
     });

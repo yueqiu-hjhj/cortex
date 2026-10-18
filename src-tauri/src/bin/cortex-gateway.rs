@@ -1,5 +1,8 @@
 //! cortex-gateway — an OpenAI-compatible local HTTP gateway over the Cortex KB.
 //!
+//! Test code is allowed to be messier; see the lib-level allow for the rationale.
+#![cfg_attr(test, allow(clippy::all, dead_code, unused_imports))]
+//!
 //! Lets any OpenAI-protocol client (Cherry Studio, OpenWebUI, Cursor, curl, …)
 //! query the user's knowledge base by pointing it at this server: the gateway
 //! retrieves relevant chunks from the same SQLite file the desktop app uses and
@@ -622,10 +625,8 @@ fn main() {
         }
     };
     eprintln!("cortex-gateway: listening on http://{addr} (POST /v1/chat/completions)");
-    for stream in listener.incoming() {
-        if let Ok(s) = stream {
-            std::thread::spawn(move || handle_client(s));
-        }
+    for stream in listener.incoming().flatten() {
+        std::thread::spawn(move || handle_client(stream));
     }
 }
 

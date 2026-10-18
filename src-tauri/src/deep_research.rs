@@ -81,7 +81,7 @@ fn parse_picks(reply: &str, max: usize) -> Option<Vec<(usize, String)>> {
             .unwrap_or("与课题相关")
             .trim()
             .to_string();
-        if i >= 1 && i <= MAX_CANDIDATES_SHOWN && out.len() < max {
+        if (1..=MAX_CANDIDATES_SHOWN).contains(&i) && out.len() < max {
             out.push((i, why));
         }
     }

@@ -12,7 +12,7 @@
 //! The heuristics are honest but heuristic; the contract is NOT "as good as the
 //! model", it's "always something a student can study from".
 
-use crate::db::{new_id, now_ms};
+use crate::db::new_id;
 use crate::models::{CsItem, CsSection};
 
 /// The `model` label a fallback artifact carries, so every surface that shows
@@ -115,7 +115,7 @@ pub fn extract_sections(text: &str, source_title: &str) -> Vec<(String, Vec<Stri
 /// "INTRODUCTORY CONCEPTS" -> "Introductory Concepts" — de-SCREAM headings
 /// without touching non-Latin scripts.
 fn to_title_case(s: &str) -> String {
-    if s.chars().any(|c| !c.is_ascii()) {
+    if !s.is_ascii() {
         return s.to_string();
     }
     if s.chars().filter(|c| c.is_ascii_uppercase()).count() * 2 < s.chars().count() {
@@ -127,10 +127,7 @@ fn to_title_case(s: &str) -> String {
             out.push(' ');
         }
         let mut cs = w.chars();
-        match cs.next() {
-            Some(f) => out.push_str(&f.to_uppercase().to_string()),
-            None => {}
-        }
+        if let Some(f) = cs.next() { out.push_str(&f.to_uppercase().to_string()) }
         out.extend(cs.flat_map(|c| c.to_lowercase()));
     }
     out
@@ -146,7 +143,7 @@ fn key_sentences(paragraphs: &[String], max: usize) -> Vec<String> {
         if s.chars().count() < 8 {
             return;
         }
-        let d = format!("{}", &s.chars().take(DETAIL_CAP).collect::<String>());
+        let d = s.chars().take(DETAIL_CAP).collect::<String>().to_string();
         let key: String = d.chars().take(32).collect();
         if out.len() < max && !seen.contains(&key) {
             seen.push(key);
@@ -232,13 +229,7 @@ pub fn glossary(text: &str, max: usize) -> Vec<(String, String)> {
                 }
                 let before = before.trim().trim_end_matches(['：', ':']);
                 if !before.is_empty() && before.chars().count() <= 12 {
-                    let pair = if before.chars().any(|c| c.is_ascii_alphabetic())
-                        || inner.chars().any(|c| (c as u32) > 0x2000)
-                    {
-                        (before.to_string(), format!("{inner}"))
-                    } else {
-                        (before.to_string(), inner.to_string())
-                    };
+                    let pair = (before.to_string(), inner.to_string());
                     if !out.contains(&pair) {
                         out.push(pair);
                     }

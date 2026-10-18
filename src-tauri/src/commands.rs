@@ -1779,7 +1779,7 @@ pub async fn chat_answer(
     // chat scope-switcher's tick-list). Applied to BOTH retrieval paths in Rust.
     // `scope_ids` keeps the same selection for the summary-tree context layer.
     // Captured before the move — the retrieval metadata reports it later.
-    let multi_sources = source_ids.as_ref().map_or(false, |v| v.len() > 1);
+    let multi_sources = source_ids.as_ref().is_some_and(|v| v.len() > 1);
     let scope_ids: Option<Vec<String>> = source_ids
         .filter(|v| !v.is_empty())
         .or_else(|| scoped_source.map(|s| vec![s.to_string()]));
@@ -1803,7 +1803,7 @@ pub async fn chat_answer(
     } else if embeddings_reliable {
         let embedder =
             embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
-        let qvec = embedder.embed(&[query.clone()])?.pop().unwrap_or_default();
+        let qvec = embedder.embed(std::slice::from_ref(&query))?.pop().unwrap_or_default();
         let c = state.db.lock().unwrap();
         let mut vec_hits = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
         if let Some(sid) = scoped_source {
@@ -2796,7 +2796,7 @@ pub async fn generate_cheatsheet(
     };
     // Model label the cheatsheet records — deterministic fallback states the
     // truth instead of pretending a model wrote it.
-    let mut model_label = String::new();
+    let model_label;
     let (mut sections, sources_used) = match &model_opt {
         Some(m) => match synthesize_bucket(m.as_ref(), system, &scope, &bucket) {
             Ok(v) => {
@@ -3168,7 +3168,7 @@ pub async fn generate_material(
         // comes from the summary tree when one has been built — the digests let a
         // 18k-char budget cover whole-library shape instead of raw chunks alone —
         // and degrades to the plain fair-allocation text when it isn't.
-        let has_sel = source_ids.as_ref().map_or(false, |v| !v.is_empty());
+        let has_sel = source_ids.as_ref().is_some_and(|v| !v.is_empty());
         let sel_topics: Vec<String> = if has_sel {
             Vec::new()
         } else {

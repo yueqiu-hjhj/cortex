@@ -123,12 +123,13 @@ pub fn build_deck(path: &Path, title: &str, subtitle: Option<&str>, slides: &[De
             SLIDE_H - 1_981_200 - MARGIN,
             &paras,
         );
+        let heading_body = format!("{heading}{body}", heading = heading, body = body);
         slide_xmls.push((
             format!("ppt/slides/slide{}.xml", i + 2),
             format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="{A_NS}" xmlns:r="{R_NS}" xmlns:p="{P_NS}"><p:cSld><p:spTree>{}{}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#,
                 sptree_open(),
-                format!("{heading}{body}")
+                heading_body,
             ),
         ));
     }
@@ -247,15 +248,13 @@ fn items(v: &serde_json::Value) -> Vec<serde_json::Value> {
 /// Keep slide headings scannable — a 200-char question would swallow the box.
 fn head(text: &str) -> String {
     let t = text.trim();
-    let mut n = 0;
     let mut out = String::new();
-    for c in t.chars() {
+    for (n, c) in t.chars().enumerate() {
         if n >= 80 {
             out.push('…');
             break;
         }
         out.push(c);
-        n += 1;
     }
     out
 }
@@ -371,7 +370,7 @@ pub fn material_slides(kind: &str, payload: &serde_json::Value) -> Result<Vec<De
                 }
                 let emoji = s(sec.get("emoji"));
                 let heading = s(sec.get("heading"));
-                slides.push(DeckSlide { heading: head(&format!("{emoji} {heading}").trim()), bullets });
+                slides.push(DeckSlide { heading: head(format!("{emoji} {heading}").trim()), bullets });
             }
         }
         "audio" => {

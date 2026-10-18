@@ -440,7 +440,7 @@ impl Llm for OpenAiCompatLlm {
         let key = self.api_key.trim();
         if key.is_empty() { return Err(Error::Other(format!("{}: API key is empty", self.label))); }
         let client = llm_client();
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/').to_string());
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut content = vec![serde_json::json!({ "type": "text", "text": OCR_CARDS_PROMPT })];
         for (mime, b64) in images {
             content.push(serde_json::json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{b64}") } }));

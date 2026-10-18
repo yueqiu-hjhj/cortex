@@ -17,6 +17,7 @@ Local-first and bring-your-own-keys: your sources, embeddings, and generated stu
   <img alt="Backend Rust" src="https://img.shields.io/badge/backend-Rust-CE422B.svg" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-555.svg" />
   <img alt="Status" src="https://img.shields.io/badge/status-v1.0-2dd5b7.svg" />
+  <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/PndaMan/cortex/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI" />
 </p>
 
 [Why Cortex?](#why-cortex) · [Preview](#preview) · [Features](#features) · [Download](#download--install) · [Build from source](#build-from-source) · [Configuration](#configuration) · [How it works](#how-it-works) · [Roadmap](#roadmap) · [Contributing](#contributing)
@@ -292,14 +293,48 @@ src-tauri/src/
 
 **Next:** accounts & sync (CRDT multi-device), a mobile build, and richer calendar/citation workflows.
 
+## Capability boundary
+
+What works on this commit (`743c3ce`, v1.0.35), what doesn’t, and what’s only run-specific. Honest before you install:
+
+| Surface | State | Boundary |
+| --- | --- | --- |
+| Subjects → Topics → Sources core | ✅ shipped | automated gate |
+| PDF / DOCX / PPTX / Excel / image ingest | ✅ shipped | automated gate |
+| Cheatsheet / flashcards / quiz / exam / audio overview / infographic / mind map / slides / video overview | ✅ shipped | automated gate |
+| Citation-grounded chat with citecheck.rs (token-level hard validation) | ✅ shipped | automated gate |
+| FSRS spaced repetition + Anki `.apkg` import/export | ✅ shipped | automated gate |
+| Live lecture transcription (WhisperX homelab backend) | ✅ shipped | run-specific (needs the homelab stack up) |
+| Encrypted backups (age + rclone) | ✅ shipped | automated gate |
+| Mobile-responsive layout (≤ 1080px drawer) | ✅ shipped | automated gate |
+| Live sync WebSocket (syncd) | ✅ shipped | run-specific (needs the homelab syncd up) |
+| iOS native recorder + background capture | ✅ shipped | run-specific (needs an Apple signing setup \u2014 see `.github/workflows/ios.yml`) |
+| WhisperX with diarization | ✅ shipped | run-specific (requires the homelab WhisperX image + GPU) |
+| MCP server (`cortex-mcp`, stdio, read-only) | ✅ shipped | run-specific (needs the desktop binary built with `cargo build --bin cortex-mcp`) |
+| Helix-style modal keyboard engine | ✅ shipped | automated gate |
+| Retrieval eval harness (synthetic corpus, Recall@K | MRR) | ✅ shipped | automated gate |
+| Multi-source paper search (Europe PMC + Semantic Scholar + arXiv + OpenAlex + RRF) | ✅ shipped | run-specific (network endpoints may rate-limit) |
+| Zotero import + experiment cards + drafts + LaTeX export | ✅ shipped | automated gate |
+| **MCP server for external agents** (Claude Code / Codex / Cursor) | 🚧 partial | MCP `cortex-mcp` is internal read-only; a *served* (callable from outside) variant with `search_subject / get_source / read_document / search_notes` is on the roadmap (see gap analysis in `cortex-competitive-analysis-2026-10-18.md`). |
+| **Portable `.cortex-pkg.tar.gz` archive** (single-file backup with SHA-256 + WAL + orphan-source rejection) | 🚧 partial | encrypted remote backup works (age + rclone); the local-diff-able archive is on the roadmap. |
+| **Studio deterministic fallback** (when LLM is offline, return a usable deterministic product) | 🚧 partial | offline mode surfaces a clear error today; deterministic fallback (chapter outline + high-frequency terms + key citations) is on the roadmap. |
+| **Multi-Agent shared context switching** (one thread, switch agent, keep history) | 🚧 partial | agent_exec.rs has the loop; the cross-agent context UI is on the roadmap. |
+| Linux ARM64 release build | ⚠️ supported | not release-certified |
+| macOS Apple Silicon release | ⚠️ supported | not notarized \u2014 first launch needs right-click → Open |
+| Windows ARM64 release | ❌ missing | not in this snapshot |
+| Builds signed + notarized for distribution | ❌ missing | repo is unsigned; release tooling lives in `.github/workflows/release.yml` |
+
+Legend: ✅ shipped = automated gate (run `npm run verify`); 🚧 partial = intentional gap, roadmap-tracked; ⚠️ = supported but not release-certified; ❌ = missing.
+
 ## Contributing
 
 Issues and PRs are welcome. The codebase favors **surgical, well-tested changes**:
 
 ```bash
-bun run check                       # svelte-check (frontend types)
-cd src-tauri && cargo test --lib    # Rust unit tests
-cargo check                         # fast type/borrow check
+npm run verify                    # svelte-check + vite build + cargo check + cargo test + cargo clippy -D warnings  (the full gate CI runs)
+bun run check                      # svelte-check only (fast)
+cd src-tauri && cargo test --lib   # Rust unit tests only
+cargo check                        # fast type/borrow check (no tests, no clippy)
 ```
 
 Please keep changes scoped, match the surrounding style, and add a test when you touch backend logic.

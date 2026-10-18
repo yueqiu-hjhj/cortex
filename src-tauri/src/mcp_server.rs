@@ -59,7 +59,7 @@ fn platform_app_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var("APPDATA").unwrap_or_default();
-        return PathBuf::from(base).join("app.study.cortex");
+        PathBuf::from(base).join("app.study.cortex")
     }
     #[cfg(target_os = "macos")]
     {
@@ -494,9 +494,7 @@ pub fn handle_message(conn: &Connection, msg: &Value) -> Option<Value> {
     let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     // Notifications carry no id and expect no response.
-    if id.is_none() {
-        return None;
-    }
+    id.as_ref()?;
     let id = id.unwrap();
     let ok = |result: Value| Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
     let err = |code: i64, message: &str| {

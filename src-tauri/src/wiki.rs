@@ -103,7 +103,7 @@ fn extract_links(body: &str) -> Vec<String> {
                 continue;
             }
         }
-        if bytes[i] == b'[' as u8 {
+        if bytes[i] == b'[' {
             if let Some(close_text) = body[i + 1..].find(']') {
                 if let Some(rel_open) = body[i + 1 + close_text + 1..].find('(') {
                     if rel_open == 0 {

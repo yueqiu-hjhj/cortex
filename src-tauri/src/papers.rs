@@ -462,8 +462,6 @@ pub fn export_bibtex(conn: &Connection, ids: &[String]) -> Result<String> {
             || lower.contains("symposium")
         {
             "inproceedings"
-        } else if lower.contains("journal") || lower.contains("transactions") {
-            "article"
         } else {
             "article"
         };
@@ -1069,7 +1067,7 @@ pub fn build_matrix(
         let system = "You are a research synthesis assistant. You receive ONE row label (e.g. \"方法 / Approach\") and N paper cards numbered in selection order. For each paper, output ONE short cell answering the row label, grounded ONLY in that paper's abstract and excerpts. NEVER invent; if a paper does not address the dimension, return an empty string for that cell. Return a JSON array of N strings, in selection order, no markdown, no commentary. The output language follows the row label: if the row label is bilingual, match the second half (after the /).";
         let floor = 2048 + 1500 * paper_ids.len() as u32;
         model.set_max_tokens(floor.max(4096));
-        let raw = model.complete(&system, &user)?;
+        let raw = model.complete(system, &user)?;
         generated_by = model.name();
         let parsed = match crate::llm::extract_json(&raw) {
             Ok(v) => v,

@@ -829,7 +829,7 @@ mod tests {
             body: None,
             status: None,
             priority: if priority.is_empty() { None } else { Some(priority.into()) },
-            due_ms: due_day_offset.map(|d| (base + d) * 86_400_000 + 12 * 3600_000),
+            due_ms: due_day_offset.map(|d| (base + d) * 86_400_000 + 12 * 3_600_000),
             start_ms: None,
             estimate_min: Some(estimate),
             parent_id: None,

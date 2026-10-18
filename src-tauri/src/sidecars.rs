@@ -333,9 +333,9 @@ fn extract_tar_gz(spec: &BinSpec, _target: &Path, _bytes: &[u8]) -> Result<()> {
     // never reach here, but keep a defensive error in case the spec changes.
     #[cfg(target_os = "windows")]
     {
-        return Err(Error::Other(format!(
+        Err(Error::Other(format!(
             "{} is published as a tarball — no Windows archive available", spec.name
-        )));
+        )))
     }
     #[cfg(not(target_os = "windows"))]
     {
