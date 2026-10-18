@@ -43,13 +43,21 @@
   // 按 DOI 去重由后端保证，所以重复点也不会产生两条记录。
   let savedKeys = $state<Record<string, true>>({});
   let saveBusy = $state<string | null>(null);
+  // hitKey → paper id (from paperImport), so the selection toolbar can file an
+  // excerpt against the right paper. currentPaperId mirrors it for what's open.
+  let savedPapers = $state<Record<string, string>>({});
+  let currentHit = $state<api.LiteratureHit | null>(null);
+  let currentPaperId = $state<string | null>(null);
+  // Selection → excerpt (D-科研: ②读 → ④引 的直通车)
+  let excerptBusy = $state(false);
+  let excerptFlash = $state<string | null>(null);
   const hitKey = (h: api.LiteratureHit) => h.doi || h.title;
   async function saveHit(h: api.LiteratureHit) {
     const key = hitKey(h);
     if (savedKeys[key] || saveBusy) return;
     saveBusy = key;
     try {
-      await api.paperImport({
+      const paper = await api.paperImport({
         title: h.title,
         authors: h.authors.length ? h.authors.join(", ") : null,
         year: h.year ?? null,
@@ -60,15 +68,50 @@
         subject_id: app.activeSubjectId ?? null,
       });
       savedKeys = { ...savedKeys, [key]: true };
+      savedPapers = { ...savedPapers, [key]: paper.id };
+      if (currentHit && hitKey(currentHit) === key) currentPaperId = paper.id;
     } catch (e) {
       error = String(e);
     } finally {
       saveBusy = null;
     }
   }
+  async function saveSelectionExcerpt() {
+    if (!selection || excerptBusy) return;
+    const quote = selection.text.trim();
+    if (!quote) return;
+    excerptBusy = true;
+    try {
+      // Not collected yet → collect first, then file the excerpt against it.
+      if (!currentPaperId) {
+        if (!currentHit) {
+          excerptFlash = "粘贴文本模式没有论文 —— 先收藏论文，再存摘录。";
+          setTimeout(() => (excerptFlash = null), 3000);
+          return;
+        }
+        await saveHit(currentHit);
+        currentPaperId = savedPapers[hitKey(currentHit)] ?? null;
+        if (!currentPaperId) {
+          excerptFlash = "收藏失败，摘录未保存。";
+          setTimeout(() => (excerptFlash = null), 3000);
+          return;
+        }
+      }
+      await api.excerptAdd(quote, currentPaperId);
+      excerptFlash = `已存为摘录（${quote.length} 字）`;
+      setTimeout(() => (excerptFlash = null), 3000);
+      selection = null;
+    } catch (e) {
+      excerptFlash = `摘录失败：${String(e)}`;
+      setTimeout(() => (excerptFlash = null), 4000);
+    } finally {
+      excerptBusy = false;
+    }
+  }
   function readHit(hit: api.LiteratureHit) {
     title = hit.title; finalUrl = hit.url ?? null; rawText = hit.abstract_text ?? "";
     input = hit.url ?? ""; repaired = false; selection = null;
+    currentHit = hit; currentPaperId = savedPapers[hitKey(hit)] ?? null;
   }
   let input = $state("");
   let inputKind = $state<"url" | "paste">("url");
@@ -303,7 +346,17 @@
       <button class="fb" onclick={() => void runSelection("keypoints")}><Icon name="star" size={11} /> 要点</button>
       <button class="fb" onclick={() => void runSelection("summarize")}><Icon name="doc" size={11} /> 摘要</button>
       <button class="fb" onclick={() => void runSelection("define")}><Icon name="book" size={11} /> 术语</button>
+      <button class="fb" onclick={() => void saveSelectionExcerpt()} disabled={excerptBusy}
+              title={currentPaperId ? "存为这篇论文的摘录（可进成稿）" : "收藏后存为摘录"}>
+        <Icon name="book" size={11} /> {excerptBusy ? "…" : "摘录"}
+      </button>
       <button class="fb" onclick={copySelection}><Icon name="check" size={11} /> 复制</button>
+    </div>
+  {/if}
+
+  {#if excerptFlash}
+    <div class="float" style:left="50%" style:top="72px" style:transform="translateX(-50%)">
+      <span class="fb mono">{excerptFlash}</span>
     </div>
   {/if}
 
