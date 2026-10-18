@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortex · 只读视图</title>
+<style>
+  :root {
+    --bg: #0f1412; --surface: #171d1a; --surface2: #1e2622;
+    --border: #2a3530; --fg: #d7e0db; --muted: #8fa098; --faint: #5f6f68;
+    --accent: #2dd5b7; --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  header { padding: 26px 28px 14px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: .02em; }
+  header .sub { color: var(--muted); font-size: 12px; margin-top: 6px; font-family: var(--mono); }
+  header .sub b { color: var(--accent); font-weight: 500; }
+  main { max-width: 1080px; margin: 0 auto; padding: 18px 28px 60px; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 26px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+          padding: 10px 16px; min-width: 108px; }
+  .stat .n { font-size: 22px; font-weight: 650; color: var(--accent); font-family: var(--mono); }
+  .stat .l { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  h2 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 26px 0 10px;
+       letter-spacing: .06em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+          padding: 12px 14px; cursor: pointer; transition: border-color .15s; }
+  .card:hover { border-color: var(--accent); }
+  .card .name { font-weight: 600; }
+  .card .meta { color: var(--faint); font-size: 11px; margin-top: 4px; font-family: var(--mono); }
+  ul.rows { list-style: none; margin: 0; padding: 0; }
+  li.row { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+           padding: 10px 14px; margin-bottom: 8px; cursor: pointer; }
+  li.row:hover { border-color: var(--accent); }
+  li.row .t { font-weight: 600; }
+  li.row .s { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  li.row .m { color: var(--faint); font-size: 11px; margin-top: 4px; font-family: var(--mono); }
+  .badge { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 7px;
+           border-radius: 4px; background: var(--surface2); color: var(--muted); margin-left: 8px; }
+  .back { color: var(--muted); font-size: 12px; cursor: pointer; margin-right: 10px; }
+  .back:hover { color: var(--accent); }
+  #content { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+             padding: 16px 18px; white-space: pre-wrap; font-size: 13.5px; line-height: 1.75; }
+  .empty { color: var(--faint); padding: 30px 0; text-align: center; }
+  .err { color: #e06c75; background: rgba(224,108,117,.08); border: 1px solid rgba(224,108,117,.3);
+         border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span id="back" class="back" style="display:none">← </span>Cortex 知识库</h1>
+  <div class="sub" id="sub">只读视图 · 数据来自本地 Cortex 库</div>
+</header>
+<main id="main"><div class="empty">加载中…</div></main>
+
+<script>
+// Static-host friendly: default API is same-origin; a static deployment can
+// point at a running gateway with ?api=http://host:8788
+const params = new URLSearchParams(location.search);
+const API = (params.get("api") || "").replace(/\/$/, "");
+const j = (path) => fetch(API + path).then(r => { if (!r.ok) throw new Error(r.status + " " + path); return r.json(); });
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+async function overview() {
+  document.getElementById("back").style.display = "none";
+  document.querySelector("h1").childNodes[1].textContent = "Cortex 知识库";
+  const m = document.getElementById("main");
+  m.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const d = await j("/api/overview");
+    const stats = [
+      ["科目", d.subjects.length], ["来源", d.total.sources], ["分块", d.total.chunks],
+      ["笔记", d.total.notes], ["字数", fmt(d.total.chars)],
+    ].map(([l, n]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
+    const cards = d.subjects.map(s =>
+      `<div class="card" onclick="subject('${esc(s.id)}','${esc(s.name)}')">
+         <div class="name">${esc(s.name)}</div>
+         <div class="meta">${s.topics} 主题 · ${s.sources} 来源 · ${s.chunks} 分块</div>
+       </div>`).join("");
+    m.innerHTML = `<div class="stats">${stats}</div><h2>科目</h2>
+      <div class="grid">${cards || '<div class="empty">还没有内容 — 在桌面端添加来源后这里就能看到。</div>'}</div>
+      <h2>最近笔记</h2><ul class="rows">${(d.recent_notes || []).map(n =>
+        `<li class="row" style="cursor:default"><div class="t">${esc(n.title) || "无题"}</div>
+         <div class="s">${esc(n.snippet)}</div></li>`).join("") || '<div class="empty">暂无笔记</div>'}</ul>`;
+  } catch (e) { m.innerHTML = `<div class="err">加载失败：${esc(e.message)}<br>确认 cortex-gateway 正在运行。</div>`; }
+}
+
+async function subject(id, name) {
+  document.getElementById("back").style.display = "inline";
+  document.querySelector("h1").childNodes[1].textContent = name;
+  const m = document.getElementById("main");
+  m.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const srcs = await j("/api/sources?subject_id=" + encodeURIComponent(id));
+    m.innerHTML = `<h2>${esc(srcs.length)} 个来源</h2><ul class="rows">${srcs.map(s =>
+      `<li class="row" onclick="source('${esc(s.id)}')">
+         <div class="t">${esc(s.name)}<span class="badge">${esc(s.kind)}</span></div>
+         <div class="m">${esc(s.status)} · ${fmt(s.chars)} 字 · ${new Date(s.created_at).toLocaleDateString()}</div>
+       </li>`).join("") || '<div class="empty">此科目暂无来源</div>'}</ul>`;
+  } catch (e) { m.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function source(id) {
+  const m = document.getElementById("main");
+  m.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const s = await j("/api/source?id=" + encodeURIComponent(id));
+    document.querySelector("h1").childNodes[1].textContent = s.name;
+    document.getElementById("back").style.display = "inline";
+    m.innerHTML = `<div class="m" style="color:var(--faint);font-size:11px;margin-bottom:10px">
+      ${esc(s.kind)} · ${fmt(s.chars)} 字</div><div id="content">${esc(s.content || "(无提取文本)")}</div>`;
+  } catch (e) { m.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+function fmt(n) {
+  n = Number(n) || 0;
+  return n >= 10000 ? (n / 10000).toFixed(1) + "w" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : n;
+}
+document.getElementById("back").onclick = () => history.length > 1 ? history.back() : overview();
+overview();
+</script>
+</body>
+</html>

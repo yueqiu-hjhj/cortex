@@ -6,8 +6,18 @@
 //! answers with the configured chat model, returning an OpenAI-shaped response
 //! plus a `citations` extension field.
 //!
+//! It is also a PRODUCT, not just an API: `GET /` serves a self-contained
+//! read-only web view (subjects → sources → full text, plus a library
+//! overview) over a handful of read-only JSON endpoints. The page is a single
+//! embedded HTML file, so a homelab can serve it from any static host and
+//! point it at the gateway with `?api=http://host:8788`.
+//!
 //! Endpoints:
 //!   GET  /healthz              liveness probe
+//!   GET  /                     read-only web view (embedded gateway.html)
+//!   GET  /api/overview         library totals + subjects + recent notes
+//!   GET  /api/sources          `?subject_id=` → source metadata (no text)
+//!   GET  /api/source           `?id=` → one source with extracted text
 //!   GET  /v1/models            logical model list (the KB answerer)
 //!   POST /v1/chat/completions  retrieval-augmented completion (non-streaming)
 //!
@@ -19,7 +29,7 @@
 //! your API keys; do not expose it to the network without adding auth.
 
 use cortex_lib::llm;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -70,6 +80,7 @@ fn load_keys(conn: &Connection) -> llm::Keys {
         custom_api_key: get_setting(conn, "custom_api_key"),
         custom_endpoint: get_setting(conn, "custom_endpoint"),
         ollama_url: get_setting(conn, "ollama_url"),
+        extra: std::collections::HashMap::new(),
     }
 }
 
@@ -282,7 +293,36 @@ fn answer(conn: &Connection, body: &Value) -> Result<Value, String> {
 struct Request {
     method: String,
     path: String,
+    query: String,
     body: Vec<u8>,
+}
+
+/// `?a=b&c=d` → map. Values are percent-decoded (spaces as `+` or `%20`).
+fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
+    fn decode(s: &str) -> String {
+        let s = s.replace('+', " ");
+        let raw = s.as_bytes();
+        let mut bytes: Vec<u8> = Vec::with_capacity(raw.len());
+        let mut i = 0;
+        while i < raw.len() {
+            if raw[i] == b'%' && i + 2 < raw.len() {
+                if let Ok(b) = u8::from_str_radix(s.get(i + 1..i + 3).unwrap_or(""), 16) {
+                    bytes.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            bytes.push(raw[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+    let mut out = std::collections::HashMap::new();
+    for pair in q.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        out.insert(decode(k), decode(v));
+    }
+    out
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -291,7 +331,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     reader.read_line(&mut line).ok()?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?.to_string();
-    let path = parts.next()?.to_string();
+    let full_path = parts.next()?.to_string();
     let mut content_length = 0usize;
     loop {
         let mut h = String::new();
@@ -308,9 +348,22 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     if content_length > 0 {
         reader.read_exact(&mut body).ok()?;
     }
-    // Strip the query string — routing is path-only.
-    let path = path.split('?').next().unwrap_or(&path).to_string();
-    Some(Request { method, path, body })
+    // Route on the path; the query string is kept for the /api handlers.
+    let (path, query) = match full_path.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (full_path, String::new()),
+    };
+    Some(Request { method, path, query, body })
+}
+
+fn write_html(stream: &mut TcpStream, body: &str) {
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
 }
 
 fn write_json(stream: &mut TcpStream, status: &str, body: &Value) {
@@ -324,6 +377,118 @@ fn write_json(stream: &mut TcpStream, status: &str, body: &Value) {
     let _ = stream.flush();
 }
 
+// ------------------------------------------------------- read-only web API
+
+/// Library totals + subjects + recent notes — the front page of the web view.
+fn api_overview(conn: &Connection) -> Value {
+    let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+    let total_sources = one("SELECT COUNT(*) FROM sources");
+    let total_chunks = one("SELECT COUNT(*) FROM chunks");
+    let total_notes = one("SELECT COUNT(*) FROM notes");
+    let total_chars: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(length(content)), 0) FROM sources WHERE content IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let mut subjects: Vec<Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT sub.id, sub.name,
+                (SELECT COUNT(*) FROM topics t WHERE t.subject_id = sub.id),
+                (SELECT COUNT(*) FROM sources s WHERE s.subject_id = sub.id),
+                (SELECT COUNT(*) FROM chunks c JOIN sources s2 ON s2.id = c.source_id
+                  WHERE s2.subject_id = sub.id)
+           FROM subjects sub
+          ORDER BY sub.created_at",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "topics": r.get::<_, i64>(2)?,
+                "sources": r.get::<_, i64>(3)?,
+                "chunks": r.get::<_, i64>(4)?,
+            }))
+        }) {
+            for row in rows.flatten() {
+                subjects.push(row);
+            }
+        }
+    }
+
+    let mut recent_notes: Vec<Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT title, substr(body, 1, 160) FROM notes ORDER BY updated_at DESC LIMIT 5",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(json!({ "title": r.get::<_, String>(0)?, "snippet": r.get::<_, String>(1)? }))
+        }) {
+            for row in rows.flatten() {
+                recent_notes.push(row);
+            }
+        }
+    }
+
+    json!({
+        "total": { "sources": total_sources, "chunks": total_chunks, "notes": total_notes, "chars": total_chars },
+        "subjects": subjects,
+        "recent_notes": recent_notes,
+    })
+}
+
+/// Source metadata for one subject — names and status, never full text, so
+/// the list view stays one round-trip even for a big library.
+fn api_sources(conn: &Connection, subject_id: &str) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, name, kind, status, COALESCE(length(content), 0), created_at
+           FROM sources WHERE subject_id = ?1 ORDER BY created_at DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![subject_id], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "kind": r.get::<_, String>(2)?,
+                "status": r.get::<_, String>(3)?,
+                "chars": r.get::<_, i64>(4)?,
+                "created_at": r.get::<_, i64>(5)?,
+            }))
+        }) {
+            for row in rows.flatten() {
+                out.push(row);
+            }
+        }
+    }
+    json!(out)
+}
+
+/// One source with its extracted text — the deepest the read-only view goes.
+fn api_source(conn: &Connection, id: &str) -> Value {
+    match conn.query_row(
+        "SELECT name, kind, status, COALESCE(content, ''), COALESCE(length(content), 0)
+           FROM sources WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "kind": r.get::<_, String>(1)?,
+                "status": r.get::<_, String>(2)?,
+                "content": r.get::<_, String>(3)?,
+                "chars": r.get::<_, i64>(4)?,
+            }))
+        },
+    ) {
+        Ok(v) => v,
+        Err(_) => json!({ "error": "source not found" }),
+    }
+}
+
+/// The read-only web view: one embedded HTML file, no build step. A homelab
+/// can also serve this file from any static host via `?api=<gateway-url>`.
+const GATEWAY_HTML: &str = include_str!("gateway.html");
+
 fn handle_client(mut stream: TcpStream) {
     let req = match read_request(&mut stream) {
         Some(r) => r,
@@ -331,6 +496,30 @@ fn handle_client(mut stream: TcpStream) {
     };
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => write_json(&mut stream, "200 OK", &json!({"ok": true})),
+        ("GET", "/") => write_html(&mut stream, GATEWAY_HTML),
+        ("GET", "/api/overview") | ("GET", "/api/sources") | ("GET", "/api/source") => {
+            let conn = match open_db() {
+                Ok(c) => c,
+                Err(e) => {
+                    write_json(&mut stream, "500 Internal Server Error",
+                        &json!({ "error": { "message": format!("db open failed: {e}"), "type": "cortex_gateway_error" } }));
+                    return;
+                }
+            };
+            let q = parse_query(&req.query);
+            let body = match req.path.as_str() {
+                "/api/overview" => api_overview(&conn),
+                "/api/sources" => match q.get("subject_id") {
+                    Some(sid) => api_sources(&conn, sid),
+                    None => json!({ "error": "missing subject_id" }),
+                },
+                _ => match q.get("id") {
+                    Some(id) => api_source(&conn, id),
+                    None => json!({ "error": "missing id" }),
+                },
+            };
+            write_json(&mut stream, "200 OK", &body);
+        }
         ("GET", "/v1/models") => write_json(
             &mut stream,
             "200 OK",
@@ -504,5 +693,17 @@ mod tests {
     fn retrieve_unrelated_query_is_empty() {
         let conn = test_db();
         assert!(retrieve(&conn, "量子纠缠 薛定谔方程", 8).is_empty());
+    }
+
+    #[test]
+    fn parse_query_decodes_percent_and_plus() {
+        let q = parse_query("subject_id=abc%20def&name=%E7%BA%BF%E4%BB%A3+x");
+        assert_eq!(q.get("subject_id").unwrap(), "abc def");
+        assert_eq!(q.get("name").unwrap(), "线代 x");
+        assert!(q.get("missing").is_none());
+        // Malformed escapes pass through instead of panicking.
+        let q = parse_query("a=%zz&b=%4");
+        assert_eq!(q.get("a").unwrap(), "%zz");
+        assert_eq!(q.get("b").unwrap(), "%4");
     }
 }
