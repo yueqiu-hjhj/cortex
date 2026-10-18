@@ -584,6 +584,23 @@
     }
   }
 
+  // ── Zotero import (管理引用: read the LOCAL Zotero library, DOI-deduped) ──
+  let zoteroBusy = $state(false);
+  async function importZotero() {
+    if (zoteroBusy) return;
+    zoteroBusy = true;
+    error = null;
+    try {
+      const r = await api.zoteroImport(app.activeSubject?.id ?? null, null);
+      say(`Zotero 导入完成：新增 ${r.imported} 篇${r.skipped ? `，跳过已在库 ${r.skipped} 篇` : ""}（共发现 ${r.found}）`);
+      await load();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      zoteroBusy = false;
+    }
+  }
+
   async function copyBibtex() {
     if (busy) return;
     busy = "bib";
@@ -615,6 +632,10 @@
     </div>
     <div class="controls">
       <input class="search" bind:value={search} placeholder="搜索标题 / 作者 / 摘要" oninput={() => load()} />
+      <button class="btn" disabled={zoteroBusy} onclick={importZotero}
+              title="读取本地 Zotero 数据库（~/Zotero/zotero.sqlite），按 DOI 去重导入阅读清单">
+        <Icon name="upload" size={12} /> {zoteroBusy ? "Zotero 导入中…" : "从 Zotero 导入"}
+      </button>
       <button class="btn" onclick={() => (importOpen = !importOpen)}>导入 BibTeX</button>
       <button class="btn primary" onclick={() => (drOpen = !drOpen)} title="课题 → 多源检索 → AI 筛选 → 入库 → 综述初稿">
         {drBusy ? "深度研究中…" : "深度研究"}

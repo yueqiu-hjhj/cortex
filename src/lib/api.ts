@@ -821,6 +821,21 @@ export const planCalendarSync = (tzOffsetMinutes: number, days?: number) =>
     days: days ?? null,
   });
 
+// ---- Zotero import: read the LOCAL Zotero library into the papers table ----
+export interface ZoteroImportResult {
+  db_path: string;
+  found: number;
+  imported: number;
+  skipped: number;
+  warnings: string[];
+  titles_sample: string[];
+}
+export const zoteroImport = (subjectId?: string | null, dbPath?: string | null) =>
+  invoke<ZoteroImportResult>("zotero_import", {
+    subjectId: subjectId ?? null,
+    dbPath: dbPath ?? null,
+  });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
