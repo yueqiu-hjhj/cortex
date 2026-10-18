@@ -474,7 +474,60 @@
   $effect(() => {
     void selected?.id;
     void loadExcerpts();
+    void loadExperiments();
   });
+
+  // ── Experiments（复现实验卡片，科研一体化的最后一块）──
+  // 轻量形态：假设/代码/环境/结果四要素挂在论文上，可 livesync；执行交给
+  // agent 平台，这里只记录与对账。
+  let experiments = $state<api.Experiment[]>([]);
+  let expOpen = $state<Record<string, boolean>>({});
+  let expNewOpen = $state(false);
+  let expTitle = $state("");
+  let expHypo = $state("");
+  let expEnv = $state("");
+  let expDraft = $state<Record<string, { code: string; result: string }>>({});
+  async function loadExperiments() {
+    if (!selected) { experiments = []; return; }
+    experiments = await api.experimentList(selected.id, null).catch(() => []);
+  }
+  async function addExperiment() {
+    if (!selected || !expTitle.trim() || busy) return;
+    busy = "exp";
+    try {
+      await api.experimentCreate(selected.id, selected.subject_id ?? null, expTitle.trim(), expHypo.trim() || null, expEnv.trim() || null);
+      expTitle = ""; expHypo = ""; expEnv = ""; expNewOpen = false;
+      await loadExperiments();
+      say("实验卡片已创建");
+    } catch (e) { error = String(e); } finally { busy = null; }
+  }
+  async function setExpStatus(e: api.Experiment, status: api.ExperimentStatus) {
+    try { await api.experimentUpdate(e.id, { status }); await loadExperiments(); }
+    catch (err) { error = String(err); }
+  }
+  function expDraftOf(e: api.Experiment) {
+    return expDraft[e.id] ?? { code: e.code ?? "", result: e.result ?? "" };
+  }
+  function setExpDraft(id: string, patch: { code?: string; result?: string }) {
+    expDraft[id] = { ...expDraftOf(experiments.find((x) => x.id === id)!), ...patch };
+  }
+  async function saveExpFields(e: api.Experiment) {
+    const d = expDraft[e.id];
+    if (!d) return;
+    busy = e.id;
+    try {
+      await api.experimentUpdate(e.id, { code: d.code, result: d.result });
+      await loadExperiments();
+      say("实验记录已保存");
+    } catch (err) { error = String(err); } finally { busy = null; }
+  }
+  async function dropExperiment(id: string) {
+    busy = id;
+    try {
+      await api.experimentDelete(id);
+      await loadExperiments();
+    } catch (e) { error = String(e); } finally { busy = null; }
+  }
 
   function say(msg: string) {
     flash = msg;
@@ -843,6 +896,68 @@
             {/each}
           {:else}
             <p class="none">还没有摘录。读到关键句就存一条——写综述时它比摘要有用。</p>
+          {/if}
+        </section>
+
+        <section class="excerpts">
+          <div class="shead">实验 <span class="n">{experiments.length}</span>
+            <button class="x" style="margin-left:auto;font-size:11px" onclick={() => (expNewOpen = !expNewOpen)}>
+              {expNewOpen ? "收起" : "+ 新建"}
+            </button>
+          </div>
+
+          {#if expNewOpen}
+            <div class="addbox">
+              <input class="pg" style="flex:2" bind:value={expTitle} placeholder="实验标题，例如：复现 Table 2" />
+              <input class="nt" style="flex:2" bind:value={expHypo} placeholder="假设 / 预期结果（可选）" />
+              <input class="nt" style="flex:2" bind:value={expEnv} placeholder="环境：torch 2.4 · cuda 12.1 · seed 42（可选）" />
+              <div class="addrow">
+                <span class="faint mono" style="font-size:10px">执行交给 agent；这里记录假设、代码与观测。</span>
+                <button class="btn primary" disabled={!expTitle.trim() || busy === "exp"} onclick={addExperiment}>创建</button>
+              </div>
+            </div>
+          {/if}
+
+          {#if experiments.length}
+            {#each experiments as e (e.id)}
+              {@const open = expOpen[e.id]}
+              {@const d = expDraftOf(e)}
+              <div class="ex" style="display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <select class="pg" style="width:auto;font-size:11px;padding:2px 6px" value={e.status}
+                          onchange={(ev) => setExpStatus(e, (ev.target as HTMLSelectElement).value as api.ExperimentStatus)}>
+                    <option value="planned">计划</option>
+                    <option value="running">运行中</option>
+                    <option value="done">完成</option>
+                    <option value="failed">失败</option>
+                  </select>
+                  <strong style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{e.title}</strong>
+                  <button class="x" title="编辑代码/结果" onclick={() => (expOpen = { ...expOpen, [e.id]: !open })}>
+                    <Icon name={open ? "x" : "search"} size={10} />
+                  </button>
+                  <button class="x" title="删除实验" onclick={() => dropExperiment(e.id)}>
+                    <Icon name="x" size={10} />
+                  </button>
+                </div>
+                {#if e.hypothesis}<p class="note">{e.hypothesis}</p>{/if}
+                {#if open}
+                  <textarea class="mono" style="width:100%;min-height:88px;font-size:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--fg)"
+                            placeholder="代码 / 复现步骤…" value={d.code}
+                            oninput={(ev) => setExpDraft(e.id, { code: (ev.target as HTMLTextAreaElement).value })}></textarea>
+                  <textarea style="width:100%;min-height:60px;font-size:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--fg)"
+                            placeholder="观测结果…" value={d.result}
+                            oninput={(ev) => setExpDraft(e.id, { result: (ev.target as HTMLTextAreaElement).value })}></textarea>
+                  <div style="display:flex;justify-content:flex-end">
+                    <button class="btn primary" disabled={busy === e.id} onclick={() => saveExpFields(e)}>保存记录</button>
+                  </div>
+                {:else if e.result}
+                  <p class="q" style="font-size:12px">{e.result}</p>
+                {/if}
+                <span class="faint mono" style="font-size:10px">{e.environment ?? ""}</span>
+              </div>
+            {/each}
+          {:else}
+            <p class="none">还没有实验卡片。复现 Table、跑消融、验证假设——都记在这里。</p>
           {/if}
         </section>
       {/if}

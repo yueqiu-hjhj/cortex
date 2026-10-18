@@ -30,6 +30,7 @@ pub mod citecheck;
 mod deep_research;
 mod video_overview;
 pub mod zotero;
+pub mod experiments;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -443,6 +444,10 @@ pub fn run() {
             commands::deep_research,
             commands::synthesize_video_overview,
             commands::zotero_import,
+            commands::experiment_create,
+            commands::experiment_list,
+            commands::experiment_update,
+            commands::experiment_delete,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

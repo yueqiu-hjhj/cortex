@@ -6204,6 +6204,73 @@ pub fn paper_import(state: State<AppState>, input: crate::papers::PaperInput) ->
     crate::papers::import_paper(&c, &input)
 }
 
+// ---- experiments (科研一体化 gap: 复现实验, lightweight cards) -----------
+
+#[derive(serde::Deserialize)]
+pub struct ExperimentPatch {
+    pub title: Option<String>,
+    pub hypothesis: Option<String>,
+    pub code: Option<String>,
+    pub environment: Option<String>,
+    pub result: Option<String>,
+    pub status: Option<String>,
+}
+
+#[tauri::command]
+pub fn experiment_create(
+    state: State<AppState>,
+    paper_id: Option<String>,
+    subject_id: Option<String>,
+    title: String,
+    hypothesis: Option<String>,
+    environment: Option<String>,
+) -> Result<crate::experiments::Experiment> {
+    let c = state.db.lock().unwrap();
+    crate::experiments::create(
+        &c,
+        paper_id.as_deref(),
+        subject_id.as_deref(),
+        &title,
+        hypothesis.as_deref(),
+        environment.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn experiment_list(
+    state: State<AppState>,
+    paper_id: Option<String>,
+    subject_id: Option<String>,
+) -> Result<Vec<crate::experiments::Experiment>> {
+    let c = state.db.lock().unwrap();
+    crate::experiments::list(&c, paper_id.as_deref(), subject_id.as_deref())
+}
+
+#[tauri::command]
+pub fn experiment_update(
+    state: State<AppState>,
+    id: String,
+    patch: ExperimentPatch,
+) -> Result<crate::experiments::Experiment> {
+    let c = state.db.lock().unwrap();
+    crate::experiments::update(
+        &c,
+        &id,
+        patch.title.as_deref(),
+        patch.hypothesis.as_deref(),
+        patch.code.as_deref(),
+        patch.environment.as_deref(),
+        patch.result.as_deref(),
+        patch.status.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn experiment_delete(state: State<AppState>, id: String) -> Result<()> {
+    let c = state.db.lock().unwrap();
+    crate::experiments::delete(&c, &id)
+}
+
 /// Import the local Zotero library into the papers table (DOI-deduped).
 /// Reads a COPY of zotero.sqlite — Zotero's own library is never touched.
 #[tauri::command]

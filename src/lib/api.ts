@@ -836,6 +836,42 @@ export const zoteroImport = (subjectId?: string | null, dbPath?: string | null) 
     dbPath: dbPath ?? null,
   });
 
+// ---- Experiments (科研一体化 gap: 复现实验, lightweight cards) ----
+export type ExperimentStatus = "planned" | "running" | "done" | "failed";
+export interface Experiment {
+  id: string;
+  paper_id: string | null;
+  subject_id: string | null;
+  title: string;
+  hypothesis: string | null;
+  code: string | null;
+  environment: string | null;
+  result: string | null;
+  status: ExperimentStatus;
+  created_at: number;
+  updated_at: number;
+}
+export const experimentList = (paperId?: string | null, subjectId?: string | null) =>
+  invoke<Experiment[]>("experiment_list", {
+    paperId: paperId ?? null,
+    subjectId: subjectId ?? null,
+  });
+export const experimentCreate = (
+  paperId: string | null,
+  subjectId: string | null,
+  title: string,
+  hypothesis?: string | null,
+  environment?: string | null,
+) =>
+  invoke<Experiment>("experiment_create", {
+    paperId, subjectId, title, hypothesis: hypothesis ?? null, environment: environment ?? null,
+  });
+export const experimentUpdate = (
+  id: string,
+  patch: Partial<Pick<Experiment, "title" | "hypothesis" | "code" | "environment" | "result" | "status">>,
+) => invoke<Experiment>("experiment_update", { id, patch });
+export const experimentDelete = (id: string) => invoke<void>("experiment_delete", { id });
+
 // Current Omarchy theme name (null if Omarchy isn't installed). Powers the
 // "Follow Omarchy theme" toggle in Appearance.
 export const omarchyTheme = () => invoke<string | null>("omarchy_theme");
