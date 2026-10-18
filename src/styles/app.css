@@ -1269,39 +1269,26 @@ body.reorder-active, body.reorder-active * { cursor: grabbing !important; user-s
   color: var(--fg-muted);
 }
 
-/* ---- 检索评测（设置 · 实验功能）---- */
-.eval-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--t-xs);
-}
-.eval-table th,
-.eval-table td {
-  text-align: left;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.eval-table th {
-  color: var(--fg-faint);
-  font-weight: 400;
-}
-.eval-table tr.best td {
-  color: var(--accent);
-}
-.eval-misses {
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
-}
-.eval-miss {
+/* 真实语料评测 · 科目多选 chips */
+.eval-subjects {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-  font-size: 11px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.eval-q {
+.eval-subject {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
   color: var(--fg-muted);
+  cursor: pointer;
+}
+.eval-subject.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--fg-bright);
 }
 
 /* ---- 计划页 · 估算校准提示 ---- */

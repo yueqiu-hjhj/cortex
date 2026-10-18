@@ -399,6 +399,151 @@ pub fn score_all(conn: &Connection, k: usize, queries: &[EvalQuery]) -> Result<V
     MODES.iter().map(|m| score(conn, m, k, queries)).collect()
 }
 
+// ------------------------------------------------------- real-corpus eval
+
+/// Hard cap on real-corpus queries per run. Embedding a query is a network /
+/// ONNX round-trip; 40 keeps a run seconds-long while sampling every source.
+const MAX_REAL_QUERIES: usize = 40;
+/// Chunks shorter than this make keyword queries that are either empty or
+/// noise ("那这一章呢").
+const MIN_CHUNK_CHARS: usize = 40;
+
+/// Whether `c` is a CJK ideograph (used to pick the token unit: bigrams for
+/// Han runs, whole words for Latin).
+fn is_han(c: char) -> bool {
+    matches!(c as u32,
+        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F)
+}
+
+/// Extract a keyword query from a chunk's own text. Deterministic, no LLM:
+/// Latin words (≥3 chars) and CJK bigrams, ranked by frequency in the chunk
+/// with first-occurrence tie-break. A chunk whose text yields fewer than two
+/// distinct terms is skipped by the caller — a one-term query is noise.
+///
+/// This is the honest ground truth for a personal corpus: nobody has labelled
+/// (query → source) pairs for their own notes, but "the words this chunk uses
+/// should find that chunk's source back" is a fair, checkable proxy.
+pub fn query_terms(text: &str) -> Vec<String> {
+    let mut freq: Vec<(String, usize)> = Vec::new();
+    let mut bump = |freq: &mut Vec<(String, usize)>, t: String| {
+        if let Some(e) = freq.iter_mut().find(|(s, _)| *s == t) {
+            e.1 += 1;
+        } else {
+            freq.push((t, 1));
+        }
+    };
+    for run in text.split(|c: char| !c.is_alphanumeric()) {
+        if run.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = run.chars().collect();
+        let han = chars.iter().filter(|c| is_han(**c)).count();
+        if han > 0 && han == chars.len() {
+            // CJK run: overlapping bigrams are the token unit (same trick the
+            // keyword search path uses).
+            for w in chars.windows(2) {
+                let g: String = w.iter().collect();
+                bump(&mut freq, g);
+            }
+        } else if chars.len() >= 3 {
+            bump(&mut freq, run.to_lowercase());
+        }
+    }
+    let mut ranked: Vec<(String, usize)> = freq.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(6);
+    ranked.into_iter().map(|(t, _)| t).collect()
+}
+
+/// Build a real-corpus eval set from the user's own indexed chunks.
+///
+/// Query = the top keyword terms of one chunk; expected source = the source
+/// that chunk lives in. The corpus is NOT re-embedded — chunks already carry
+/// vectors from ingest — so the only slow part is embedding the query strings.
+/// Deterministic: chunks are ordered by (source_id, ord) and sampled with a
+/// fixed stride when there are more than [`MAX_REAL_QUERIES`].
+///
+/// `subject_ids` scopes the pool to those subjects; `None` means every subject
+/// except the synthetic `(eval)` one. Returns an empty vec when the pool has
+/// no usable chunks (nothing indexed yet).
+pub fn real_queries(
+    conn: &Connection,
+    subject_ids: Option<&[String]>,
+    embedder: &dyn Embedder,
+) -> Result<Vec<EvalQuery>> {
+    let candidates = real_query_candidates(conn, subject_ids)?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let queries: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
+    let vecs = embedder.embed(&queries)?;
+    Ok(candidates
+        .into_iter()
+        .zip(vecs)
+        .map(|((query, expect), vec)| EvalQuery { query, expect, vec })
+        .collect())
+}
+
+/// The SQL half of [`real_queries`]: (query text, expected source name)
+/// candidates, deterministic order, stride-sampled. Kept separate from the
+/// embedding step so the command layer can do its slow network/ONNX hop with
+/// no DB connection held.
+pub fn real_query_candidates(
+    conn: &Connection,
+    subject_ids: Option<&[String]>,
+) -> Result<Vec<(String, String)>> {
+    // Scope + deterministic order in one SQL pass. IN-list is built with
+    // positional placeholders — subject ids come from the local DB, but they
+    // still go through bound params, never string interpolation. (SUBJECT_NAME
+    // is a compile-time constant with no quotes, so inline is safe.)
+    let mut sql = format!(
+        "SELECT s.name, c.text FROM chunks c \
+           JOIN sources s ON s.id = c.source_id \
+           JOIN subjects sub ON sub.id = s.subject_id \
+          WHERE length(c.text) >= {MIN_CHUNK_CHARS} \
+            AND sub.name != '{SUBJECT_NAME}'"
+    );
+    let mut bound: Vec<String> = Vec::new();
+    if let Some(ids) = subject_ids.filter(|v| !v.is_empty()) {
+        let list = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND s.subject_id IN ({list})"));
+        bound.extend(ids.iter().cloned());
+    }
+    sql.push_str(" ORDER BY s.id, c.ord");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(rusqlite::params_from_iter(bound.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut candidates: Vec<(String, String)> = rows
+        .into_iter()
+        .filter_map(|(source, text)| {
+            let terms = query_terms(&text);
+            if terms.len() < 2 {
+                None
+            } else {
+                Some((terms.join(" "), source))
+            }
+        })
+        .collect();
+
+    if candidates.len() > MAX_REAL_QUERIES {
+        let stride = candidates.len() as f64 / MAX_REAL_QUERIES as f64;
+        candidates = (0..MAX_REAL_QUERIES)
+            .map(|i| candidates[(i as f64 * stride) as usize].clone())
+            .collect();
+    }
+    Ok(candidates)
+}
+
 // ------------------------------------------------------------------ tests
 
 #[cfg(test)]
@@ -502,5 +647,55 @@ mod tests {
         let r = score(&c, "vector", DEFAULT_K, &queries).unwrap();
         let top = r.rows.iter().filter(|row| row.rank == Some(1)).count();
         assert_eq!(top, r.evaluated, "every clean query should be rank 1");
+    }
+
+    // ------------------------------------------------ real-corpus queries
+
+    #[test]
+    fn query_terms_handle_cjk_bigrams_and_latin_words() {
+        // Short CJK run: overlapping bigrams, no single chars.
+        let t = query_terms("对比矩阵");
+        assert_eq!(t, vec!["对比".to_string(), "比矩".to_string(), "矩阵".to_string()]);
+        // Mixed: Latin words lowercased (≥3 chars), short Latin dropped.
+        let t = query_terms("对比矩阵 is Matrix");
+        assert!(t.contains(&"matrix".to_string()));
+        assert!(t.contains(&"对比".to_string()) && t.contains(&"矩阵".to_string()));
+        assert!(!t.contains(&"is".to_string()));
+    }
+
+    #[test]
+    fn query_terms_rank_by_frequency_and_cap_at_six() {
+        let t = query_terms("alpha beta alpha beta alpha gamma delta epsilon zeta eta theta iota");
+        assert_eq!(t.first().map(String::as_str), Some("alpha"));
+        assert_eq!(t.len(), 6, "terms are capped at six");
+    }
+
+    #[test]
+    fn real_queries_expect_the_chunk_own_source() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        // Two subjects with real-ish text; the synthetic eval subject never seeded.
+        let s1 = repo::insert_subject(&c, "线代", Some("math"), Some("◆"), None).unwrap();
+        let src1 = repo::insert_source(&c, &s1, None, "特征值讲义.md", "md", None).unwrap();
+        for (i, text) in [
+            "特征值和特征向量描述线性变换的不变方向，对角化把矩阵分解成特征值与特征向量的乘积。",
+            "正定矩阵的所有特征值都是正数，因此可以做 Cholesky 分解，数值上非常稳定。",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let e = StubEmbedder;
+            let v = e.embed(&[text.to_string()]).unwrap().pop().unwrap();
+            repo::insert_chunk(&c, &src1, &s1, None, i as i64, text, None, v.len() as i64, &crate::vector::f32s_to_blob(&v)).unwrap();
+        }
+        let qs = real_queries(&c, None, &StubEmbedder).unwrap();
+        assert_eq!(qs.len(), 2);
+        for q in &qs {
+            assert_eq!(q.expect, "特征值讲义.md");
+            assert!(q.query.split(' ').count() >= 2);
+        }
+        // Scoped to a non-existent subject → nothing.
+        let none = real_queries(&c, Some(&["nope".into()]), &StubEmbedder).unwrap();
+        assert!(none.is_empty());
     }
 }

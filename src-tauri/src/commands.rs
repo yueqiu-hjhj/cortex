@@ -6287,9 +6287,66 @@ pub async fn retrieval_eval(
     })
     .await
     .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
-
     let c = state.db.lock().unwrap();
     crate::eval::seed(&c, &seeded)?;
+    crate::eval::score_all(&c, want, &queries)
+}
+
+/// The same four-mode evaluation over the USER'S OWN corpus, closing gap C1:
+/// the synthetic suite proves the pipeline, this proves it on real notes.
+///
+/// Queries are derived from the user's indexed chunks (top keyword terms per
+/// chunk, no LLM, deterministic stride sampling), and the expected answer is
+/// the source that chunk lives in. Corpus vectors come from ingest — only the
+/// query strings are embedded, so a run is seconds, not minutes.
+///
+/// `subject_ids` scopes the pool; None/empty = every subject except the
+/// synthetic eval one.
+#[tauri::command]
+pub async fn retrieval_eval_real(
+    state: State<'_, AppState>,
+    subject_ids: Option<Vec<String>>,
+    k: Option<i64>,
+) -> Result<Vec<crate::eval::EvalReport>> {
+    let want = k.unwrap_or(crate::eval::DEFAULT_K as i64).clamp(1, 20) as usize;
+
+    // Pure SQL: sample query candidates from the user's indexed chunks.
+    let candidates = {
+        let c = state.db.lock().unwrap();
+        crate::eval::real_query_candidates(&c, subject_ids.as_deref())?
+    };
+    if candidates.is_empty() {
+        return Err(Error::Other(
+            "没有可评测的语料 —— 先添加并索引至少一个来源（或换个科目勾选）。".into(),
+        ));
+    }
+
+    // Blocking hop: build the embedder and embed only the sampled query
+    // strings (corpus vectors already exist from ingest), OFF the event loop.
+    let (provider, keys, ollama_url, data_dir) = {
+        let c = state.db.lock().unwrap();
+        (
+            effective_embed_provider(&c),
+            read_keys(&c)?,
+            crate::homelab::resolved_setting(&c, "ollama_url"),
+            state.data_dir.clone(),
+        )
+    };
+    let texts: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
+    let vecs = tauri::async_runtime::spawn_blocking(move || {
+        let embedder =
+            embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
+        embedder.embed(&texts)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
+
+    let queries: Vec<crate::eval::EvalQuery> = candidates
+        .into_iter()
+        .zip(vecs)
+        .map(|((query, expect), vec)| crate::eval::EvalQuery { query, expect, vec })
+        .collect();
+    let c = state.db.lock().unwrap();
     crate::eval::score_all(&c, want, &queries)
 }
 

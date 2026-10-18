@@ -83,7 +83,34 @@
   const evalBest = $derived(
     evalReports?.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), evalReports[0]) ?? null,
   );
-<string>("profile");
+
+  // ── 真实语料评测（用户自己的库） ──
+  let realEvalBusy = $state(false);
+  let realEvalError = $state<string | null>(null);
+  let realEvalReports = $state<api.EvalReport[] | null>(null);
+  let evalSubjectIds = $state<string[]>([]);
+  let evalSubjects = $state<api.Subject[]>([]);
+  async function runRealEval() {
+    if (realEvalBusy) return;
+    realEvalBusy = true;
+    realEvalError = null;
+    try {
+      realEvalReports = await api.retrievalEvalReal(evalSubjectIds.length ? evalSubjectIds : null, 5);
+    } catch (e) {
+      realEvalError = String(e);
+    } finally {
+      realEvalBusy = false;
+    }
+  }
+  function toggleEvalSubject(id: string) {
+    evalSubjectIds = evalSubjectIds.includes(id)
+      ? evalSubjectIds.filter((x) => x !== id)
+      : [...evalSubjectIds, id];
+  }
+  const realEvalBest = $derived(
+    realEvalReports?.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), realEvalReports[0]) ?? null,
+  );
+
   // Honour a deep-link from elsewhere (e.g. the subject Overview → Moodle setup).
   $effect(() => {
     if (app.settingsTab) {
@@ -1157,6 +1184,9 @@
         plugins = pl.plugins;
         pluginErrors = pl.errors;
       } catch { /* plugin listing is informational only */ }
+
+      // Subjects for the real-corpus retrieval eval picker (experimental tab).
+      try { evalSubjects = await api.listSubjects(); } catch { evalSubjects = []; }
 
       // Models
       for (const taskId of ["chat","cheatsheet","audio","quiz","flashcard","embedding"] as TaskId[]) {
@@ -2746,29 +2776,49 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <div>
-              <h3 class="set-group-t">检索评测</h3>
+              <h3 class="set-group-t">真实语料评测</h3>
               <p class="set-group-d">
-                用一份固定的合成语料跑四种检索配置，看各自能召回多少。语料临时写入一个名为「(eval) 检索评测」的科目，不会和你自己的资料混在一起。
+                合成语料只能证明流水线没坏；这一步在你的真实笔记上证明检索确实好用。查询词取自你已索引的分块（无 LLM、确定性采样），期望答案是分块所在的来源。
               </p>
             </div>
-            <button class="btn btn--primary btn--sm" disabled={evalBusy} onclick={runRetrievalEval}>
-              {evalBusy ? "评测中…" : "运行评测"}
+            <button class="btn btn--primary btn--sm" disabled={realEvalBusy} onclick={runRealEval}>
+              {realEvalBusy ? "评测中…" : "运行真实评测"}
             </button>
           </div>
 
-          {#if evalError}
-            <div class="set-row-d" style="color:var(--err)">{evalError}</div>
+          <div class="set-card">
+            <div class="set-row-d">
+              评测范围：
+              {#if !evalSubjects.length}
+                还没有科目 —— 先去添加并索引来源。
+              {:else}
+                <span class="mono">{evalSubjectIds.length ? `已选 ${evalSubjectIds.length} 个科目` : "全部科目"}</span>
+              {/if}
+            </div>
+            <div class="eval-subjects">
+              {#each evalSubjects as s (s.id)}
+                <button
+                  type="button"
+                  class={"eval-subject" + (evalSubjectIds.includes(s.id) ? " on" : "")}
+                  onclick={() => toggleEvalSubject(s.id)}
+                >{s.name}</button>
+              {/each}
+            </div>
+          </div>
+
+          {#if realEvalError}
+            <div class="set-row-d" style="color:var(--err)">{realEvalError}</div>
           {/if}
 
-          {#if evalReports}
+          {#if realEvalReports}
             <div class="set-card">
               <table class="eval-table">
                 <thead>
                   <tr><th>配置</th><th>Recall@5</th><th>MRR</th><th>命中</th></tr>
                 </thead>
                 <tbody>
-                  {#each evalReports as r (r.mode)}
-                    <tr class:best={evalBest?.mode === r.mode && evalBest.recall_at_k > 0}>
+                  {#each realEvalReports as r (r.mode)}
+                    <tr class:best={realEvalBest?.mode === r.mode && realEvalBest.recall_at_k > 0}>
                       <td class="mono">{r.mode}</td>
                       <td class="mono">{(r.recall_at_k * 100).toFixed(0)}%</td>
                       <td class="mono">{r.mrr.toFixed(3)}</td>
@@ -2778,7 +2828,7 @@ Notes: {about}</pre>
                 </tbody>
               </table>
 
-              {#each evalReports as r (r.mode)}
+              {#each realEvalReports as r (r.mode)}
                 {@const misses = r.rows.filter((x) => !x.rank)}
                 {#if misses.length}
                   <div class="eval-misses">

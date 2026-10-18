@@ -421,6 +421,7 @@ pub fn run() {
             commands::verify_provider,
             commands::list_providers,
             commands::plugins_list,
+            commands::retrieval_eval_real,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

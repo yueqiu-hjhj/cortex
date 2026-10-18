@@ -1959,6 +1959,12 @@ export interface EvalReport {
 export const retrievalEval = (k?: number) =>
   invoke<EvalReport[]>("retrieval_eval", { k: k ?? null });
 
+/** Run the same four modes over the user's OWN corpus. `subjectIds` scopes the
+ *  pool (null/empty = every subject except the synthetic eval one). Queries are
+ *  keyword terms sampled from indexed chunks; ground truth = the chunk's source. */
+export const retrievalEvalReal = (subjectIds: string[] | null, k?: number) =>
+  invoke<EvalReport[]>("retrieval_eval_real", { subjectIds, k: k ?? null });
+
 // ---- planner estimate calibration ----------------------------------------
 
 export interface KindFactor {
