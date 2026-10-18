@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex Clipper — 设置</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      body { width: auto; max-width: 620px; margin: 32px auto; padding: 0 20px; font-size: 14px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      .lede { color: var(--muted); margin: 0 0 22px; }
+      .card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 16px; margin-bottom: 16px; }
+      .field { margin-bottom: 14px; }
+      input[type="number"] { width: 140px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+      .actions { display: flex; gap: 8px; align-items: center; }
+      .status { font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Cortex Clipper 设置</h1>
+    <p class="lede">扩展只跟本机的 Cortex 桌面端说话，数据不会离开这台机器。</p>
+
+    <div class="card">
+      <label class="field">
+        <span class="field-label">Cortex 本地端口</span>
+        <input id="port" type="number" min="1" max="65535" step="1" />
+        <div class="hint">默认 7878。只有当你在 Cortex 里用 <span class="mono">CORTEX_CLIP_PORT</span> 改过端口才需要动它。</div>
+      </label>
+
+      <label class="field">
+        <span class="field-label">默认学科</span>
+        <select id="subject"></select>
+        <div class="hint">扩展每次保存都会预选这个学科，弹窗里仍然可以临时改。</div>
+      </label>
+
+      <label class="field">
+        <span class="field-label">右键菜单默认只存划选</span>
+        <input id="selection-only" type="checkbox" />
+        <div class="hint">勾上之后，「Clip to Cortex」也只会保存选中文字。</div>
+      </label>
+
+      <div class="actions">
+        <button id="save" class="primary" type="button">保存设置</button>
+        <button id="test" type="button">测试连接</button>
+        <span id="status" class="status"></span>
+      </div>
+    </div>
+  </body>
+  <script type="module" src="options.js"></script>
+</html>

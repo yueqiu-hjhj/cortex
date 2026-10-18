@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Cortex Clipper",
+  "short_name": "Cortex Clip",
+  "version": "1.0.0",
+  "description": "把正在读的网页（或只把划选的一段）一键存进 Cortex——不用再手动复制粘贴 URL。",
+  "homepage_url": "https://github.com/cortex/cortex",
+  "permissions": ["activeTab", "contextMenus", "storage", "scripting"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "src/service_worker.js" },
+  "action": {
+    "default_title": "Clip to Cortex",
+    "default_popup": "src/popup.html",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "options_ui": { "page": "src/options.html", "open_in_tab": true },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

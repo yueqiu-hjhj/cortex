@@ -1,0 +1,109 @@
+/* Popup chrome. Deliberately small and theme-aware: the popup is a 360px
+   panel that has to read well next to whatever the host page looks like. */
+
+:root {
+  --bg: #ffffff;
+  --surface: #f6f6f8;
+  --border: #dcdce3;
+  --text: #1c1c22;
+  --muted: #6b6b78;
+  --accent: #6c5ce7;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --bad: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161c;
+    --surface: #1e1e26;
+    --border: #2f2f3a;
+    --text: #ececf2;
+    --muted: #9a9aa8;
+    --accent: #a99bff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 360px;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.mark {
+  width: 22px; height: 22px; flex: none; border-radius: 7px;
+  background: linear-gradient(160deg, #7c6cf2, #5b45d6);
+  position: relative;
+}
+.mark::after {
+  content: ""; position: absolute; left: 50%; top: 5px;
+  width: 3px; height: 7px; margin-left: -1.5px; border-radius: 2px; background: #fff;
+  box-shadow: 0 0 0 0 #fff;
+}
+.mark::before {
+  content: ""; position: absolute; left: 4px; right: 4px; bottom: 5px;
+  height: 3px; border-radius: 2px; background: #fff; opacity: 0.92;
+}
+.head-text { min-width: 0; flex: 1; }
+.title { font-weight: 700; letter-spacing: 0.01em; }
+.sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.icon-btn {
+  flex: none; width: 26px; height: 26px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  font-size: 13px; line-height: 1; display: grid; place-items: center;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.banner {
+  margin-bottom: 10px; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  border: 1px solid; background: var(--surface);
+}
+.banner.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.banner.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+
+.field { display: block; margin-bottom: 10px; }
+.field-label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.hint { opacity: 0.7; }
+
+select, textarea {
+  width: 100%; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: inherit;
+}
+textarea { resize: vertical; min-height: 62px; }
+select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset: 1px; border-color: var(--accent); }
+textarea.has-sel { border-color: var(--accent); }
+
+.page {
+  margin-bottom: 10px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.page-title { font-weight: 600; margin-bottom: 3px; }
+.page-url {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.actions { display: flex; gap: 8px; }
+.actions button {
+  flex: 1; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: inherit; font-weight: 600;
+}
+.actions button:hover:not(:disabled) { border-color: var(--accent); }
+.actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.actions button:disabled { opacity: 0.55; cursor: default; }
+
+.result { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); }
+.result.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.result.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }

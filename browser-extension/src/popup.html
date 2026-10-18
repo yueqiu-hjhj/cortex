@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clip to Cortex</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <span class="mark" aria-hidden="true"></span>
+      <div class="head-text">
+        <div class="title">Clip to Cortex</div>
+        <div class="sub" id="page-host">…</div>
+      </div>
+      <button id="open-options" class="icon-btn" type="button" title="设置" aria-label="设置">⚙</button>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <main id="form" hidden>
+      <label class="field">
+        <span class="field-label">保存到</span>
+        <select id="subject"></select>
+      </label>
+
+      <div class="page">
+        <div class="page-title" id="page-title"></div>
+        <div class="page-url" id="page-url"></div>
+      </div>
+
+      <label class="field">
+        <span class="field-label">划选内容<span class="hint">（可选，留空就存整页）</span></span>
+        <textarea id="selection" rows="4" placeholder="没有划选也可以直接存整页"></textarea>
+      </label>
+
+      <div class="actions">
+        <button id="save-page" class="primary" type="button">存整页</button>
+        <button id="save-selection" type="button">只存划选</button>
+      </div>
+
+      <div id="result" class="result" hidden></div>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

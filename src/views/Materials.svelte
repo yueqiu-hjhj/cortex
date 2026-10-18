@@ -160,6 +160,28 @@
     }
   }
 
+  // Export any material as a real Office file. One native save dialog, three
+  // formats: the extension the user settles on picks the backend command.
+  async function exportOffice(e: Event, m: Card) {
+    e.stopPropagation();
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe = m.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "material";
+      const dest = await save({
+        defaultPath: `${safe}.docx`,
+        filters: [{ name: "Word / Excel / PowerPoint", extensions: ["docx", "xlsx", "pptx"] }],
+      });
+      if (!dest) return;
+      const ext = dest.split(".").pop()?.toLowerCase();
+      if (ext === "xlsx") await api.exportMaterialXlsx(m.id, dest);
+      else if (ext === "pptx") await api.exportMaterialPptx(m.id, dest);
+      else await api.exportMaterialDocx(m.id, dest);
+      app.pushToast({ kind: "success", title: "已导出 Office 文档", body: dest });
+    } catch (err) {
+      app.pushToast({ kind: "error", title: "导出失败", body: String(err) });
+    }
+  }
+
   // Import an Anki .apkg into this subject as flashcard material(s) via a native
   // open dialog. Lives here (not in the Flashcards player) because this view owns
   // the deck list + reload, and mirrors the per-card export affordance above.
@@ -341,6 +363,9 @@
                         <Icon name="upload" size={12} />
                       </button>
                     {/if}
+                    <button class="btn btn--icon btn--sm btn--ghost mat-act" title="导出 Word / Excel / PowerPoint" aria-label="Export as Office document" onclick={(e) => exportOffice(e, m)}>
+                      <Icon name="doc" size={12} />
+                    </button>
                     <button class="btn btn--icon btn--sm btn--ghost mat-act" title="Rename" aria-label="Rename material" onclick={(e) => renameMaterial(e, m)}>
                       <Icon name="pencil" size={12} />
                     </button>

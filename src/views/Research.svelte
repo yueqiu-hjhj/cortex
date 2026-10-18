@@ -7,8 +7,9 @@
   // sentence I will cite". A paper here can become a schedulable reading task,
   // and every excerpt is kept verbatim so it can go straight into a draft.
   import * as api from "../lib/api";
-  import Icon from "../components/Icon.svelte";
-  import MatrixView from "../components/MatrixView.svelte";
+import Icon from "../components/Icon.svelte";
+import MatrixView from "../components/MatrixView.svelte";
+import OfficeTools from "../components/OfficeTools.svelte";
 
   const STATUSES = [
     { id: "all", label: "全部" },
@@ -167,6 +168,23 @@
     try {
       await navigator.clipboard.writeText(draftFullText(d));
       say("成稿已复制到剪贴板");
+    } catch (e) {
+      draftError = String(e);
+    }
+  }
+
+  // Draft → real .docx with citation numbers + the reference table.
+  async function exportDraft(d: api.ResearchDraft) {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe = d.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "draft";
+      const dest = await save({
+        defaultPath: `${safe}.docx`,
+        filters: [{ name: "Word 文档", extensions: ["docx"] }],
+      });
+      if (!dest) return;
+      await api.exportDraftDocx(d.id, dest);
+      say(`成稿已导出 → ${dest}`);
     } catch (e) {
       draftError = String(e);
     }
@@ -374,6 +392,7 @@
         成稿 · {pickedCount}
       </button>
       <button class="btn" onclick={openDraftLibrary}>成稿库</button>
+      <OfficeTools />
     </div>
   </header>
 
@@ -590,6 +609,7 @@
         {/if}
         <div class="matrix-modal-actions">
           <button class="btn" onclick={() => copyDraft(showingDraft)}>复制全文</button>
+          <button class="btn" onclick={() => exportDraft(showingDraft)}>导出 docx</button>
           <button class="btn primary" onclick={closeDraftModal}>完成</button>
         </div>
       </div>
@@ -626,6 +646,9 @@
             <button type="button" class="lbody" onclick={() => (viewDraft = d)}>
               <div class="ltitle">{d.title}</div>
               <div class="lsub">{d.meta} · {new Date(d.created_at).toLocaleDateString("zh-CN")}</div>
+            </button>
+            <button class="x" title="导出 docx" onclick={() => exportDraft(d)}>
+              <Icon name="doc" size={10} />
             </button>
             <button class="x" title="删除成稿" onclick={() => deleteDraft(d.id)}>
               <Icon name="x" size={10} />
