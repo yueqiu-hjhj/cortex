@@ -219,6 +219,9 @@
   let field      = $state("Computer Science — MSc");
   let about      = $state("Final-year MSc student. I think in code and analogies, already comfortable with Big-O. I revise late at night and learn fastest from worked examples, then a terse summary.");
   let style      = $state("balanced");
+  // coach_tone: gentle/friendly/neutral/strict/savage — injected into every
+  // system prompt (chat + generation). Default neutral changes nothing.
+  let coachTone  = $state("neutral");
   let explain    = $state<string[]>(["worked-examples","analogies"]);
 
   // ---- long-term memory state ----
@@ -1336,6 +1339,7 @@
       if (s.profile_field)     field    = s.profile_field;
       if (s.profile_about)     about    = s.profile_about;
       if (s.profile_style)     style    = s.profile_style;
+      if (s.coach_tone)        coachTone = s.coach_tone;
       if (s.profile_explain)   explain  = s.profile_explain.split(",").filter(Boolean);
 
       expMoodle = s.exp_moodle === "true";
@@ -1631,6 +1635,19 @@
                 <div class="seg">
                   {#each [{ id: "concise", label: "Concise" }, { id: "balanced", label: "Balanced" }, { id: "detailed", label: "Detailed" }] as opt}
                     <button type="button" class={"seg-opt" + (style === opt.id ? " on" : "")} onclick={() => (style = opt.id)}>{opt.label}</button>
+                  {/each}
+                </div>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-l">
+                <div class="set-row-t">督促语气</div>
+                <div class="set-row-d">学习搭子说话的方式；默认「中性」不改变现有输出。</div>
+              </div>
+              <div class="set-row-r">
+                <div class="seg">
+                  {#each [{ id: "gentle", label: "温和" }, { id: "friendly", label: "友好" }, { id: "neutral", label: "中性" }, { id: "strict", label: "严格" }, { id: "savage", label: "毒舌" }] as opt}
+                    <button type="button" class={"seg-opt" + (coachTone === opt.id ? " on" : "")} onclick={() => (coachTone = opt.id)}>{opt.label}</button>
                   {/each}
                 </div>
               </div>

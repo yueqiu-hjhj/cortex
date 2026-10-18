@@ -447,9 +447,26 @@ fn style_instruction(c: &Connection) -> String {
         .ok()
         .flatten()
         .unwrap_or_default();
-    match style.as_str() {
+    let mut out = match style.as_str() {
         "concise" => " Keep explanations concise and to the point.".to_string(),
         "detailed" => " Be thorough and detailed in explanations.".to_string(),
+        _ => String::new(),
+    };
+    out.push_str(&tone_instruction(
+        &repo::get_setting(c, "coach_tone").ok().flatten().unwrap_or_default(),
+    ));
+    out
+}
+
+/// Map `coach_tone` to a one-line persona instruction. Pure (testable).
+/// "neutral" (and anything unknown) is silent — the default must not change
+/// existing outputs.
+fn tone_instruction(tone: &str) -> String {
+    match tone.trim() {
+        "gentle" => " Be warm and encouraging; normalize struggle and never pressure the user.".to_string(),
+        "friendly" => " Be friendly and casual, like a helpful senior student.".to_string(),
+        "strict" => " Be direct and demanding; call out procrastination bluntly but fairly.".to_string(),
+        "savage" => " Be a blunt tough-love coach: sharp humor allowed, never insulting, never cruel.".to_string(),
         _ => String::new(),
     }
 }
@@ -1874,6 +1891,13 @@ pub async fn chat_answer(
             }
         })
     };
+    // Coaching tone (coach_tone setting): the persona filter on every reply.
+    system.push_str(&tone_instruction(
+        &repo::get_setting(&state.db.lock().unwrap(), "coach_tone")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    ));
     if web_on {
         // Override the strict sources-only rule above: web mode permits using the
         // WEB RESULTS block and light general knowledge, cited as ⟦web · host⟧.
@@ -5650,6 +5674,27 @@ pub(crate) fn finish_text_ingest(
 #[tauri::command]
 pub fn clip_server_status() -> crate::clip_server::ClipServerStatus {
     crate::clip_server::status()
+}
+
+#[cfg(test)]
+mod tone_tests {
+    use super::*;
+
+    #[test]
+    fn tone_levels_map_to_distinct_personas() {
+        assert!(tone_instruction("gentle").contains("warm"));
+        assert!(tone_instruction("friendly").contains("senior student"));
+        assert!(tone_instruction("strict").contains("direct and demanding"));
+        assert!(tone_instruction("savage").contains("tough-love"));
+    }
+
+    #[test]
+    fn neutral_and_unknown_are_silent() {
+        // The default must not alter any existing output.
+        assert!(tone_instruction("neutral").is_empty());
+        assert!(tone_instruction("").is_empty());
+        assert!(tone_instruction("hallucinated").is_empty());
+    }
 }
 
 #[cfg(test)]
