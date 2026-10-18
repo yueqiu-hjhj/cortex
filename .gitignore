@@ -2,6 +2,12 @@
 node_modules/
 node_modules
 
+# ── Lockfiles ─────────────────────────────────────────────────
+# npm (package-lock.json) and bun (bun.lock) are tracked; pnpm is not the
+# project toolchain. Ignore the files a stray `pnpm install` leaves behind.
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
 # ── Build output / caches ─────────────────────────────────────
 dist/
 .vite/
