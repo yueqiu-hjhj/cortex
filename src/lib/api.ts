@@ -115,6 +115,15 @@ export interface ChatAnswer {
   abstained?: boolean;
   /** ⟦…⟧ tokens naming sources that were never retrieved — removed from text. */
   fabricated_dropped?: number;
+  /** Retrieval accounting persisted with the message (session-level rate). */
+  retrieval?: RetrievalMeta;
+}
+export interface RetrievalMeta {
+  /** Passages retrieved; 0 = nothing found / not consulted. */
+  hits: number;
+  /** subject | topic | source | sources | none */
+  scope: string;
+  abstained: boolean;
 }
 export interface CsItem { t: string; d: string }
 export interface CsSection { id: string; title: string; state: string; items: CsItem[]; image?: string | null }
@@ -631,6 +640,8 @@ export interface ChatMsg {
   text: string;
   citations?: Citation[];
   created_at: number;
+  /** NULL for user/system rows and pre-0044 messages. */
+  retrieval?: RetrievalMeta | null;
 }
 export const listChatMessages = (subjectId: string) =>
   invoke<ChatMsg[]>("list_chat_messages", { subjectId });
@@ -638,8 +649,9 @@ export const addChatMessage = (
   subjectId: string,
   role: string,
   text: string,
-  citations?: Citation[]
-) => invoke<void>("add_chat_message", { subjectId, role, text, citations });
+  citations?: Citation[],
+  retrieval?: RetrievalMeta
+) => invoke<void>("add_chat_message", { subjectId, role, text, citations, retrieval });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
 
 // chat sessions (history)

@@ -23,6 +23,8 @@
     text: string;
     citations?: api.Citation[];
     images?: api.WebImage[];
+    /** Persisted retrieval accounting (0044) — drives the red 未检索 badge. */
+    retrieval?: api.RetrievalMeta;
   }
 
   // Web mode: let the AI pull live web snippets + images (diagrams/examples).
@@ -34,6 +36,14 @@
   // Multi-source scope: which specific sources to chat with (level === "sources").
   let picked = $state<Record<string, boolean>>({});
   const pickedIds = $derived(Object.keys(picked).filter((k) => picked[k]));
+  // Session retrieval rate: how many assistant answers actually consulted the
+  // library (hits > 0). Answers written before 0044 have no retrieval → not
+  // counted (no retroactive guessing).
+  const retrievalStats = $derived.by(() => {
+    const asst = messages.filter((m) => m.role === "assistant" && m.retrieval);
+    const grounded = asst.filter((m) => (m.retrieval?.hits ?? 0) > 0).length;
+    return { total: asst.length, grounded };
+  });
   let messages = $state<ChatMessage[]>([]);
   // Per-message evidence-panel expansion. Default collapsed so the chat stays
   // scannable; clicking the Evidence header opens the snippets.
@@ -115,6 +125,7 @@
             role: m.role as ChatMessage["role"],
             text: m.text,
             citations: m.citations ?? [],
+            retrieval: m.retrieval ?? undefined,
           }));
       })
       .catch(() => {});
@@ -138,6 +149,7 @@
           role: m.role as ChatMessage["role"],
           text: m.text,
           citations: m.citations ?? [],
+          retrieval: m.retrieval ?? undefined,
         })) as ChatMessage[];
         const imgs = app.chatLastImages;
         if (imgs.length && next.length && next[next.length - 1].role === "assistant") {
@@ -547,6 +559,21 @@
     {/if}
 
     <div class="grow"></div>
+    {#if retrievalStats.total > 0}
+      {@const pct = Math.round((retrievalStats.grounded / retrievalStats.total) * 100)}
+      <span class="retr-stat" title="本会话回答中实际检索了资料库的比例">
+        <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+          <circle cx="10" cy="10" r="7.5" fill="none" stroke="var(--border)" stroke-width="2.5" />
+          <circle cx="10" cy="10" r="7.5" fill="none"
+                  stroke={pct >= 50 ? "var(--accent)" : "var(--err, var(--warn))"}
+                  stroke-width="2.5"
+                  stroke-dasharray={`${(pct / 100) * 47.1} 47.1`}
+                  stroke-linecap="round"
+                  transform="rotate(-90 10 10)" />
+        </svg>
+        <span class="mono">{retrievalStats.grounded}/{retrievalStats.total}</span>
+      </span>
+    {/if}
     {#if !popout}
       <div class="chat-model-pick" title="Chat model">
         <ModelSearch
@@ -606,7 +633,11 @@
           {@const cites = m.citations ?? []}
           {@const citedCount = cites.filter((c) => c.cited).length}
           {@const isUncited = cites.length > 0 && citedCount === 0}
-          <div class="bubble assistant" class:is-uncited={isUncited}>
+          {@const noRetrieval = !!m.retrieval && m.retrieval.hits === 0}
+          <div class="bubble assistant" class:is-uncited={isUncited} class:is-unretrieved={noRetrieval}>
+            {#if noRetrieval}
+              <span class="retr-badge">未检索 · 零命中</span>
+            {/if}
             <RichText text={m.text} />
             {#if cites.length}
               <div class="evidence">
@@ -859,6 +890,34 @@
   .chat-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   /* Uncited answer: red border around the whole bubble so it cannot be missed. */
   .bubble.assistant.is-uncited { border-color: var(--warn); box-shadow: 0 0 0 1px color-mix(in oklab, var(--warn) 35%, transparent); }
+
+  /* Retrieval accounting (0044): session ring + per-message zero-hit badge.
+     The red left border is the "this answer never touched your library" signal
+     — distinct from .is-uncited (retrieved but nothing cited inline). */
+  .bubble.assistant.is-unretrieved {
+    border-left: 3px solid var(--err, #e5484d);
+    padding-left: 11px;
+  }
+  .retr-badge {
+    display: inline-block;
+    margin-bottom: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--err, #e5484d);
+    background: color-mix(in oklab, var(--err, #e5484d) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--err, #e5484d) 35%, transparent);
+  }
+  .retr-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-right: 6px;
+    color: var(--fg-muted);
+    font-size: 10px;
+    cursor: help;
+  }
 
   .evidence { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
   .evidence-head {

@@ -1721,6 +1721,8 @@ pub async fn chat_answer(
     // Multi-source scope: restrict retrieval to exactly these source ids (the
     // chat scope-switcher's tick-list). Applied to BOTH retrieval paths in Rust.
     // `scope_ids` keeps the same selection for the summary-tree context layer.
+    // Captured before the move — the retrieval metadata reports it later.
+    let multi_sources = source_ids.as_ref().map_or(false, |v| v.len() > 1);
     let scope_ids: Option<Vec<String>> = source_ids
         .filter(|v| !v.is_empty())
         .or_else(|| scoped_source.map(|s| vec![s.to_string()]));
@@ -1944,6 +1946,15 @@ pub async fn chat_answer(
         })
         .collect();
     let uncited = !citations.is_empty() && !citations.iter().any(|c| c.cited);
+    let retrieval = crate::models::RetrievalMeta {
+        hits: hits.len() as i64,
+        scope: if multi_sources {
+            "sources".to_string()
+        } else {
+            level.clone()
+        },
+        abstained,
+    };
 
     Ok(ChatAnswer {
         text,
@@ -1953,6 +1964,7 @@ pub async fn chat_answer(
         uncited,
         abstained,
         fabricated_dropped,
+        retrieval,
     })
     })
     .await
@@ -2146,14 +2158,16 @@ pub fn add_chat_message(
     role: String,
     text: String,
     citations: Option<Vec<Citation>>,
+    retrieval: Option<crate::models::RetrievalMeta>,
 ) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::add_chat_message_with_citations(
+    repo::add_chat_message_full(
         &c,
         &subject_id,
         &role,
         &text,
         &citations.unwrap_or_default(),
+        retrieval.as_ref(),
     )
 }
 

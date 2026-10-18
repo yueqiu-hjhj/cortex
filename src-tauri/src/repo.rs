@@ -1619,6 +1619,18 @@ pub fn add_chat_message_with_citations(
     text: &str,
     citations: &[Citation],
 ) -> Result<()> {
+    add_chat_message_full(conn, subject_id, role, text, citations, None)
+}
+
+/// Same, plus retrieval accounting (hits/scope/abstained) for assistant rows.
+pub fn add_chat_message_full(
+    conn: &Connection,
+    subject_id: &str,
+    role: &str,
+    text: &str,
+    citations: &[Citation],
+    retrieval: Option<&crate::models::RetrievalMeta>,
+) -> Result<()> {
     let tid = current_thread(conn, subject_id)?;
     let ts = now_ms();
     let citations_json = if citations.is_empty() {
@@ -1626,10 +1638,14 @@ pub fn add_chat_message_with_citations(
     } else {
         Some(serde_json::to_string(citations)?)
     };
+    let retrieval_json = match retrieval {
+        Some(r) => Some(serde_json::to_string(r)?),
+        None => None,
+    };
     conn.execute(
-        "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![new_id(), tid, role, text, citations_json, ts],
+        "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at, retrieval)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![new_id(), tid, role, text, citations_json, ts, retrieval_json],
     )?;
     conn.execute(
         "UPDATE chat_threads SET updated_at=?2 WHERE id=?1",
@@ -1642,11 +1658,12 @@ pub fn add_chat_message_with_citations(
 pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<ChatMsg>> {
     let tid = current_thread(conn, subject_id)?;
     let mut stmt = conn.prepare(
-        "SELECT role, text, citations, created_at FROM chat_messages
+        "SELECT role, text, citations, created_at, retrieval FROM chat_messages
          WHERE thread_id=?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map(params![tid], |r| {
         let citations_json: Option<String> = r.get(2)?;
+        let retrieval_json: Option<String> = r.get(4)?;
         Ok(ChatMsg {
             role: r.get(0)?,
             text: r.get(1)?,
@@ -1655,6 +1672,9 @@ pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<Cha
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default(),
             created_at: r.get(3)?,
+            retrieval: retrieval_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -4718,6 +4738,37 @@ pub fn sprint_plan(
 mod tests {
     use super::*;
     use crate::db::AppState;
+
+    /// 0044: retrieval accounting must survive the save/load roundtrip, and
+    /// rows written without it (user/system, pre-0044) must read back as None.
+    #[test]
+    fn chat_retrieval_meta_persists() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        let meta = crate::models::RetrievalMeta {
+            hits: 3,
+            scope: "subject".into(),
+            abstained: false,
+        };
+        add_chat_message_full(&c, &sid, "assistant", "回答 [1]", &[], Some(&meta)).unwrap();
+        add_chat_message_full(
+            &c,
+            &sid,
+            "assistant",
+            "零命中回答",
+            &[],
+            Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true }),
+        )
+        .unwrap();
+        let msgs = list_chat_messages(&c, &sid).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[0].retrieval.is_none(), "user row has no retrieval");
+        assert_eq!(msgs[1].retrieval.as_ref().unwrap().hits, 3);
+        assert_eq!(msgs[2].retrieval.as_ref().unwrap().hits, 0);
+        assert!(msgs[2].retrieval.as_ref().unwrap().abstained);
+    }
 
     #[test]
     fn subject_topic_source_tree_roundtrips() {

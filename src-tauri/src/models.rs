@@ -134,6 +134,22 @@ pub struct Citation {
     pub cited: bool,
 }
 
+/// How much of the library an answer actually consulted — persisted per
+/// assistant message so a session can report a retrieval rate and history can
+/// badge ungrounded answers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RetrievalMeta {
+    /// Number of passages retrieved (0 = nothing was found / not consulted).
+    #[serde(default)]
+    pub hits: i64,
+    /// "subject" | "topic" | "source" | "sources" | "none"
+    #[serde(default)]
+    pub scope: String,
+    /// True when retrieval came back empty and the answer is ungrounded.
+    #[serde(default)]
+    pub abstained: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatAnswer {
     pub text: String,
@@ -154,6 +170,9 @@ pub struct ChatAnswer {
     /// set — fabricated citations, removed from the text before it is shown.
     #[serde(default)]
     pub fabricated_dropped: usize,
+    /// Retrieval accounting for this answer (persisted with the message).
+    #[serde(default)]
+    pub retrieval: RetrievalMeta,
 }
 
 /// A persisted chat message (belongs to one conversation thread).
@@ -164,6 +183,9 @@ pub struct ChatMsg {
     #[serde(default)]
     pub citations: Vec<Citation>,
     pub created_at: i64,
+    /// NULL for user/system rows and for pre-0044 messages.
+    #[serde(default)]
+    pub retrieval: Option<RetrievalMeta>,
 }
 
 // ---- knowledge framework / mastery -----------------------------------

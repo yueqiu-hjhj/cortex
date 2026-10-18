@@ -560,11 +560,14 @@ class AppStore {
     text: string,
     images: api.WebImage[],
     sugg: string[],
-    citations: api.Citation[]
+    citations: api.Citation[],
+    retrieval?: api.RetrievalMeta
   ) {
     this.chatLastImages = images;
     this.chatSuggestions = sugg;
-    api.addChatMessage(subjectId, "assistant", text, citations).catch(() => {}); // persist
+    // retrieval rides along so the session can show a retrieval rate and
+    // history can badge ungrounded answers (0044).
+    api.addChatMessage(subjectId, "assistant", text, citations, retrieval).catch(() => {}); // persist
     this.chatMsgNonce++;
   }
 
@@ -601,7 +604,7 @@ class AppStore {
         this.#chatTypeIv = setInterval(() => {
           if (this.#chatCancelled) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations);
+            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations, result.retrieval);
             resolve();
             return;
           }
@@ -609,7 +612,7 @@ class AppStore {
           this.chatStreaming = body.slice(0, i);
           if (i >= body.length) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body, imgs, sugg, citations);
+            this.#finishAssistant(subjectId, body, imgs, sugg, citations, result.retrieval);
             resolve();
           }
           // ~30fps (6 chars/33ms) reveals at the same speed as 3 chars/16ms but
