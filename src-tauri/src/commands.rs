@@ -2616,7 +2616,7 @@ pub async fn generate_cheatsheet(
 ) -> Result<CheatsheetData> {
     tauri::async_runtime::spawn_blocking(move || -> Result<CheatsheetData> {
     let state = app.state::<AppState>();
-    let (bucket, subject_name, topic_name, spec, keys, style, searxng) = {
+    let (bucket, subject_name, topic_name, spec, keys, style, searxng, offline_llm) = {
         let c = state.db.lock().unwrap();
         let subj = repo::get_subject(&c, &subject_id)?;
         let tname = match topic_id.as_deref() {
@@ -2648,11 +2648,15 @@ pub async fn generate_cheatsheet(
         }
         let spec =
             repo::get_setting(&c, "model_cheatsheet")?.unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
-        guard_offline_llm(&c, &spec)?;
-        (bucket, subj.name, tname, spec, read_keys(&c)?, style_instruction(&c), searxng_base(&c)?)
+        // Studio deterministic fallback (P0 #3): offline / no model is NOT a hard
+        // error anymore — the deterministic artifact takes over below.
+        let offline_llm = guard_offline_llm(&c, &spec).is_err();
+        (bucket, subj.name, tname, spec, read_keys(&c)?, style_instruction(&c), searxng_base(&c)?, offline_llm)
     };
-    let mut model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
-    { let c = state.db.lock().unwrap(); apply_budget(&mut model, &c, "cheatsheet"); }
+    let mut model_opt = if offline_llm { None } else { llm::from_spec_or_any(&spec, &keys) };
+    if let Some(m) = &mut model_opt {
+        { let c = state.db.lock().unwrap(); apply_budget(m, &c, "cheatsheet"); }
+    }
     if bucket.is_empty() {
         return Err(Error::Other(
             "No source text to synthesize from — add and ingest a source first.".into(),
@@ -2741,7 +2745,30 @@ pub async fn generate_cheatsheet(
     } else {
         format!("{subject_name} › General (ungrouped sources)")
     };
-    let (mut sections, sources_used) = synthesize_bucket(model.as_ref(), system, &scope, &bucket)?;
+    // Model label the cheatsheet records — deterministic fallback states the
+    // truth instead of pretending a model wrote it.
+    let mut model_label = String::new();
+    let (mut sections, sources_used) = match &model_opt {
+        Some(m) => match synthesize_bucket(m.as_ref(), system, &scope, &bucket) {
+            Ok(v) => {
+                model_label = m.name().to_string();
+                v
+            }
+            Err(_) => {
+                model_label = crate::fallback::MODEL_LABEL.to_string();
+                (crate::fallback::sections(&bucket), 0i64)
+            }
+        },
+        None => {
+            model_label = crate::fallback::MODEL_LABEL.to_string();
+            (crate::fallback::sections(&bucket), 0i64)
+        }
+    };
+    if sections.is_empty() {
+        return Err(Error::Other(
+            "No study material could be extracted from the sources — try adding richer text.".into(),
+        ));
+    }
 
     // Illustrate only the sections the synthesis model flagged as genuinely
     // needing a diagram (image_query set) — so we don't burn a web search on
@@ -2770,12 +2797,13 @@ pub async fn generate_cheatsheet(
         repo::snapshot_cheatsheet_version(&c, &subject_id, topic_id.as_deref(), &sections, "generated")?;
     }
 
+    let _ = &system;
     Ok(CheatsheetData {
         subject: subject_name,
         topic: topic_name,
         sources,
         sources_used,
-        model: model.name(),
+        model: model_label,
         sections,
     })
     })

@@ -35,6 +35,7 @@ pub mod ics;
 pub mod mcp_server;
 pub mod pkg;
 pub mod note_links;
+pub mod fallback;
 pub mod xmind;
 pub mod wiki;
 pub mod cross_book;

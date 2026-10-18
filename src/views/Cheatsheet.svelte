@@ -97,6 +97,7 @@
   let cheatTopic = $state<string>("");
   let sourceCount = $state<number>(0);
   let sourcesUsed = $state<number>(0); // sources actually synthesized (coverage)
+  let deterministic = $state(false);
   let hasCheatsheet = $state(false); // true = a real stored cheatsheet is loaded
   let loading = $state(false);
 
@@ -120,6 +121,9 @@
 
   // Apply a freshly-loaded cheatsheet to local view state.
   function applyCheatsheet(data: CheatsheetData) {
+    // Deterministic fallback badge: the backend marks sheets built without a
+    // model (offline / no key / schema failure) instead of hiding the downgrade.
+    deterministic = (data.model ?? "").startsWith("deterministic");
     sections = data.sections;
     cheatTopic = data.topic;
     sourceCount = data.sources;
@@ -141,6 +145,7 @@
         ? (sub?.name ?? "")
         : (sub?.topics.find((t) => t.id === selectedTopicId)?.name ?? "");
     hasCheatsheet = false;
+    deterministic = false;
     app.pending = 0;
   }
 
@@ -715,7 +720,11 @@
             <div class="eyebrow">
               Cheatsheet · {selectedTopicId === null ? "Whole subject" : "Topic"}
             </div>
-            <h1 class="cs-title">{cheatTopic}</h1>
+            <h1 class="cs-title">{cheatTopic}
+              {#if deterministic}
+                <span class="cs-det-badge" title="模型不可用，这份内容由本地确定性流程从原文提取（大纲 + 定义 + 关键句），未经模型改写">确定性产物 · 未用模型</span>
+              {/if}
+            </h1>
             <div class="cs-sub mono">
               {sub.name}{sub.code ? " · " + sub.code : ""} ·
               {#if sourcesUsed < sourceCount}
@@ -1503,4 +1512,30 @@
   .cs-sheet-item { padding-left: 26px; font-size: var(--t-sm); color: var(--fg-muted); }
   .cs-sheet-sec:active,
   .cs-sheet-item:active { background: var(--surface-2); }
+
+  .cs-det-badge {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    vertical-align: middle;
+    color: var(--warn);
+    background: color-mix(in oklab, var(--warn) 14%, transparent);
+    border: 1px solid color-mix(in oklab, var(--warn) 45%, transparent);
+  }
+
+  .cs-det-badge {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    vertical-align: middle;
+    color: var(--warn);
+    background: color-mix(in oklab, var(--warn) 14%, transparent);
+    border: 1px solid color-mix(in oklab, var(--warn) 45%, transparent);
+  }
 </style>
