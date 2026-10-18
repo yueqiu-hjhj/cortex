@@ -291,7 +291,9 @@ pub fn execute_run(
 
     for _step in 0..agent.max_steps.max(1) {
         // Transcript = every message so far, including tool results.
-        let history: Vec<(String, String)> = crate::agents::list_messages(c, user_id, run_id, 400)?
+        // Thread-aware transcript: switching agents mid-conversation keeps
+        // every earlier agent's messages as this run's context (0047).
+        let history: Vec<(String, String)> = crate::agents::history_for_run(c, user_id, run_id, 400)?
             .into_iter()
             .map(|m| (m.role, m.content))
             .collect();

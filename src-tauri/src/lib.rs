@@ -485,6 +485,8 @@ pub fn run() {
             commands::recovery_purge,
             commands::backfill_chunk_offsets,
             commands::export_draft_tex,
+            commands::agents_switch_agent,
+            commands::agents_thread_messages,
             commands::export_calendar_ics,
             commands::pkg_export,
             commands::pkg_verify,

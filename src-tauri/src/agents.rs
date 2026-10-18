@@ -44,6 +44,9 @@ pub struct AgentRun {
     pub steps: i64,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+    /// Shared-conversation id (0047). Empty = legacy ungrouped run.
+    #[serde(default)]
+    pub thread_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +57,11 @@ pub struct AgentMessage {
     pub content: String,
     pub tool_name: Option<String>,
     pub created_at: i64,
+    /// Set for thread queries (0047): which agent produced this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,16 +161,46 @@ pub fn delete_agent(conn: &Connection, user_id: &str, id: &str) -> Result<()> {
 }
 
 pub fn start_run(conn: &Connection, user_id: &str, agent_id: &str, input: &str) -> Result<AgentRun> {
+    start_run_in_thread(conn, user_id, agent_id, input, None)
+}
+
+/// Start a run; `thread_id` joins an existing shared conversation (any agent's
+/// messages in it become this run's context). None = a fresh ungrouped run.
+pub fn start_run_in_thread(
+    conn: &Connection,
+    user_id: &str,
+    agent_id: &str,
+    input: &str,
+    thread_id: Option<&str>,
+) -> Result<AgentRun> {
     if input.trim().is_empty() { return Err(Error::Other("run input is empty".into())); }
     let agent = get_agent(conn, user_id, agent_id)?;
     if !agent.enabled { return Err(Error::Other("agent is disabled".into())); }
+    // Thread must belong to this user (checked via its first run).
+    let thread = match thread_id.filter(|t| !t.trim().is_empty()) {
+        Some(t) => {
+            let owner: Option<String> = conn
+                .query_row(
+                    "SELECT user_id FROM agent_runs WHERE thread_id=?1 LIMIT 1",
+                    [t],
+                    |r| r.get(0),
+                )
+                .ok();
+            match owner {
+                Some(u) if u == user_id => t.to_string(),
+                Some(_) => return Err(Error::NotFound(format!("thread {t}"))),
+                None => t.to_string(), // fresh thread id — first run defines it
+            }
+        }
+        None => String::new(),
+    };
     let id = crate::db::new_id();
     let now = crate::db::now_ms();
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO agent_runs (id, agent_id, user_id, status, input, started_at)
-         VALUES (?1,?2,?3,'pending',?4,?5)",
-        params![id, agent.id, user_id, input, now],
+        "INSERT INTO agent_runs (id, agent_id, user_id, status, input, started_at, thread_id)
+         VALUES (?1,?2,?3,'pending',?4,?5,?6)",
+        params![id, agent.id, user_id, input, now, thread],
     )?;
     tx.execute(
         "INSERT INTO agent_messages (id, run_id, role, content, created_at)
@@ -171,7 +209,8 @@ pub fn start_run(conn: &Connection, user_id: &str, agent_id: &str, input: &str) 
     )?;
     tx.commit()?;
     Ok(AgentRun { id, agent_id: agent.id, user_id: user_id.into(), status: "pending".into(),
-        input: input.into(), result: None, error: None, steps: 0, started_at: now, finished_at: None })
+        input: input.into(), result: None, error: None, steps: 0, started_at: now, finished_at: None,
+        thread_id: thread })
 }
 
 pub fn append_message(conn: &Connection, run_id: &str, role: &str, content: &str, tool_name: Option<&str>) -> Result<()> {
@@ -200,7 +239,7 @@ pub fn finish_run(conn: &Connection, run_id: &str, status: &str, result: Option<
 
 pub fn list_runs(conn: &Connection, user_id: &str, limit: i64) -> Result<Vec<AgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, finished_at
+        "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, finished_at, thread_id
            FROM agent_runs WHERE user_id=?1 ORDER BY started_at DESC LIMIT ?2"
     )?;
     let rows = stmt.query_map(params![user_id, limit], |r| {
@@ -208,6 +247,7 @@ pub fn list_runs(conn: &Connection, user_id: &str, limit: i64) -> Result<Vec<Age
             id: r.get(0)?, agent_id: r.get(1)?, user_id: r.get(2)?,
             status: r.get(3)?, input: r.get(4)?, result: r.get(5)?, error: r.get(6)?,
             steps: r.get(7)?, started_at: r.get(8)?, finished_at: r.get(9)?,
+            thread_id: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
         })
     })?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
@@ -228,9 +268,77 @@ pub fn list_messages(conn: &Connection, user_id: &str, run_id: &str, limit: i64)
         Ok(AgentMessage {
             id: r.get(0)?, run_id: r.get(1)?, role: r.get(2)?,
             content: r.get(3)?, tool_name: r.get(4)?, created_at: r.get(5)?,
+            agent_id: None, agent_name: None,
         })
     })?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
+}
+
+/// Every message in a shared conversation (all runs of the thread), oldest
+/// first, with agent attribution — the multi-agent shared-context transcript.
+pub fn thread_messages(
+    conn: &Connection,
+    user_id: &str,
+    thread_id: &str,
+    limit: i64,
+) -> Result<Vec<AgentMessage>> {
+    if thread_id.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    // Ownership via any run of the thread.
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM agent_runs WHERE thread_id=?1 LIMIT 1",
+            [thread_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if owner.as_deref() != Some(user_id) {
+        return Err(Error::NotFound(format!("thread {thread_id}")));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.run_id, m.role, m.content, m.tool_name, m.created_at,
+                r.agent_id, a.name
+           FROM agent_messages m
+           JOIN agent_runs r ON r.id = m.run_id
+           LEFT JOIN agents a ON a.id = r.agent_id
+          WHERE r.thread_id = ?1
+          ORDER BY m.created_at ASC
+          LIMIT ?2"
+    )?;
+    let rows = stmt
+        .query_map(params![thread_id, limit], |r| {
+            Ok(AgentMessage {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                role: r.get(2)?,
+                content: r.get(3)?,
+                tool_name: r.get(4)?,
+                created_at: r.get(5)?,
+                agent_id: r.get(6)?,
+                agent_name: r.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// The context a run's loop actually reads: the whole thread when the run
+/// belongs to one (switch-agent keeps context), otherwise just its own
+/// messages (legacy ungrouped runs).
+pub fn history_for_run(conn: &Connection, user_id: &str, run_id: &str, limit: i64) -> Result<Vec<AgentMessage>> {
+    let thread: Option<String> = conn
+        .query_row(
+            "SELECT r.thread_id FROM agent_runs r WHERE r.id=?1 AND r.user_id=?2",
+            params![run_id, user_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    match thread.filter(|t| !t.is_empty()) {
+        Some(t) => thread_messages(conn, user_id, &t, limit),
+        None => list_messages(conn, user_id, run_id, limit),
+    }
 }
 
 pub fn list_skills(conn: &Connection, user_id: &str) -> Result<Vec<Skill>> {
@@ -319,6 +427,46 @@ fn parse_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         created_at: r.get(11)?, updated_at: r.get(12)?,
     })
 }
+
+
+    #[test]
+    fn thread_links_runs_and_shares_context_across_agents() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let a = upsert_agent(&c, "u1", None, "课程助教", Some("tutor"), "p", &[], &[], None, 0.5, 8, true).unwrap();
+        let b = upsert_agent(&c, "u1", None, "复习教练", Some("coach"), "p", &[], &[], None, 0.5, 8, true).unwrap();
+
+        // Agent A opens the thread.
+        let r1 = start_run(&c, "u1", &a.id, "特征值是什么？").unwrap();
+        assert_eq!(r1.thread_id, "", "legacy start_run stays ungrouped");
+        // Explicit thread id: the first run DEFINED it (we pass the run's own id prefix? no —
+        // a caller-generated id); here we use the run's id as the thread handle.
+        let thread = "th-1";
+        let r2 = start_run_in_thread(&c, "u1", &a.id, "特征值是什么？", Some(thread)).unwrap();
+        let r3 = start_run_in_thread(&c, "u1", &b.id, "换成复习教练：刚才的内容怎么考？", Some(thread)).unwrap();
+        assert_eq!(r3.thread_id, thread);
+        assert_ne!(r3.agent_id, a.id);
+
+        // The transcript holds BOTH agents' messages, oldest first, attributed.
+        let msgs = thread_messages(&c, "u1", thread, 100).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].agent_id.as_deref(), Some(a.id.as_str()));
+        assert_eq!(msgs[0].agent_name.as_deref(), Some("课程助教"));
+        assert_eq!(msgs[1].agent_id.as_deref(), Some(b.id.as_str()));
+        assert_eq!(msgs[1].content, "换成复习教练：刚才的内容怎么考？");
+
+        // The second run's CONTEXT is the whole thread — the coach sees the tutor.
+        let hist = history_for_run(&c, "u1", &r3.id, 100).unwrap();
+        assert_eq!(hist.len(), 2);
+        assert!(hist.iter().any(|m| m.content.contains("特征值是什么？")));
+        // Legacy ungrouped run keeps its own messages only.
+        let hist1 = history_for_run(&c, "u1", &r1.id, 100).unwrap();
+        assert_eq!(hist1.len(), 1);
+        // Another user cannot read the thread.
+        assert!(thread_messages(&c, "u2", thread, 10).is_err());
+        // A thread owned by someone else cannot be joined.
+        assert!(start_run_in_thread(&c, "u2", &a.id, "x", Some(thread)).is_err());
+    }
 
 #[cfg(test)]
 mod tests {

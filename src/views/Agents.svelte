@@ -73,15 +73,17 @@
     try {
       // Create the run first so the transcript is visible while the loop
       // works, then execute it and poll messages as steps land.
-      const run = await api.agentsStartRun(agent.id, newInput);
+      const run = await api.agentsStartRun(agent.id, newInput, continueThread ? (activeThread ?? undefined) : undefined);
       newInput = "";
       selectedRun = run;
-      messages = await api.agentsListMessages(run.id, 200);
+      messages = run.thread_id
+        ? await api.agentsThreadMessages(run.thread_id, 300)
+        : await api.agentsListMessages(run.id, 200);
       runningRunId = run.id;
       const finished = api.agentsExecuteRun(agent.id, run.input, run.id);
       while (runningRunId === run.id) {
         await new Promise((r) => setTimeout(r, 1500));
-        try { messages = await api.agentsListMessages(run.id, 200); } catch { /* mid-run */ }
+        try { messages = activeThread ? await api.agentsThreadMessages(activeThread, 300) : await api.agentsListMessages(run.id, 200); } catch { /* mid-run */ }
         const rs = await api.agentsListRuns(50).catch(() => []);
         const now = rs.find((x) => x.id === run.id);
         if (now && now.status !== "pending") {
@@ -90,7 +92,7 @@
         }
       }
       await finished;
-      messages = await api.agentsListMessages(run.id, 200);
+      messages = activeThread ? await api.agentsThreadMessages(activeThread, 300) : await api.agentsListMessages(run.id, 200);
       await load();
       app.pushToast({ kind: "success", title: "运行完成", body: agent.name });
     } catch (e) {
@@ -129,8 +131,46 @@
 
   async function showRun(run: api.AgentRun) {
     selectedRun = run;
-    try { messages = await api.agentsListMessages(run.id, 200); }
-    catch (e) { app.pushToast({ kind: "error", title: String(e) }); }
+    try {
+      // Shared thread? Then show the whole conversation (all agents) — the
+      // multi-agent shared-context transcript (0047).
+      messages = run.thread_id
+        ? await api.agentsThreadMessages(run.thread_id, 300)
+        : await api.agentsListMessages(run.id, 200);
+    } catch (e) { app.pushToast({ kind: "error", title: String(e) }); }
+  }
+
+  /** The open conversation's thread (null = none selected / legacy run). */
+  const activeThread = $derived(selectedRun?.thread_id || null);
+
+  // "继续此线程": when on, the next run from the composer joins the open
+  // thread (same conversation, any agent), keeping all earlier context.
+  let continueThread = $state(false);
+
+  /** Switch agent mid-conversation: same thread, new agent, context kept. */
+  async function switchAgent(agent: api.Agent) {
+    if (!activeThread || !newInput.trim() || runningRunId) return;
+    busy = true;
+    try {
+      const run = await api.agentsSwitchAgent(agent.id, activeThread, newInput.trim());
+      newInput = "";
+      selectedRun = run;
+      messages = await api.agentsThreadMessages(activeThread, 300);
+      runningRunId = run.id;
+      void api.agentsExecuteRun(agent.id, run.input, run.id);
+      while (runningRunId === run.id) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try { messages = await api.agentsThreadMessages(activeThread, 300); } catch { /* mid-run */ }
+        const rs = await api.agentsListRuns(50).catch(() => []);
+        const now = rs.find((x) => x.id === run.id);
+        if (now && now.status !== "pending") { selectedRun = now; break; }
+      }
+      messages = await api.agentsThreadMessages(activeThread, 300);
+      await load();
+      app.pushToast({ kind: "success", title: "运行完成", body: `${agent.name} · 上下文已保留` });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "切换运行失败", body: String(e) });
+    } finally { runningRunId = null; busy = false; }
   }
 </script>
 
@@ -201,6 +241,16 @@
       <select class="input" value={runAgentId} onchange={(e) => runAgentId = (e.target as HTMLSelectElement).value}>
         {#each agents as a}<option value={a.id}>{a.name}</option>{/each}
       </select>
+      <label class="thr-check" title="勾选后，下一次运行加入当前打开的共享线程（任何智能体，此前全部消息都是上下文）">
+        <input type="checkbox" checked={continueThread} disabled={!activeThread}
+               onchange={(e) => (continueThread = (e.target as HTMLInputElement).checked)} />
+        继续此线程
+      </label>
+      <label class="thr-check" title="勾选后，下一次运行加入当前打开的共享线程（任何智能体，此前全部消息都是上下文）">
+        <input type="checkbox" checked={continueThread} disabled={!activeThread}
+               onchange={(e) => (continueThread = (e.target as HTMLInputElement).checked)} />
+        继续此线程
+      </label>
       <button class="btn primary" disabled={busy || runningRunId !== null || !newInput.trim() || !runAgentId} onclick={() => {
         const a = agents.find((x) => x.id === runAgentId); if (a) void startRun(a);
       }}>{runningRunId ? "运行中…" : "开始"}</button>
@@ -227,13 +277,25 @@
         {/if}
       </div>
       <div>
-        <h4>对话记录</h4>
+        <h4>对话记录{#if activeThread} · 共享线程{/if}</h4>
         {#if !selectedRun}<div class="mut">选一条记录查看完整过程。</div>
         {:else}
+          {#if activeThread}
+            <!-- Multi-agent shared context (0047): switch agents mid-thread. -->
+            <div class="thr-switch">
+              <span class="mut mono">切换智能体继续此线程（上下文保留）：</span>
+              {#each agents.filter((a) => a.id !== selectedRun?.agent_id) as a}
+                <button class="btn btn--sm" disabled={runningRunId !== null || !newInput.trim()}
+                        title={`用 ${a.name} 在此线程里回答上方输入`} onclick={() => void switchAgent(a)}>
+                  {a.name}
+                </button>
+              {/each}
+            </div>
+          {/if}
           <ol class="msgs">
             {#each messages as m}
               <li class={"msg " + m.role}>
-                <div class="mut mono">{m.role}{m.tool_name ? ` · ${m.tool_name}` : ""}</div>
+                <div class="mut mono">{m.role}{m.agent_name ? ` · ${m.agent_name}` : ""}{m.tool_name ? ` · ${m.tool_name}` : ""}</div>
                 <div>{m.content}</div>
               </li>
             {/each}
@@ -310,4 +372,10 @@
   .ag-list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); }
   .ag-list strong { color: var(--fg-bright); margin-right: 8px; }
   .ag-list .mut { margin-left: 8px; }
+  .thr-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--fg-muted); cursor: pointer; }
+  .thr-switch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; margin-bottom: 6px;
+    background: color-mix(in oklab, var(--accent) 6%, transparent); border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent); border-radius: 6px; }
+  .thr-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--fg-muted); cursor: pointer; }
+  .thr-switch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; margin-bottom: 6px;
+    background: color-mix(in oklab, var(--accent) 6%, transparent); border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent); border-radius: 6px; }
 </style>

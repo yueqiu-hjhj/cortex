@@ -453,10 +453,15 @@ export interface AgentRun {
   id: string; agent_id: string; user_id: string; status: string;
   input: string; result: string | null; error: string | null;
   steps: number; started_at: number; finished_at: number | null;
+  /** Shared-conversation id (0047). "" = legacy ungrouped run. */
+  thread_id?: string;
 }
 export interface AgentMessage {
   id: string; run_id: string; role: string; content: string;
   tool_name: string | null; created_at: number;
+  /** Set for thread queries (0047): which agent produced this message. */
+  agent_id?: string | null;
+  agent_name?: string | null;
 }
 export const agentsList = () => invoke<Agent[]>("agents_list", {});
 export const agentsUpsert = (
@@ -465,7 +470,14 @@ export const agentsUpsert = (
   max_steps: number, enabled: boolean
 ) => invoke<Agent>("agents_upsert", { id, name, description, systemPrompt: system_prompt, skills, tools, model, temperature, maxSteps: max_steps, enabled });
 export const agentsDelete = (id: string) => invoke<void>("agents_delete", { id });
-export const agentsStartRun = (agentId: string, input: string) => invoke<AgentRun>("agents_start_run", { agentId, input });
+export const agentsStartRun = (agentId: string, input: string, threadId?: string) =>
+  invoke<AgentRun>("agents_start_run", { agentId, input, threadId });
+/** Switch agent mid-conversation: same shared thread, context kept (0047). */
+export const agentsSwitchAgent = (agentId: string, threadId: string, input: string) =>
+  invoke<AgentRun>("agents_switch_agent", { agentId, threadId, input });
+/** The shared-conversation transcript (all agents, attributed). */
+export const agentsThreadMessages = (threadId: string, limit?: number) =>
+  invoke<AgentMessage[]>("agents_thread_messages", { threadId, limit });
 /** Execute a run to completion: the tool loop runs on the backend (bounded by
  *  the agent's max_steps) and the finished run comes back. Pass `runId` (from
  *  agentsStartRun) to execute an already-created run so the UI can poll its

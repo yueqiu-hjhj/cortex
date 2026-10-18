@@ -5933,9 +5933,54 @@ pub fn agents_delete(state: State<AppState>, id: String) -> Result<()> {
     crate::agents::delete_agent(&c, crate::agents::DEFAULT_USER, &id)
 }
 #[tauri::command]
-pub fn agents_start_run(state: State<AppState>, agent_id: String, input: String) -> Result<crate::agents::AgentRun> {
+pub fn agents_start_run(
+    state: State<AppState>,
+    agent_id: String,
+    input: String,
+    thread_id: Option<String>,
+) -> Result<crate::agents::AgentRun> {
     let c = state.db.lock().unwrap();
-    crate::agents::start_run(&c, crate::agents::DEFAULT_USER, &agent_id, &input)
+    crate::agents::start_run_in_thread(
+        &c,
+        crate::agents::DEFAULT_USER,
+        &agent_id,
+        &input,
+        thread_id.as_deref(),
+    )
+}
+
+/// Switch agent mid-conversation: start this agent's run INSIDE the same
+/// shared thread — every earlier message (any agent) is the context (0047).
+#[tauri::command]
+pub fn agents_switch_agent(
+    state: State<AppState>,
+    agent_id: String,
+    thread_id: String,
+    input: String,
+) -> Result<crate::agents::AgentRun> {
+    if thread_id.trim().is_empty() {
+        return Err(Error::Other("thread_id is required".into()));
+    }
+    let c = state.db.lock().unwrap();
+    crate::agents::start_run_in_thread(
+        &c,
+        crate::agents::DEFAULT_USER,
+        &agent_id,
+        &input,
+        Some(&thread_id),
+    )
+}
+
+/// The shared-conversation transcript (all agents' messages, oldest first,
+/// with agent attribution).
+#[tauri::command]
+pub fn agents_thread_messages(
+    state: State<AppState>,
+    thread_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<crate::agents::AgentMessage>> {
+    let c = state.db.lock().unwrap();
+    crate::agents::thread_messages(&c, crate::agents::DEFAULT_USER, &thread_id, limit.unwrap_or(400))
 }
 
 /// Execute an agent run to completion: the bounded tool loop (see
