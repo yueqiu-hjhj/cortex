@@ -815,6 +815,40 @@ export interface ProviderInfo {
 }
 export const listProviders = () => invoke<ProviderInfo[]>("list_providers");
 
+/** plugins/*.json manifests — the contributor entry point. Providers merge into
+ *  the model dropdowns, material_types into the generator presets, leader_keys
+ *  into the Space menu. A manifest can contribute data, never code. */
+export interface PluginProvider {
+  id: string;
+  label: string;
+  base_url: string;
+  key_note: string;
+  embed_model: string | null;
+  embed_dim: number | null;
+  chat_models: [string, string][];
+}
+export interface PluginMaterialType {
+  id: string;
+  label: string;
+  base_kind: string;
+  prompt: string;
+}
+export interface PluginLeaderKey {
+  key: string;
+  label: string;
+  detail: string;
+  view: string;
+}
+export interface Plugin {
+  name: string;
+  file: string;
+  providers: PluginProvider[];
+  material_types: PluginMaterialType[];
+  leader_keys: PluginLeaderKey[];
+}
+export interface PluginList { plugins: Plugin[]; errors: string[] }
+export const pluginsList = () => invoke<PluginList>("plugins_list");
+
 // ---- Google Calendar (OAuth + sync) ----
 export interface GoogleStatus {
   connected: boolean;
@@ -1822,6 +1856,65 @@ export const generateDraft = (excerptIds: string[], title?: string, customPrompt
 export const draftList = () => invoke<ResearchDraft[]>("draft_list");
 export const draftDelete = (id: string) => invoke<void>("draft_delete", { id });
 
+// ---- office export + edit-back (A2/A3) --------------------------------------
+
+/** Material → Word (.docx) at `dest`, rendered from the stored payload. */
+export const exportMaterialDocx = (materialId: string, dest: string) =>
+  invoke<void>("export_material_docx", { materialId, dest });
+/** Material → Excel (.xlsx) with formulas + charts where the kind supports them. */
+export const exportMaterialXlsx = (materialId: string, dest: string) =>
+  invoke<void>("export_material_xlsx", { materialId, dest });
+/** Material → PowerPoint (.pptx) deck (cover + content slides). */
+export const exportMaterialPptx = (materialId: string, dest: string) =>
+  invoke<void>("export_material_pptx", { materialId, dest });
+/** Research draft → Word (.docx) with citation numbers and the reference table. */
+export const exportDraftDocx = (draftId: string, dest: string) =>
+  invoke<void>("export_draft_docx", { draftId, dest });
+
+/** Visible paragraph texts of an existing .docx (edit anchors match these). */
+export const docxReadParagraphs = (path: string) =>
+  invoke<string[]>("docx_read_paragraphs", { path });
+export interface DocxEdit {
+  anchor: string;
+  op: "insert_after" | "comment";
+  text: string;
+  comment: string;
+}
+export interface DocxEditOutcome {
+  applied: number;
+  skipped: string[];
+  output: string;
+}
+/** Write edits into an existing .docx as real Word tracked changes + comments
+ *  (always a NEW file at `output`). Returns applied/skipped counts. */
+export const docxApplyEdits = (path: string, output: string, author: string, edits: DocxEdit[]) =>
+  invoke<DocxEditOutcome>("docx_apply_edits", { path, output, author, edits });
+/** AI review: paragraphs → a previewed set of tracked-change edits. */
+export const docxReviewEdits = (path: string, instruction?: string) =>
+  invoke<DocxEdit[]>("docx_review_edits", { path, instruction: instruction ?? null });
+
+/** Concatenate PDFs, in order, into one file at `dest`. */
+export const pdfMerge = (paths: string[], dest: string) =>
+  invoke<void>("pdf_merge", { paths, dest });
+/** Split a PDF into one single-page file per page; returns the new file paths. */
+export const pdfSplit = (path: string, outDir: string, stem: string) =>
+  invoke<string[]>("pdf_split", { path, outDir, stem });
+/** Stamp a diagonal gray text watermark on every page (new file at `dest`). */
+export const pdfWatermark = (path: string, text: string, dest: string) =>
+  invoke<void>("pdf_watermark", { path, text, dest });
+export interface PdfField {
+  name: string;
+  kind: string;
+  value: string;
+  options: string[];
+}
+/** Enumerate AcroForm fields (text/checkbox/radio/choice) with current values. */
+export const pdfFormFields = (path: string) =>
+  invoke<PdfField[]>("pdf_form_fields", { path });
+/** Fill AcroForm fields; returns how many were actually set. */
+export const pdfFillForm = (path: string, values: [string, string][], dest: string) =>
+  invoke<number>("pdf_fill_form", { path, values, dest });
+
 // ---- plan vs actual (Insights) -------------------------------------------
 
 export interface PlanDayStat {
@@ -1883,3 +1976,18 @@ export interface Calibration {
 
 export const planCalibration = (days?: number) =>
   invoke<Calibration>("plan_calibration", { days: days ?? null });
+
+// ---- browser-extension clip server (A7) ----------------------------------
+// A loopback HTTP listener the manifest-V3 extension in `browser-extension/`
+// talks to while Cortex is running. Settings → Experimental shows the address.
+
+export interface ClipServerStatus {
+  /** True once the loopback listener bound successfully. */
+  running: boolean;
+  /** "127.0.0.1:<port>", or null when the server never started. */
+  addr: string | null;
+}
+
+/** Where (if anywhere) the browser-clip server is listening. */
+export const clipServerStatus = () =>
+  invoke<ClipServerStatus>("clip_server_status");

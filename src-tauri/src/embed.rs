@@ -302,7 +302,8 @@ pub fn from_settings(
     data_dir: Option<&std::path::Path>,
 ) -> Box<dyn Embedder> {
     // Registry providers resolve first — the bespoke arms below cover the ones
-    // with a non-OpenAI wire format.
+    // with a non-OpenAI wire format. Plugin providers (plugins/*.json) follow,
+    // with the same rule: chat-only endpoints are never offered for retrieval.
     if let Some(p) = crate::providers::find(provider) {
         if let (Some(k), Some(model)) = (keys.for_provider(p.id), p.embed_model) {
             return Box::new(OpenAiCompatEmbedder {
@@ -310,6 +311,17 @@ pub fn from_settings(
                 api_key: k.to_string(),
                 model: model.to_string(),
                 dim: 1024,
+            });
+        }
+        return Box::new(StubEmbedder);
+    }
+    if let Some(p) = crate::plugins::find_provider(provider) {
+        if let (Some(k), Some(model)) = (keys.for_provider(provider), p.embed_model) {
+            return Box::new(OpenAiCompatEmbedder {
+                base_url: p.base_url,
+                api_key: k.to_string(),
+                model,
+                dim: p.embed_dim.unwrap_or(1024).clamp(64, 4096) as usize,
             });
         }
         return Box::new(StubEmbedder);

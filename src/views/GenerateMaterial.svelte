@@ -66,9 +66,31 @@
   });
   const multi = $derived(topicNames.length > 1);
 
-  const tm = $derived(GEN_TYPES.find(t => t.id === type)!);
-  const suffixFor = (t: string) =>
-    ({ flashcards: " — flashcards", quiz: " — quiz", audio: " — deep dive", slideshow: " — slides", infographic: " — infographic", mindmap: " — mind map", matrix: " — comparison matrix", guide: " — study guide" } as Record<string, string>)[t] ?? "";
+  // Plugin-contributed material types (plugins/*.json): label + steering prompt
+  // for an EXISTING generator (base_kind). The dropdown shows them inline; the
+  // submit maps them back onto the built-in kind with the plugin's prompt.
+  let pluginTypes = $state<api.PluginMaterialType[]>([]);
+  $effect(() => {
+    api.pluginsList()
+      .then((pl) => { pluginTypes = pl.plugins.flatMap((p) => p.material_types); })
+      .catch(() => {});
+  });
+  type GenType = { id: string; label: string; ico: string; desc: string; color: string; plugin?: api.PluginMaterialType };
+  const allTypes = $derived<GenType[]>([
+    ...GEN_TYPES,
+    ...pluginTypes.map((t): GenType => ({
+      id: t.id, label: t.label, ico: "cards", color: "var(--mode-select)",
+      desc: `插件预设 · 运行${GEN_TYPES.find((g) => g.id === t.base_kind)?.label ?? t.base_kind}`,
+      plugin: t,
+    })),
+  ]);
+  const tm = $derived(allTypes.find(t => t.id === type));
+  const activePlugin = $derived(tm?.plugin ?? null);
+  const suffixFor = (t: string) => {
+    const plugin = pluginTypes.find((p) => p.id === t);
+    if (plugin) return ` — ${plugin.label}`;
+    return ({ flashcards: " — flashcards", quiz: " — quiz", audio: " — deep dive", slideshow: " — slides", infographic: " — infographic", mindmap: " — mind map", matrix: " — comparison matrix", guide: " — study guide" } as Record<string, string>)[t] ?? "";
+  };
   const suggested = $derived.by(() => {
     const suffix = suffixFor(type);
     if (selSources.length === 1) {
@@ -107,7 +129,11 @@
       return;
     }
 
-    const kind = type as JobKind;
+    // Plugin preset: run the built-in base_kind, steering it with the plugin's
+    // prompt (+ whatever the user typed on top).
+    const plugin = activePlugin;
+    const kind = (plugin?.base_kind ?? type) as JobKind;
+    const steerPrompt = [plugin?.prompt, customPrompt.trim()].filter(Boolean).join("\n\n");
     const subjectId = sub.id;
     const topicId = dominantTopicId;
     const matTitle = finalTitle || undefined;
@@ -116,7 +142,7 @@
 
     jobs.start({
       kind,
-      label: finalTitle || tm.label,
+      label: finalTitle || tm?.label || type,
       subjectId,
       topicId,
       run: () =>
@@ -125,7 +151,7 @@
           kind as "flashcards" | "quiz" | "audio" | "infographic" | "slideshow" | "mindmap" | "matrix" | "guide",
           topicId,
           matTitle,
-          customPrompt.trim() || undefined,
+          steerPrompt || undefined,
           sourceIds,
           count,
         ),
@@ -164,7 +190,7 @@
       <div class="gm2-block">
         <div class="onb-label mono">格式</div>
         <div class="gm2-formats">
-          {#each GEN_TYPES as t (t.id)}
+          {#each allTypes as t (t.id)}
             <button class="gm2-format{type === t.id ? ' on' : ''}" onclick={() => (type = t.id)}>
               <span class="gm2-format-ico" style:color={t.color}><Icon name={t.ico} size={16} /></span>
               <span class="gm2-format-txt">
@@ -278,7 +304,7 @@
   <div class="add-foot gm2-foot">
     <button class="btn btn--ghost" onclick={cancel}>取消</button>
     <button class="btn btn--primary" disabled={!ready} onclick={generate}>
-      <Icon name="bolt" size={13} /> 生成{tm.label}
+      <Icon name="bolt" size={13} /> 生成{tm?.label ?? type}
     </button>
   </div>
 </div>

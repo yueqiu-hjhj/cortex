@@ -630,19 +630,30 @@ pub fn from_spec(spec: &str, keys: &Keys) -> Option<Box<dyn Llm>> {
                 max_tokens: None,
             }) as Box<dyn Llm>)
         }
-        // Everything else comes from the registry, so a new provider is data
-        // rather than a new arm here.
-        other => crate::providers::find(other).and_then(|p| {
-            keys.for_provider(p.id).map(|k| {
+        // Everything else comes from the registry (built-in first, then the
+        // plugins/ manifests), so a new provider is data rather than a new arm
+        // here.
+        other => {
+            let resolved: Option<(String, String, &'static str)> = crate::providers::find(other)
+                .and_then(|p| keys.for_provider(p.id).map(|k| (p.base_url.to_string(), k.to_string(), p.id)));
+            let resolved = resolved.or_else(|| {
+                crate::plugins::find_provider(other).and_then(|p| {
+                    keys.for_provider(other).map(|k| {
+                        let label: &'static str = Box::leak(p.id.clone().into_boxed_str());
+                        (p.base_url, k.to_string(), label)
+                    })
+                })
+            });
+            resolved.map(|(base_url, k, label)| {
                 Box::new(OpenAiCompatLlm {
-                    base_url: p.base_url.to_string(),
-                    api_key: k.to_string(),
+                    base_url,
+                    api_key: k,
                     model,
-                    label: p.id,
+                    label,
                     max_tokens: None,
                 }) as Box<dyn Llm>
             })
-        }),
+        }
     }
 }
 

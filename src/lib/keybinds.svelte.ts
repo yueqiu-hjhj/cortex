@@ -75,8 +75,14 @@ export interface LeaderAction {
   key: string;
   label: string;
   detail: string;
+  /** When set (plugin-contributed entries), the action is "navigate to view". */
+  view?: string;
+  /** True for entries merged from plugins/*.json — shown in the help overlay. */
+  plugin?: boolean;
 }
-export const LEADER_ACTIONS: LeaderAction[] = [
+// $state (not a frozen const): plugins/*.json manifests append their leader_keys
+// at load, and the leader pane / help overlay render reactively from this array.
+export const LEADER_ACTIONS = $state<LeaderAction[]>([
   { key: "y", label: "Today",       detail: "what to do now" },
   { key: "w", label: "Plan",        detail: "week schedule" },
   { key: "u", label: "Research",    detail: "papers & excerpts" },
@@ -101,7 +107,18 @@ export const LEADER_ACTIONS: LeaderAction[] = [
   { key: "b", label: "Sidebar",     detail: "minimize / show navbar" },
   { key: ",", label: "Settings",    detail: "open preferences" },
   { key: "g", label: "Dashboard",   detail: "go to dashboard" },
-];
+]);
+
+/** Append plugin-contributed leader keys. Built-ins always win a key collision
+ *  (a plugin can extend the menu, never shadow it). View navigation only —
+ *  there is deliberately no way for a manifest to run arbitrary behavior. */
+export function mergePluginLeaderKeys(keys: api.PluginLeaderKey[]) {
+  for (const k of keys) {
+    if (!k.key || k.key.length !== 1 || !k.view.trim()) continue;
+    if (LEADER_ACTIONS.some((a) => a.key === k.key)) continue;
+    LEADER_ACTIONS.push({ key: k.key, label: k.label || k.key, detail: k.detail, view: k.view, plugin: true });
+  }
+}
 
 const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta", "AltGraph", "CapsLock", "ContextMenu"];
 const isModifier = (k: string) => MODIFIER_KEYS.includes(k);
@@ -147,6 +164,11 @@ class Keybinds {
     }
     const savedPreset = all["keybind_preset"] as Preset | undefined;
     this.preset = savedPreset ?? (anyCustom ? "custom" : "helix");
+    // Plugin leader keys (Space menu extras) — fire-and-forget; they only add
+    // menu entries, so a failure here costs nothing.
+    api.pluginsList()
+      .then((pl) => mergePluginLeaderKeys(pl.plugins.flatMap((p) => p.leader_keys)))
+      .catch(() => {});
   }
 
   /** Rebind a single action and persist it. Returns false (no change) if the

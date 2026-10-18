@@ -1,0 +1,29 @@
+{
+  "_comment": "把本文件复制到 <数据目录>/plugins/my-pack.json 并按需修改，重启 Cortex 生效。providers 必须是 OpenAI 兼容端点；material_types 复用内置生成器（base_kind ∈ quiz|flashcards|audio|cheatsheet|guide|matrix|mindmap|slideshow|infographic）并附加 prompt；leader_keys 只能跳转视图。",
+  "name": "示例插件包",
+  "providers": [
+    {
+      "id": "minimax",
+      "label": "MiniMax",
+      "base_url": "https://api.minimax.chat/v1",
+      "key_note": "platform.minimaxi.com → API Keys",
+      "chat_models": [
+        ["abab6.5s-chat", "abab6.5s — 主力"],
+        ["abab6.5g-chat", "abab6.5g"]
+      ],
+      "embed_model": "embo-01",
+      "embed_dim": 1024
+    }
+  ],
+  "material_types": [
+    {
+      "id": "mistake-analysis",
+      "label": "错题分析",
+      "base_kind": "guide",
+      "prompt": "请生成一份错题分析报告：逐题给出错误原因归类（概念混淆 / 计算失误 / 审题偏差）、对应的底层知识点、以及三道同考点变式练习。"
+    }
+  ],
+  "leader_keys": [
+    { "key": "x", "label": "错题本", "detail": "插件示例：跳转到洞察页", "view": "analytics" }
+  ]
+}

@@ -148,14 +148,17 @@ pub(crate) fn read_keys(c: &Connection) -> Result<llm::Keys> {
         // over Tailscale/public, not just on the LAN.
         ollama_url: crate::homelab::resolved_setting(c, "ollama_url"),
         // Registry providers: one settings row each, so adding a provider to
-        // providers.rs needs no change here.
+        // providers.rs needs no change here. Plugin providers follow the same
+        // convention (`<id>_api_key`).
         extra: crate::providers::PROVIDERS
             .iter()
-            .filter_map(|p| {
-                key(&crate::providers::key_setting(p.id))
+            .map(|p| p.id.to_string())
+            .chain(crate::plugins::all().iter().flat_map(|pl| pl.providers.iter().map(|p| p.id.clone())))
+            .filter_map(|id| {
+                key(&crate::providers::key_setting(&id))
                     .ok()
                     .flatten()
-                    .map(|k| (p.id.to_string(), k))
+                    .map(|k| (id, k))
             })
             .collect(),
     })
@@ -312,11 +315,15 @@ fn verify_provider_blocking(provider: &str, keys: &llm::Keys, ollama: Option<Str
             // Registry providers (DeepSeek, Qwen, GLM, Kimi, …) all speak the
             // OpenAI API, so one probe — GET <base>/models — covers the whole
             // table. Their keys live in the `extra` map under the provider id.
-            if let Some(p) = crate::providers::find(other) {
+            // Plugin providers get the same probe on their contributed base_url.
+            let base = crate::providers::find(other)
+                .map(|p| p.base_url.to_string())
+                .or_else(|| crate::plugins::find_provider(other).map(|p| p.base_url));
+            if let Some(base) = base {
                 match keys.for_provider(other).map(str::trim).filter(|s| !s.is_empty()) {
                     Some(k) => verify_outcome(
                         client
-                            .get(format!("{}/models", p.base_url))
+                            .get(format!("{base}/models"))
                             .header("Authorization", format!("Bearer {k}")),
                     ),
                     None => VerifyResult { ok: false, detail: "not set".into() },
@@ -342,7 +349,7 @@ pub struct ProviderInfo {
 
 #[tauri::command]
 pub fn list_providers() -> Vec<ProviderInfo> {
-    crate::providers::PROVIDERS
+    let mut out: Vec<ProviderInfo> = crate::providers::PROVIDERS
         .iter()
         .map(|p| ProviderInfo {
             id: p.id.into(),
@@ -355,7 +362,34 @@ pub fn list_providers() -> Vec<ProviderInfo> {
                 .map(|(id, label)| (id.to_string(), label.to_string()))
                 .collect(),
         })
-        .collect()
+        .collect();
+    // Plugin providers append after the built-ins; ids were validated
+    // non-colliding at load time, so no dedupe is needed here.
+    for p in crate::plugins::all().iter().flat_map(|pl| &pl.providers) {
+        out.push(ProviderInfo {
+            id: p.id.clone(),
+            label: p.label.clone(),
+            key_note: p.key_note.clone(),
+            embed_model: p.embed_model.clone(),
+            chat_models: p.chat_models.clone(),
+        });
+    }
+    out
+}
+
+/// The loaded plugins/ manifests plus any load errors, for the Settings card.
+#[derive(serde::Serialize)]
+pub struct PluginList {
+    pub plugins: Vec<crate::plugins::Plugin>,
+    pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub fn plugins_list(state: State<AppState>) -> PluginList {
+    if let Some(dir) = state.data_dir.as_deref() {
+        crate::plugins::ensure_loaded(dir);
+    }
+    PluginList { plugins: crate::plugins::all(), errors: crate::plugins::errors() }
 }
 
 /// Build a concise "About the user" + "Remembered facts" preamble from the
@@ -748,8 +782,10 @@ fn ocr_via_vision(state: &State<AppState>, kind: &str, path: Option<&str>) -> Re
     };
     let model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     let images: Vec<(String, String)> = if kind == "image" {
-        let bytes = std::fs::read(path)?;
-        vec![(ingest::image_mime(path).to_string(), llm::b64_encode(&bytes))]
+        // TIFF/BMP scans are re-encoded as PNG here — most vision APIs
+        // reject the raw formats.
+        let (mime, bytes) = ingest::image_for_ocr(path)?;
+        vec![(mime.to_string(), llm::b64_encode(&bytes))]
     } else {
         // Cap pages so OCR of a huge scan can't run unbounded (cost + time).
         ingest::pdf_page_images(path, 30)?
@@ -1185,13 +1221,29 @@ pub async fn add_source(
                 .unwrap_or("bin")
                 .to_lowercase();
             std::fs::create_dir_all(&sources_dir)?;
-            let dest = sources_dir.join(format!("{source_id}.{ext}"));
-            if let Err(e) = std::fs::copy(src_path, &dest) {
+            // TIFF/BMP originals aren't renderable in a browser <img> — store
+            // the PNG conversion instead so previews (and re-OCR) keep working.
+            let is_bitmap_scan = kind == "image" && matches!(ext.as_str(), "tiff" | "tif" | "bmp");
+            let dest = if is_bitmap_scan {
+                sources_dir.join(format!("{source_id}.png"))
+            } else {
+                sources_dir.join(format!("{source_id}.{ext}"))
+            };
+            let copy_res = if is_bitmap_scan {
+                match ingest::image_to_png(src_path) {
+                    Ok(bytes) => std::fs::write(&dest, &bytes).map_err(Error::Io),
+                    // Conversion failed — keep the original bytes anyway.
+                    Err(_) => std::fs::copy(src_path, &dest).map(|_| ()).map_err(Error::Io),
+                }
+            } else {
+                std::fs::copy(src_path, &dest).map(|_| ()).map_err(Error::Io)
+            };
+            if let Err(e) = copy_res {
                 let c = state.db.lock().unwrap();
                 let msg = format!("failed to store original file: {e}");
                 let _ = repo::finalize_source(&c, &source_id, "error", None, None, Some(&msg));
                 emit_progress(&app, &source_id, "error", &msg, 100);
-                return Err(Error::Io(e));
+                return Err(e);
             }
             if let Some(p) = dest.to_str() {
                 let c = state.db.lock().unwrap();
@@ -5332,6 +5384,113 @@ pub fn env_probe() -> Result<serde_json::Value> {
     }))
 }
 
+/// Finish ingestion for a source whose row (and raw text) already exist:
+/// chunk → embed → store chunks → finalize. Split out of `add_source` so the
+/// browser-extension clip server — which must answer HTTP immediately and
+/// therefore cannot run the ONNX embedder inline — can hand the slow half to a
+/// background thread and reuse exactly the same pipeline. Blocking; call it
+/// off the UI thread.
+pub(crate) fn finish_text_ingest(
+    app: &AppHandle,
+    source_id: &str,
+    subject_id: &str,
+    topic_id: Option<&str>,
+    text: &str,
+) -> Result<IngestResult> {
+    let state = app.state::<AppState>();
+    let chars = text.chars().count() as i64;
+
+    emit_progress(app, source_id, "chunking", "splitting text", 35);
+    let chunks = ingest::chunk_text(text, 900, 150);
+
+    emit_progress(
+        app,
+        source_id,
+        "embedding",
+        &format!("{} chunks", chunks.len()),
+        60,
+    );
+    let (provider, keys, ollama_url) = {
+        let c = state.db.lock().unwrap();
+        (
+            effective_embed_provider(&c),
+            read_keys(&c)?,
+            crate::homelab::resolved_setting(&c, "ollama_url"),
+        )
+    };
+    let embedder = embed::from_settings(
+        &provider,
+        &keys,
+        ollama_url.as_deref(),
+        state.data_dir.as_deref(),
+    );
+    let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+        Ok(v) => v,
+        Err(_) => {
+            // Never hard-fail ingestion on a bad key: fall back to the stub so
+            // the source still becomes searchable (lexically) offline.
+            emit_progress(
+                app,
+                source_id,
+                "embedding",
+                "provider failed → stub fallback",
+                60,
+            );
+            ingest::embed_chunks(&embed::StubEmbedder, &chunks)?
+        }
+    };
+    let dim = vectors
+        .first()
+        .map(|v| v.len())
+        .unwrap_or_else(|| embedder.dim()) as i64;
+
+    emit_progress(app, source_id, "storing", "writing vectors", 85);
+    let chunk_count = {
+        let mut c = state.db.lock().unwrap();
+        let tx = c.transaction()?;
+        // Re-ingesting in place must not double up the old vectors.
+        repo::clear_chunks(&tx, source_id)?;
+        for (i, (chunk, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
+            repo::insert_chunk(
+                &tx,
+                source_id,
+                subject_id,
+                topic_id,
+                i as i64,
+                chunk,
+                None,
+                dim,
+                &f32s_to_blob(vec),
+            )?;
+        }
+        let n = repo::count_chunks(&tx, source_id)?;
+        let status = if chunks.is_empty() { "draft" } else { "ready" };
+        let meta = if chunks.is_empty() {
+            "no extractable text".to_string()
+        } else {
+            format!("{n} chunks · {chars} chars · clipped")
+        };
+        repo::finalize_source(&tx, source_id, status, Some(&meta), Some(text), None)?;
+        tx.commit()?;
+        n
+    };
+
+    emit_progress(app, source_id, "done", "clipped", 100);
+    let source = {
+        let c = state.db.lock().unwrap();
+        repo::get_source(&c, source_id)?
+    };
+    Ok(IngestResult { source, chunk_count, chars, warning: None })
+}
+
+/// Whether the loopback browser-clip server is listening, and on which
+/// address. Settings → Experimental shows the address so the user knows what
+/// to point the browser extension at.
+#[tauri::command]
+pub fn clip_server_status() -> crate::clip_server::ClipServerStatus {
+    crate::clip_server::status()
+}
+
 #[cfg(test)]
 mod ocr_tests {
     use super::*;
@@ -6141,4 +6300,234 @@ pub async fn retrieval_eval(
 pub fn plan_calibration(state: State<AppState>, days: Option<i64>) -> Result<crate::planner::Calibration> {
     let c = state.db.lock().unwrap();
     crate::planner::calibration(&c, days.unwrap_or(60))
+}
+
+// ---- office: write AI results back into real Office files (A2/A3) --------
+// Materials and drafts are single invocations away from .docx/.xlsx/.pptx;
+// existing docx/pdf files get edit-back operations. All are file-heavy, so
+// each runs on the blocking pool like export_pdf above.
+
+fn meta_ref(m: &MaterialRec) -> Option<&str> {
+    if m.meta.is_empty() {
+        None
+    } else {
+        Some(m.meta.as_str())
+    }
+}
+
+#[tauri::command]
+pub async fn export_material_docx(app: AppHandle, material_id: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let state = app.state::<AppState>();
+        let m = {
+            let c = state.db.lock().unwrap();
+            repo::get_material(&c, &material_id)?
+        };
+        let blocks = crate::office::docx::material_blocks(&m.kind, &m.title, meta_ref(&m), &m.payload);
+        crate::office::docx::save_document(Path::new(&dest), &blocks)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("export failed: {e}")))?
+}
+
+#[tauri::command]
+pub async fn export_material_xlsx(app: AppHandle, material_id: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let state = app.state::<AppState>();
+        let m = {
+            let c = state.db.lock().unwrap();
+            repo::get_material(&c, &material_id)?
+        };
+        crate::office::xlsx::save_workbook(Path::new(&dest), &m.kind, &m.title, meta_ref(&m), &m.payload)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("export failed: {e}")))?
+}
+
+#[tauri::command]
+pub async fn export_material_pptx(app: AppHandle, material_id: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let state = app.state::<AppState>();
+        let m = {
+            let c = state.db.lock().unwrap();
+            repo::get_material(&c, &material_id)?
+        };
+        crate::office::pptx::save_deck(Path::new(&dest), &m.kind, &m.title, meta_ref(&m), &m.payload)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("export failed: {e}")))?
+}
+
+#[tauri::command]
+pub async fn export_draft_docx(app: AppHandle, draft_id: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let state = app.state::<AppState>();
+        let d = {
+            let c = state.db.lock().unwrap();
+            crate::drafts::get(&c, &draft_id)?
+        };
+        let empty = serde_json::json!({});
+        let payload = d.payload.as_ref().unwrap_or(&empty);
+        let blocks = crate::office::docx::draft_blocks(&d.title, d.meta.as_deref(), payload);
+        crate::office::docx::save_document(Path::new(&dest), &blocks)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("export failed: {e}")))?
+}
+
+/// Visible paragraph texts of an existing .docx — what `docx_apply_edits`
+/// anchors match against. Read-only, so the frontend can preview before
+/// deciding edits.
+#[tauri::command]
+pub async fn docx_read_paragraphs(path: String) -> Result<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || crate::office::docx::paragraph_texts(Path::new(&path)))
+        .await
+        .map_err(|e| Error::Other(format!("docx read failed: {e}")))?
+}
+
+/// Write AI edits into an existing .docx as REAL Word tracked changes and
+/// margin comments — reviewers accept/reject in Word, not here. The output is
+/// always a new file; the input is never touched.
+#[tauri::command]
+pub async fn docx_apply_edits(
+    path: String,
+    output: String,
+    author: String,
+    edits: Vec<crate::office::docx::DocxEdit>,
+) -> Result<crate::office::docx::DocxEditOutcome> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::docx::apply_edits(Path::new(&path), Path::new(&output), &author, &edits)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("docx edit failed: {e}")))?
+}
+
+#[tauri::command]
+pub async fn pdf_merge(paths: Vec<String>, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || crate::office::pdf::merge(&paths, Path::new(&dest)))
+        .await
+        .map_err(|e| Error::Other(format!("pdf merge failed: {e}")))?
+}
+
+/// Split a PDF into one file per page, named `{stem}_001.pdf`, `…_002.pdf`, …
+#[tauri::command]
+pub async fn pdf_split(path: String, out_dir: String, stem: String) -> Result<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::pdf::split(Path::new(&path), Path::new(&out_dir), &stem)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pdf split failed: {e}")))?
+}
+
+#[tauri::command]
+pub async fn pdf_watermark(path: String, text: String, dest: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::pdf::watermark(Path::new(&path), &text, Path::new(&dest))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pdf watermark failed: {e}")))?
+}
+
+/// Enumerate AcroForm fields (text/checkbox/radio/choice) with their current
+/// values, so the frontend can render a fill form before calling pdf_fill_form.
+#[tauri::command]
+pub async fn pdf_form_fields(path: String) -> Result<Vec<crate::office::pdf::PdfField>> {
+    tauri::async_runtime::spawn_blocking(move || crate::office::pdf::form_fields(Path::new(&path)))
+        .await
+        .map_err(|e| Error::Other(format!("pdf read failed: {e}")))?
+}
+
+/// Fill AcroForm fields; returns how many fields were actually set.
+#[tauri::command]
+pub async fn pdf_fill_form(
+    path: String,
+    values: Vec<(String, String)>,
+    dest: String,
+) -> Result<usize> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::pdf::fill_form(Path::new(&path), &values, Path::new(&dest))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pdf fill failed: {e}")))?
+}
+
+/// AI review of an existing .docx → tracked-change suggestions. Reads the
+/// visible paragraphs, asks the chat model for a small set of edits
+/// (insert_after / comment), and drops any edit whose anchor matches no
+/// paragraph, so the count the UI previews equals what apply will write. The
+/// caller applies them via `docx_apply_edits` — nothing here mutates the file.
+#[tauri::command]
+pub async fn docx_review_edits(
+    app: AppHandle,
+    path: String,
+    instruction: Option<String>,
+) -> Result<Vec<crate::office::docx::DocxEdit>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::office::docx::DocxEdit>> {
+        let state = app.state::<AppState>();
+        let (spec, keys) = {
+            let c = state.db.lock().unwrap();
+            let spec = repo::get_setting(&c, "model_chat")?
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            guard_offline_llm(&c, &spec)?;
+            (spec, read_keys(&c)?)
+        };
+        let mut model =
+            llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+
+        let paras: Vec<String> = crate::office::docx::paragraph_texts(Path::new(&path))?
+            .into_iter()
+            .filter(|p| !p.trim().is_empty())
+            .collect();
+        if paras.is_empty() {
+            return Err(Error::Other("文档没有可审阅的文本段落".into()));
+        }
+        // Bound the prompt: ~80 paragraphs / 12k chars is plenty for a review
+        // pass and keeps the JSON answer parseable.
+        let budget = 12_000usize;
+        let mut doc_txt = String::new();
+        for (i, p) in paras.iter().enumerate() {
+            let line = format!("[P{}] {}", i + 1, p);
+            if doc_txt.len() + line.len() > budget || i >= 80 {
+                break;
+            }
+            doc_txt.push_str(&line);
+            doc_txt.push('\n');
+        }
+
+        let mut system = String::from(
+            "You are a careful academic reviewer for a Word document. \
+             Output ONLY a JSON array of at most 8 edit objects of this exact shape:\n\
+             [{\"anchor\":string,\"op\":\"insert_after\"|\"comment\",\"text\":string,\"comment\":string}]\n\
+             Rules:\n\
+             - \"anchor\" MUST be a verbatim substring (>=12 characters) of ONE numbered paragraph, copied exactly, punctuation included.\n\
+             - op=\"insert_after\": \"text\" is ONE sentence to insert (tracked) right after that paragraph; leave \"comment\" empty.\n\
+             - op=\"comment\": \"comment\" is a margin note (critique or question, <=80 characters); leave \"text\" empty.\n\
+             - Only substantive issues: unclear claims, missing justification, contradictions, flow. No praise, no restating the text.\n\
+             - If the document is fine, return [].\n\
+             Respond with ONLY raw JSON — no markdown code fences, no prose.",
+        );
+        if let Some(extra) = instruction.as_deref().filter(|s| !s.trim().is_empty()) {
+            system.push_str(&format!("\nReviewer's focus: {}", extra.trim()));
+        }
+        let user = format!("Document paragraphs:\n\n{doc_txt}\n\nReturn the JSON array now.");
+
+        let raw = model.complete(&system, &user)?;
+        let val = llm::extract_json(&raw)
+            .map_err(|_| Error::Other("model returned unstructured output; try again".into()))?;
+        let edits: Vec<crate::office::docx::DocxEdit> = serde_json::from_value(val)
+            .map_err(|_| Error::Other("model output does not match the edit shape; try again".into()))?;
+
+        // Drop hallucinated anchors BEFORE the UI previews, so previewed count
+        // == applied count (apply re-checks and reports anything left over).
+        let lower: Vec<String> = paras.iter().map(|p| p.to_lowercase()).collect();
+        let kept = edits
+            .into_iter()
+            .filter(|e| e.anchor.chars().count() >= 6)
+            .filter(|e| lower.iter().any(|p| p.contains(&e.anchor.to_lowercase())))
+            .take(12)
+            .collect();
+        Ok(kept)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("review failed: {e}")))?
 }

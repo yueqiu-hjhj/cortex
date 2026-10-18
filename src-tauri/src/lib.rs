@@ -7,6 +7,7 @@ mod anki;
 mod asr;
 mod backup;
 mod calendar;
+mod clip_server;
 mod commands;
 mod db;
 mod embed;
@@ -28,6 +29,7 @@ pub mod cross_book;
 pub mod workitems;
 pub mod planner;
 pub mod papers;
+pub mod plugins;
 pub mod providers;
 pub mod drafts;
 pub mod rerank;
@@ -37,6 +39,7 @@ mod models;
 mod moodle;
 mod mpv;
 mod notes;
+pub mod office;
 mod recorder;
 pub mod repo;
 mod review;
@@ -103,6 +106,9 @@ pub fn run() {
                 _ => app.path().app_data_dir().expect("resolve app data dir"),
             };
             std::fs::create_dir_all(&dir).expect("create app data dir");
+            // plugins/*.json manifests — provider/material/leader contributions.
+            // Read once here so every later lookup is a lock-free read.
+            crate::plugins::ensure_loaded(&dir);
             let db_path = dir.join("cortex.db");
             // NOTE: the homelab pull/merge intentionally does NOT run here — it
             // would block startup on network I/O (up to the HTTP timeout if the
@@ -121,6 +127,15 @@ pub fn run() {
             }
 
             app.manage(state);
+
+            // Browser-extension clip server: a loopback-only HTTP listener
+            // (127.0.0.1:7878) so the manifest-V3 extension can POST the
+            // page the user is reading. Binds on a detached thread, so
+            // startup and first paint never wait on it. A bind failure
+            // (port taken) is non-fatal: the app runs without clipping.
+            if let Err(e) = clip_server::start(app.handle().clone()) {
+                eprintln!("[clip] server did not start: {e}");
+            }
 
             // LIVE sync: a SQLite update hook flags every local write; the
             // livesync push worker debounces them into tiny deltas for the
@@ -349,6 +364,7 @@ pub fn run() {
             commands::global_search,
             commands::seed_demo,
             commands::env_probe,
+            commands::clip_server_status,
             commands::chat_answer,
             commands::add_chat_message,
             commands::list_chat_messages,
@@ -404,6 +420,7 @@ pub fn run() {
             commands::ollama_models,
             commands::verify_provider,
             commands::list_providers,
+            commands::plugins_list,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,
@@ -559,6 +576,19 @@ pub fn run() {
             commands::plan_vs_actual,
             commands::retrieval_eval,
             commands::plan_calibration,
+            // office: materials/drafts -> real Office files + docx/pdf edit-back
+            commands::export_material_docx,
+            commands::export_material_xlsx,
+            commands::export_material_pptx,
+            commands::export_draft_docx,
+            commands::docx_read_paragraphs,
+            commands::docx_apply_edits,
+            commands::pdf_merge,
+            commands::pdf_split,
+            commands::pdf_watermark,
+            commands::pdf_form_fields,
+            commands::pdf_fill_form,
+            commands::docx_review_edits,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

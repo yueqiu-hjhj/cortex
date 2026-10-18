@@ -37,7 +37,11 @@
   const actions = LEADER_ACTIONS;
 
   function runAction(a: LeaderAction) {
-    RUN[a.key]?.();
+    const fn = RUN[a.key];
+    if (fn) fn();
+    // Plugin-contributed entries navigate only — a manifest can add menu
+    // items, never behavior (see lib/keybinds mergePluginLeaderKeys).
+    else if (a.view) app.setView(a.view as Parameters<typeof app.setView>[0]);
     app.leaderOpen = false;
   }
 

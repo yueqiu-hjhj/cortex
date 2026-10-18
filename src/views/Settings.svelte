@@ -277,6 +277,10 @@
     custom_api_key: false,
   });
 
+  // ---- plugins (plugins/*.json manifests) ----
+  let plugins = $state<api.Plugin[]>([]);
+  let pluginErrors = $state<string[]>([]);
+
   // ---- appearance state ----
   const THEME_OPTS: { id: Theme; n: string; c: string; b: string }[] = [
     { id: "osaka-jade",  n: "Osaka Jade",       c: "#2dd5b7", b: "#111c18" },
@@ -588,6 +592,11 @@
       default:        return { cls: "pending", label: "Off" };
     }
   }
+
+  // ---- Browser clip extension ----
+  // The loopback server only exists while the desktop app is running, so the
+  // row reads its liveness from the backend instead of assuming it is up.
+  let clipStatus = $state<api.ClipServerStatus>({ running: false, addr: null });
 
   // ---- Experimental features ----
   let expMoodle = $state(false);
@@ -1142,6 +1151,13 @@
         keys = { ...keys, ...regKeys };
       } catch { /* registry is additive; the curated lists above still work */ }
 
+      // plugins/*.json manifests — shown in the keys tab's 插件 card.
+      try {
+        const pl = await api.pluginsList();
+        plugins = pl.plugins;
+        pluginErrors = pl.errors;
+      } catch { /* plugin listing is informational only */ }
+
       // Models
       for (const taskId of ["chat","cheatsheet","audio","quiz","flashcard","embedding"] as TaskId[]) {
         const raw = s[`model_${taskId}`];
@@ -1224,6 +1240,7 @@
       if (s.profile_explain)   explain  = s.profile_explain.split(",").filter(Boolean);
 
       expMoodle = s.exp_moodle === "true";
+      void api.clipServerStatus().then((v) => (clipStatus = v)).catch(() => {});
       if (s.moodle_url) mdUrl = s.moodle_url;
       void loadMoodle();
 
@@ -1726,6 +1743,39 @@ Notes: {about}</pre>
                 </div>
               </div>
             {/each}
+          </div>
+        </section>
+
+        <!-- plugins/ directory registry — the contributor entry point. Read-only
+             here: drop a JSON manifest into <data>/plugins/ and restart. -->
+        <section class="set-group">
+          <div class="set-group-h"><h3 class="set-group-t">插件</h3></div>
+          <div class="set-card">
+            {#if !plugins.length && !pluginErrors.length}
+              <div class="set-row-d">
+                还没有插件。把 JSON 清单放进数据目录的 <code>plugins/</code> 文件夹后重启即可
+                —— 可以贡献新的模型服务商（OpenAI 兼容）、学习材料预设和 Space 菜单项。
+              </div>
+            {:else}
+              {#each plugins as pl}
+                <div class="set-row stacked">
+                  <div class="set-row-l">
+                    <div class="set-row-t"><span class="row-keytitle">{pl.name}</span></div>
+                    <div class="set-row-d mono">{pl.file}</div>
+                    <div class="set-row-d">
+                      {pl.providers.length} 个服务商 · {pl.material_types.length} 个材料预设 · {pl.leader_keys.length} 个菜单项
+                    </div>
+                  </div>
+                </div>
+              {/each}
+              {#each pluginErrors as err}
+                <div class="set-row stacked">
+                  <div class="set-row-l">
+                    <div class="set-row-t" style="color:var(--err)">{err}</div>
+                  </div>
+                </div>
+              {/each}
+            {/if}
           </div>
         </section>
 
@@ -2850,6 +2900,41 @@ Notes: {about}</pre>
               {/if}
             </div>
           {/if}
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h">
+            <div>
+              <h3 class="set-group-t">浏览器剪藏扩展</h3>
+              <p class="set-group-d">用浏览器扩展把正在读的网页——或只把划选的一段——一键存进 Cortex，不用再手动贴 URL。</p>
+            </div>
+            <span class="status-pill status-pill--{clipStatus.running ? 'ready' : 'pending'}">
+              <span class="dot"></span>{clipStatus.running ? "运行中" : "未启动"}
+            </span>
+          </div>
+          <div class="set-card">
+            <div class="set-row">
+              <div class="set-row-l">
+                <div class="set-row-t">本地接口</div>
+                <div class="set-row-d">只在 Cortex 运行时监听本机回环地址，不暴露到局域网</div>
+              </div>
+              <div class="set-row-r">
+                <span class="mono faint">{clipStatus.addr ? `http://${clipStatus.addr}` : "—"}</span>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-l">
+                <div class="set-row-t">安装扩展</div>
+                <div class="set-row-d">Chrome / Edge → 扩展程序 → 打开「开发者模式」→「加载已解压的扩展程序」，选择仓库里的 <span class="mono">browser-extension/</span>。</div>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-l">
+                <div class="set-row-t">怎么用</div>
+                <div class="set-row-d">点工具栏图标选学科后保存整页或划选内容；也可以直接在页面上右键「Clip to Cortex」入库。存下的条目自带 <span class="mono">clip</span> 标签。</div>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
 
