@@ -447,6 +447,12 @@ export const agentsUpsert = (
 ) => invoke<Agent>("agents_upsert", { id, name, description, systemPrompt: system_prompt, skills, tools, model, temperature, maxSteps: max_steps, enabled });
 export const agentsDelete = (id: string) => invoke<void>("agents_delete", { id });
 export const agentsStartRun = (agentId: string, input: string) => invoke<AgentRun>("agents_start_run", { agentId, input });
+/** Execute a run to completion: the tool loop runs on the backend (bounded by
+ *  the agent's max_steps) and the finished run comes back. Pass `runId` (from
+ *  agentsStartRun) to execute an already-created run so the UI can poll its
+ *  transcript while the loop works. Can take a while — show a busy state. */
+export const agentsExecuteRun = (agentId: string, input: string, runId?: string) =>
+  invoke<AgentRun>("agents_execute_run", { agentId, input, runId: runId ?? null });
 export const agentsListRuns = (limit: number) => invoke<AgentRun[]>("agents_list_runs", { limit });
 export const agentsListMessages = (runId: string, limit: number) => invoke<AgentMessage[]>("agents_list_messages", { runId, limit });
 export const agentsListSkills = () => invoke<Skill[]>("agents_list_skills", {});

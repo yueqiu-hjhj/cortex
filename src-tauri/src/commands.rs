@@ -5654,6 +5654,65 @@ pub fn agents_start_run(state: State<AppState>, agent_id: String, input: String)
     let c = state.db.lock().unwrap();
     crate::agents::start_run(&c, crate::agents::DEFAULT_USER, &agent_id, &input)
 }
+
+/// Execute an agent run to completion: the bounded tool loop (see
+/// [`crate::agent_exec`]) on the blocking pool, then the finished run.
+///
+/// The loop interleaves DB reads (transcript, tool bodies) with LLM calls that
+/// can each take tens of seconds, so it runs on its OWN SQLite connection —
+/// holding the app's global mutex across a network round-trip would freeze
+/// every other view for the duration. WAL handles the two connections.
+#[tauri::command]
+pub async fn agents_execute_run(
+    app: AppHandle,
+    agent_id: String,
+    input: String,
+    run_id: Option<String>,
+) -> Result<crate::agents::AgentRun> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::agents::AgentRun> {
+        let state = app.state::<AppState>();
+        // Model resolution: agent override → configured chat model → default.
+        let (agent, spec, keys) = {
+            let c = state.db.lock().unwrap();
+            let agent = crate::agents::get_agent(&c, crate::agents::DEFAULT_USER, &agent_id)?;
+            let spec = agent
+                .model
+                .clone()
+                .or_else(|| repo::get_setting(&c, "model_chat").ok().flatten())
+                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            guard_offline_llm(&c, &spec)?;
+            (agent, spec, read_keys(&c)?)
+        };
+        let mut model =
+            llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+        {
+            let c = state.db.lock().unwrap();
+            apply_budget(&mut model, &c, "chat");
+        }
+
+        let db_path = state
+            .data_dir
+            .as_ref()
+            .map(|d| d.join("cortex.db"))
+            .ok_or_else(|| Error::Other("in-memory build has no agent-run database".into()))?;
+        let conn = Connection::open(&db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+        conn.pragma_update(None, "journal_mode", "WAL").ok();
+
+        // Reuse a run the UI already created (so it can show the transcript
+        // while the loop runs) or start a fresh one here.
+        let run = match run_id {
+            Some(id) => crate::agents::list_runs(&conn, crate::agents::DEFAULT_USER, 1)
+                .ok()
+                .and_then(|v| v.into_iter().find(|r| r.id == id))
+                .ok_or_else(|| Error::NotFound(format!("run {id}")))?,
+            None => crate::agents::start_run(&conn, crate::agents::DEFAULT_USER, &agent_id, &input)?,
+        };
+        crate::agent_exec::execute_run(&conn, crate::agents::DEFAULT_USER, &agent, &run.id, model.as_ref())
+    })
+    .await
+    .map_err(|e| Error::Other(format!("agent task failed: {e}")))?
+}
 #[tauri::command]
 pub fn agents_list_runs(state: State<AppState>, limit: Option<i64>) -> Result<Vec<crate::agents::AgentRun>> {
     let c = state.db.lock().unwrap();

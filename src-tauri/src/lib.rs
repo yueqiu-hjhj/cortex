@@ -24,6 +24,7 @@ pub mod literature;
 pub mod vocab;
 pub mod obsidian;
 pub mod agents;
+mod agent_exec;
 pub mod wiki;
 pub mod cross_book;
 pub mod workitems;
@@ -422,6 +423,7 @@ pub fn run() {
             commands::list_providers,
             commands::plugins_list,
             commands::retrieval_eval_real,
+            commands::agents_execute_run,
             commands::save_recording,
             commands::save_recording_raw,
             commands::transcribe_partial,

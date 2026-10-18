@@ -14,6 +14,8 @@
   let messages = $state<api.AgentMessage[]>([]);
   let newInput = $state("");
   let runAgentId = $state("");
+  /** Run currently executing on the backend — the transcript polls live. */
+  let runningRunId = $state<string | null>(null);
 
   $effect(() => { void load(); });
   async function load() {
@@ -30,7 +32,7 @@
   function blankAgent(): api.Agent {
     return {
       id: "", user_id: "u-default", name: "", description: null,
-      system_prompt: "You are a Cortex agent. Cite source paths when relevant.",
+      system_prompt: "你是 Cortex 智能体。回答时引用来源；知识库没有的内容要明说。",
       skills: [], tools: [], model: null, temperature: 0.3,
       max_steps: 8, enabled: true, created_at: 0, updated_at: 0,
     };
@@ -66,17 +68,63 @@
   }
 
   async function startRun(agent: api.Agent) {
-    if (!newInput.trim()) return;
+    if (!newInput.trim() || runningRunId) return;
     busy = true;
     try {
+      // Create the run first so the transcript is visible while the loop
+      // works, then execute it and poll messages as steps land.
       const run = await api.agentsStartRun(agent.id, newInput);
       newInput = "";
       selectedRun = run;
-      messages = [];
-      app.pushToast({ kind: "success", title: "已开始运行", body: agent.name });
+      messages = await api.agentsListMessages(run.id, 200);
+      runningRunId = run.id;
+      const finished = api.agentsExecuteRun(agent.id, run.input, run.id);
+      while (runningRunId === run.id) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try { messages = await api.agentsListMessages(run.id, 200); } catch { /* mid-run */ }
+        const rs = await api.agentsListRuns(50).catch(() => []);
+        const now = rs.find((x) => x.id === run.id);
+        if (now && now.status !== "pending") {
+          selectedRun = now;
+          break;
+        }
+      }
+      await finished;
+      messages = await api.agentsListMessages(run.id, 200);
       await load();
-    } catch (e) { app.pushToast({ kind: "error", title: "运行失败", body: String(e) }); }
-    finally { busy = false; }
+      app.pushToast({ kind: "success", title: "运行完成", body: agent.name });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "运行失败", body: String(e) });
+      await load().catch(() => {});
+    } finally {
+      runningRunId = null;
+      busy = false;
+    }
+  }
+
+  /** One-click demo: a research agent wired to every read-only built-in tool —
+   *  the "agent auto-research" story, runnable the moment this view opens. */
+  async function createDemoAgent() {
+    if (agents.some((a) => a.name === "自动研究员")) {
+      app.pushToast({ kind: "info", title: "「自动研究员」已存在" });
+      return;
+    }
+    busy = true;
+    try {
+      await api.agentsUpsert(
+        null,
+        "自动研究员",
+        "在知识库里检索、读来源、给出带引用的研究摘要",
+        "你是一个扎根于用户知识库的研究员。回答任何问题前先用 search_notebook / search_notes 检索，必要时用 get_source 精读来源、用 list_notebooks / get_knowledge_tree 了解结构。最终回答必须用「来源名 · 位置」标注每一条关键论断的出处；知识库没有的内容要明说。回答使用用户的语言（默认中文）。",
+        ["引用优先"].filter(() => skills.some((s) => s.enabled)),
+        tools.filter((t) => t.enabled && t.kind === "read").map((t) => t.name),
+        null, 0.3, 12, true,
+      );
+      app.pushToast({ kind: "success", title: "已创建「自动研究员」", body: "在下方输入一个研究问题试试。" });
+      await load();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "创建失败", body: String(e) });
+    } finally { busy = false; }
   }
 
   async function showRun(run: api.AgentRun) {
@@ -94,8 +142,11 @@
       <p class="ag-sub mono">自定义智能体 · 技能/工具白名单 · 运行记录</p>
     </div>
     <div class="ag-tools">
+      <button class="btn" disabled={busy} onclick={() => void createDemoAgent()}>
+        <Icon name="bolt" size={12} /> 示例：自动研究员
+      </button>
       <button class="btn primary" onclick={() => (editing = blankAgent())}>
-        <Icon name="plus" size={12} /> New agent
+        <Icon name="plus" size={12} /> 新建智能体
       </button>
     </div>
   </header>
@@ -150,10 +201,13 @@
       <select class="input" value={runAgentId} onchange={(e) => runAgentId = (e.target as HTMLSelectElement).value}>
         {#each agents as a}<option value={a.id}>{a.name}</option>{/each}
       </select>
-      <button class="btn primary" disabled={busy || !newInput.trim() || !runAgentId} onclick={() => {
+      <button class="btn primary" disabled={busy || runningRunId !== null || !newInput.trim() || !runAgentId} onclick={() => {
         const a = agents.find((x) => x.id === runAgentId); if (a) void startRun(a);
-      }}>开始</button>
+      }}>{runningRunId ? "运行中…" : "开始"}</button>
     </div>
+    {#if runningRunId}
+      <div class="mut mono">智能体正在执行（每步都会写进记录，下方对话实时刷新）。工具循环期间不会冻结其他页面。</div>
+    {/if}
     <div class="split">
       <div>
         <h4>历史</h4>
