@@ -2255,6 +2255,70 @@ export const generateDraft = (excerptIds: string[], title?: string, customPrompt
 export const draftList = () => invoke<ResearchDraft[]>("draft_list");
 export const draftDelete = (id: string) => invoke<void>("draft_delete", { id });
 
+// ---- 2.1 写作升格批改 (draft review) ----------------------------------------
+
+export interface DraftFinding {
+  kind: "hedge" | "colloquial" | "cliche" | "first_person" | "long_sentence" | "long_para" | string;
+  severity: "info" | "warn";
+  /** null = legacy flat paragraph */
+  section: number | null;
+  para: number;
+  sentence: number | null;
+  excerpt: string;
+  hint: string;
+}
+/** Sentences per paragraph, split server-side — the SAME indices the rewrite
+ *  commands address, so a UI click always rewrites exactly that sentence. */
+export interface DraftText {
+  lang: string;
+  sections: string[][][];
+  flat: string[][];
+  findings: DraftFinding[];
+}
+export interface DraftUpgrade {
+  section: number | null;
+  para: number;
+  sentence: number;
+  original: string;
+  revised: string;
+  reason: string;
+}
+export interface DraftUpgradeReport {
+  lang: string;
+  overall: string;
+  suggestions: DraftUpgrade[];
+}
+export interface SentenceRewrite {
+  original: string;
+  revised: string;
+  reason: string;
+}
+
+/** 规则体检 — instant, no LLM. Also returns the sentence tables. */
+export const draftReviewCheck = (draftId: string) =>
+  invoke<DraftText>("draft_review_check", { draftId });
+/** AI 升格 — one call, whole draft, before→after suggestions. */
+export const draftReviewUpgrade = (draftId: string) =>
+  invoke<DraftUpgradeReport>("draft_review_upgrade", { draftId });
+/** 逐句改写 — one focused call; nothing persisted until draftUpdate. */
+export const draftRewriteSentence = (
+  draftId: string,
+  section: number | null,
+  para: number,
+  sentence: number,
+  instruction?: string,
+) =>
+  invoke<SentenceRewrite>("draft_rewrite_sentence", {
+    draftId,
+    section,
+    para,
+    sentence,
+    instruction: instruction ?? null,
+  });
+/** Persist an edited draft payload (accepted rewrites patch sentences). */
+export const draftUpdate = (draftId: string, payload: DraftPayload) =>
+  invoke<void>("draft_update", { draftId, payload });
+
 // ---- office export + edit-back (A2/A3) --------------------------------------
 
 /** Material → Word (.docx) at `dest`, rendered from the stored payload. */

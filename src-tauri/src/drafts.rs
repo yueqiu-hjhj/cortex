@@ -185,6 +185,25 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Persist an edited payload — the write-back path for 2.1 升格批改 (accepted
+/// rewrites / upgrades patch sentences in place). Payload must round-trip
+/// through DraftBody so a corrupted table can never be saved over a draft.
+pub fn update_payload(conn: &Connection, id: &str, payload: &serde_json::Value) -> Result<()> {
+    let body: DraftBody = serde_json::from_value(payload.clone())
+        .map_err(|_| Error::Other("payload 不符合成稿结构（thesis/paragraphs/sections）".into()))?;
+    if body.paragraphs.is_empty() && body.sections.is_empty() {
+        return Err(Error::Other("payload 不能为空：缺少 paragraphs/sections".into()));
+    }
+    let n = conn.execute(
+        "UPDATE drafts SET payload = ?2 WHERE id = ?1",
+        params![id, serde_json::to_string(payload).unwrap_or_default()],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("draft {id}")));
+    }
+    Ok(())
+}
+
 fn row_to_draft(r: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
     let ids_raw: String = r.get(2)?;
     let payload_raw: Option<String> = r.get(4)?;

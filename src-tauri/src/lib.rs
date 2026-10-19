@@ -62,6 +62,7 @@ pub mod papers;
 pub mod plugins;
 pub mod providers;
 pub mod connectors;
+pub mod draft_review;
 pub mod research_connectors;
 pub mod slides;
 pub mod drafts;
@@ -677,6 +678,11 @@ pub fn run() {
             commands::generate_draft,
             commands::draft_list,
             commands::draft_delete,
+            // 2.1 写作升格批改 — rule check, AI upgrade, single-sentence rewrite
+            draft_review::draft_review_check,
+            draft_review::draft_review_upgrade,
+            draft_review::draft_rewrite_sentence,
+            draft_review::draft_update,
             commands::paper_build_matrix,
             commands::plan_vs_actual,
             commands::retrieval_eval,

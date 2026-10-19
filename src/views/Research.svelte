@@ -162,6 +162,151 @@
     draftResult = null;
     viewDraft = null;
     draftError = null;
+    closeReview();
+  }
+
+  // ----- 2.1 写作升格批改: rule check → AI upgrade → sentence rewrite -----
+
+  let reviewOpen = $state(false);
+  let reviewText = $state<api.DraftText | null>(null);
+  let reviewError = $state<string | null>(null);
+  let upgradeOverall = $state("");
+  let upgrades = $state<api.DraftUpgrade[]>([]);
+  let upgradeBusy = $state(false);
+  let pendingRewrite = $state<(api.DraftUpgrade & { busy?: boolean }) | null>(null);
+  let rewriteBusy = $state(false);
+
+  function closeReview() {
+    reviewOpen = false;
+    reviewText = null;
+    reviewError = null;
+    upgradeOverall = "";
+    upgrades = [];
+    upgradeBusy = false;
+    pendingRewrite = null;
+    rewriteBusy = false;
+  }
+
+  async function openReview() {
+    if (!showingDraft || reviewOpen) return;
+    reviewError = null;
+    try {
+      reviewText = await api.draftReviewCheck(showingDraft.id);
+      reviewOpen = true;
+    } catch (e) {
+      reviewError = String(e);
+    }
+  }
+
+  /** A rewrite must keep every [n] marker the sentence carried — citations
+   *  are the draft's spine. Missing ones are re-appended. */
+  function preserveCites(original: string, revised: string): string {
+    const orig = [...original.matchAll(/\[(\d{1,3})\]/g)].map((m) => m[1]);
+    if (!orig.length) return revised;
+    const kept = new Set([...revised.matchAll(/\[(\d{1,3})\]/g)].map((m) => m[1]));
+    const missing = orig.filter((n) => !kept.has(n));
+    if (!missing.length) return revised;
+    return revised.replace(/\s*$/, "") + missing.map((n) => `[${n}]`).join("");
+  }
+
+  /** Replace one sentence in the review tables AND the draft payload, then
+   *  persist. Deep-mutates the $state proxies so the view updates in place. */
+  function applySentenceChange(u: { section: number | null; para: number; sentence: number; revised: string }): boolean {
+    const d = showingDraft;
+    if (!d?.payload || !reviewText) return false;
+    const arr =
+      u.section != null ? reviewText.sections[u.section]?.[u.para] : reviewText.flat[u.para];
+    if (!arr || u.sentence >= arr.length) return false;
+    const revised = preserveCites(arr[u.sentence], u.revised);
+    if (revised === arr[u.sentence]) return false;
+    arr[u.sentence] = revised;
+    const text = arr.join("");
+    const p = d.payload;
+    if (u.section != null) {
+      const para2 = p.sections?.[u.section]?.paragraphs?.[u.para];
+      if (para2) para2.text = text;
+    } else if (p.paragraphs?.[u.para]) {
+      p.paragraphs[u.para].text = text;
+    }
+    api.draftUpdate(d.id, JSON.parse(JSON.stringify(p)))
+      .then(() => say("批改已保存"))
+      .catch((e) => (reviewError = String(e)));
+    return true;
+  }
+
+  async function runUpgrade() {
+    if (!showingDraft || upgradeBusy) return;
+    upgradeBusy = true;
+    reviewError = null;
+    try {
+      const r = await api.draftReviewUpgrade(showingDraft.id);
+      upgradeOverall = r.overall;
+      upgrades = r.suggestions;
+      if (!r.suggestions.length) say("AI 认为没有需要改写的句子");
+    } catch (e) {
+      reviewError = String(e);
+    } finally {
+      upgradeBusy = false;
+    }
+  }
+
+  function acceptUpgrade(u: api.DraftUpgrade) {
+    if (applySentenceChange(u)) {
+      upgrades = upgrades.filter((x) => x !== u);
+    }
+  }
+  function ignoreUpgrade(u: api.DraftUpgrade) {
+    upgrades = upgrades.filter((x) => x !== u);
+  }
+
+  async function askRewrite(section: number | null, para: number, sentence: number) {
+    if (!showingDraft || rewriteBusy || pendingRewrite) return;
+    const instruction = await app.prompt({
+      title: "逐句改写",
+      body: "改写指令（可选）：例如「更精炼」「强调因果」「去掉口语」",
+      placeholder: "留空则按学术文体直接改写",
+    });
+    if (instruction === null) return; // dialog cancelled
+    rewriteBusy = true;
+    reviewError = null;
+    try {
+      const r = await api.draftRewriteSentence(showingDraft.id, section, para, sentence, instruction || undefined);
+      pendingRewrite = { section, para, sentence, original: r.original, revised: r.revised, reason: r.reason };
+    } catch (e) {
+      reviewError = String(e);
+    } finally {
+      rewriteBusy = false;
+    }
+  }
+  function acceptPending() {
+    if (pendingRewrite && applySentenceChange(pendingRewrite)) pendingRewrite = null;
+  }
+  function cancelPending() {
+    pendingRewrite = null;
+  }
+
+  const findingLabels: Record<string, string> = {
+    hedge: "模糊",
+    colloquial: "口语",
+    cliche: "模板",
+    first_person: "主观",
+    long_sentence: "长句",
+    long_para: "长段",
+  };
+
+  function secSentences(si: number, pi: number): string[] {
+    return reviewText?.sections[si]?.[pi] ?? [];
+  }
+  function flatSentences(pi: number): string[] {
+    return reviewText?.flat[pi] ?? [];
+  }
+  function isPending(section: number | null, para: number, sentence: number): boolean {
+    return (
+      pendingRewrite != null &&
+      pendingRewrite.section === section &&
+      pendingRewrite.para === para &&
+      pendingRewrite.sentence === sentence
+    );
   }
 
   /** Split paragraph text so [n] markers render as highlighted citation chips. */
@@ -1401,17 +1546,82 @@
         {#if showingDraft.payload?.thesis}
           <p class="thesis">{showingDraft.payload.thesis}</p>
         {/if}
-        {#each showingDraft.payload?.sections ?? [] as sec (sec.heading)}
+        {#if reviewOpen && reviewText}
+          <div class="rev-panel">
+            <div class="rev-head">
+              <span class="rev-mode">批改模式</span>
+              <span class="n">{reviewText.lang === "zh" ? "中文学术体" : "English academic"} · {reviewText.findings.length} 处规则提示</span>
+              <span style="flex:1"></span>
+              <button class="btn" disabled={upgradeBusy || rewriteBusy}
+                      onclick={runUpgrade}>{upgradeBusy ? "升格分析中…" : "AI 升格建议"}</button>
+            </div>
+            {#if reviewError}<p class="dhint" style="color:var(--err)">{reviewError}</p>{/if}
+            {#if reviewText.findings.length}
+              <div class="rev-findings">
+                {#each reviewText.findings as f}
+                  <div class="rev-f {f.severity}">
+                    <span class="fk">{findingLabels[f.kind] ?? f.kind}</span>
+                    <span class="fq">「{f.excerpt}」</span>
+                    <span class="fh">{f.hint}</span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <p class="dhint">规则体检通过：没有发现明显问题。</p>
+            {/if}
+            {#if upgradeOverall}<p class="rev-overall">{upgradeOverall}</p>{/if}
+            {#if pendingRewrite}
+              <div class="rev-up">
+                <div class="uo">「{pendingRewrite.original}」</div>
+                <div class="ur">→ {pendingRewrite.revised}</div>
+                {#if pendingRewrite.reason}<div class="uwhy">{pendingRewrite.reason}</div>{/if}
+                <div class="rev-ops">
+                  <button class="btn primary" onclick={acceptPending}>采纳</button>
+                  <button class="btn" onclick={cancelPending}>取消</button>
+                </div>
+              </div>
+            {/if}
+            {#each upgrades as u (u.section + "\u0000" + u.para + "\u0000" + u.sentence)}
+              <div class="rev-up">
+                <div class="uo">「{u.original}」</div>
+                <div class="ur">→ {u.revised}</div>
+                {#if u.reason}<div class="uwhy">{u.reason}</div>{/if}
+                <div class="rev-ops">
+                  <button class="btn primary" onclick={() => acceptUpgrade(u)}>采纳</button>
+                  <button class="btn" onclick={() => ignoreUpgrade(u)}>忽略</button>
+                </div>
+              </div>
+            {/each}
+            <p class="dhint">批改模式下点击任意句子即可逐句改写（可附指令）；改写在「采纳」后写入成稿。</p>
+          </div>
+        {/if}
+        {#each showingDraft.payload?.sections ?? [] as sec, si (sec.heading)}
           <h4 class="dsec">{sec.heading}</h4>
-          {#each sec.paragraphs ?? [] as para}
+          {#each sec.paragraphs ?? [] as para, pi}
             <p class="dpara">
-              {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+              {#if reviewOpen && reviewText}
+                {#each secSentences(si, pi) as s, ki}
+                  <span class="rsent" class:pmark={isPending(si, pi, ki)}
+                        title="点击改写这一句"
+                        onclick={() => askRewrite(si, pi, ki)}>{#each citeTokens(s) as tk}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}</span>
+                {/each}
+              {:else}
+                {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+              {/if}
             </p>
           {/each}
         {/each}
-        {#each showingDraft.payload?.paragraphs ?? [] as para}
+        {#each showingDraft.payload?.paragraphs ?? [] as para, pi}
           <p class="dpara">
-            {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+            {#if reviewOpen && reviewText}
+              {#each flatSentences(pi) as s, ki}
+                <span class="rsent" class:pmark={isPending(null, pi, ki)}
+                      title="点击改写这一句"
+                      onclick={() => askRewrite(null, pi, ki)}>{#each citeTokens(s) as tk}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}</span>
+              {/each}
+            {:else}
+              {#each citeTokens(para.text) as tk, i (i)}{#if tk.c}<span class="cite">{tk.t}</span>{:else}{tk.t}{/if}{/each}
+            {/if}
           </p>
         {/each}
         {#if showingDraft.payload?.references?.length}
@@ -1429,6 +1639,7 @@
           <button class="btn" onclick={() => copyDraft(showingDraft)}>复制全文</button>
           <button class="btn" onclick={() => exportDraft(showingDraft)}>导出 docx</button>
           <button class="btn" onclick={() => exportDraftTex(showingDraft)} title="ctexart + thebibliography，xelatex 可直接编译">导出 LaTeX</button>
+          <button class="btn" onclick={() => (reviewOpen ? closeReview() : openReview())}>{reviewOpen ? "退出批改" : "升格批改"}</button>
           <button class="btn primary" onclick={closeDraftModal}>完成</button>
         </div>
       </div>
@@ -2360,6 +2571,79 @@
     vertical-align: super;
     padding: 0 1px;
   }
+  /* ---- 2.1 写作升格批改 ---- */
+  .rev-panel {
+    margin: 10px 0 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--rad-2);
+    padding: 10px 12px;
+    background: var(--surface);
+  }
+  .rev-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .rev-mode {
+    font-size: var(--t-xs);
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .rev-head .n { font-size: var(--t-xs); color: var(--fg-3, var(--muted)); }
+  .rev-findings {
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .rev-f {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: var(--t-xs);
+    line-height: 1.5;
+  }
+  .rev-f .fk {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    color: var(--warn);
+  }
+  .rev-f.warn .fk {
+    background: color-mix(in srgb, var(--err) 16%, transparent);
+    color: var(--err);
+  }
+  .rev-f .fq { color: var(--fg); max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+  .rev-f .fh { color: var(--fg-3, var(--muted)); }
+  .rev-overall {
+    margin: 6px 0;
+    font-size: var(--t-xs);
+    line-height: 1.6;
+    padding: 8px 10px;
+    border-left: 3px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border-radius: 0 var(--rad-1) var(--rad-1) 0;
+  }
+  .rev-up {
+    border: 1px solid var(--border);
+    border-radius: var(--rad-1);
+    padding: 8px 10px;
+    margin: 6px 0;
+    font-size: var(--t-xs);
+    line-height: 1.6;
+  }
+  .rev-up .uo { color: var(--fg-3, var(--muted)); }
+  .rev-up .ur { color: var(--fg); font-weight: 500; }
+  .rev-up .uwhy { color: var(--fg-3, var(--muted)); font-style: italic; margin-top: 2px; }
+  .rev-ops { display: flex; gap: 6px; margin-top: 6px; }
+  .rsent { cursor: pointer; border-radius: 2px; }
+  .rsent:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .rsent.pmark { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px dashed var(--accent); }
   .refs { margin-top: 6px; }
   .refitem {
     display: flex;
