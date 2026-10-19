@@ -22,6 +22,14 @@ pub trait Llm: Send + Sync {
             self.name()
         )))
     }
+    /// Vision Q&A over images with a CUSTOM prompt — unlike `ocr`, whose
+    /// prompt is baked in. Used by 2.6 figure explanation. Default: unsupported.
+    fn vision(&self, _images: &[(String, String)], _system: &str, _user: &str) -> Result<String> {
+        Err(Error::Unsupported(format!(
+            "{} can't read images — pick a vision model (e.g. an OpenRouter/Gemini multimodal model) in Settings",
+            self.name()
+        )))
+    }
     /// Extract editable question/answer flashcards from one or more images.
     fn extract_cards(&self, _images: &[(String, String)]) -> Result<Vec<CardDraft>> {
         Err(Error::Unsupported(format!(
@@ -162,6 +170,27 @@ impl Llm for GeminiLlm {
         let body = serde_json::json!({
             "contents": [{ "role": "user", "parts": parts }],
             "generationConfig": { "temperature": 0.0, "maxOutputTokens": 8192 }
+        });
+        let json = send_json("gemini", client.post(&url).json(&body))?;
+        Ok(json["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|ps| ps.iter().filter_map(|p| p["text"].as_str()).collect::<String>())
+            .unwrap_or_default())
+    }
+    /// Vision Q&A with a custom prompt (2.6 figure explanation).
+    fn vision(&self, images: &[(String, String)], system: &str, user: &str) -> Result<String> {
+        let client = llm_client();
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, self.api_key
+        );
+        let mut parts = vec![serde_json::json!({ "text": format!("{system}\n\n{user}") })];
+        for (mime, b64) in images {
+            parts.push(serde_json::json!({ "inline_data": { "mime_type": mime, "data": b64 } }));
+        }
+        let body = serde_json::json!({
+            "contents": [{ "role": "user", "parts": parts }],
+            "generationConfig": { "temperature": 0.2, "maxOutputTokens": 8192 }
         });
         let json = send_json("gemini", client.post(&url).json(&body))?;
         Ok(json["candidates"][0]["content"]["parts"]
@@ -421,6 +450,43 @@ impl Llm for OpenAiCompatLlm {
             "model": self.model,
             "messages": [{ "role": "user", "content": content }],
             "temperature": 0.0
+        });
+        let json = send_json(
+            self.label,
+            client
+                .post(&url)
+                .header("Authorization", format!("Bearer {key}"))
+                .header("HTTP-Referer", "https://cortex.study")
+                .header("X-Title", "Cortex")
+                .json(&body),
+        )?;
+        Ok(json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+    /// Vision Q&A with a custom prompt (2.6 figure explanation).
+    fn vision(&self, images: &[(String, String)], system: &str, user: &str) -> Result<String> {
+        let key = self.api_key.trim();
+        if key.is_empty() {
+            return Err(Error::Other(format!("{}: API key is empty", self.label)));
+        }
+        let client = llm_client();
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut content = vec![serde_json::json!({
+            "type": "text",
+            "text": format!("{system}\n\n{user}")
+        })];
+        for (mime, b64) in images {
+            content.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime};base64,{b64}") }
+            }));
+        }
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [{ "role": "user", "content": content }],
+            "temperature": 0.2
         });
         let json = send_json(
             self.label,

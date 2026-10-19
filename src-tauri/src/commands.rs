@@ -920,6 +920,51 @@ pub async fn ocr_image_bytes(state: State<'_, AppState>, mime: String, base64: S
         .await.map_err(|e| Error::Other(e.to_string()))?
 }
 
+/// 2.6 图表自动解释 — rasterize ONE PDF page and ask the vision model to
+/// explain the figure(s) on it, guided by the caption text the user selected
+/// in the PDF view. Full-page at 150 dpi is enough for a vision model to read
+/// axes/legends; no crop UI needed for v1.
+#[tauri::command]
+pub async fn figure_explain(
+    state: State<'_, AppState>,
+    path: String,
+    page: usize,
+    caption: Option<String>,
+) -> Result<String> {
+    let (spec, keys) = {
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other("离线模式下无法使用云端视觉模型".into()));
+        }
+        (
+            repo::get_setting(&c, "model_vision")?
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_VISION_MODEL.into()),
+            read_keys(&c)?,
+        )
+    };
+    let model = llm::from_spec_or_any(&spec, &keys)
+        .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let png = ingest::pdf_page_image(&path, page)?;
+        let images = vec![("image/png".to_string(), llm::b64_encode(&png))];
+        let system = "You explain figures, charts, tables and diagrams in academic papers. \
+            Describe what is shown, walk through the key quantities, axes, legends and trends, \
+            state what the figure demonstrates and any caveats visible in it. Reply in the SAME \
+            language as the provided caption (default: 简体中文). Write any math as LaTeX \
+            \\(…\\) inline or $$…$$ display. No preamble, no meta commentary.";
+        let user = match caption.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(cap) => format!(
+                "The user selected this caption on page {page} of the paper:\n\n{cap}\n\nExplain the figure(s) this caption refers to on this page."
+            ),
+            None => format!("Explain the figure(s) on page {page} of this paper."),
+        };
+        model.vision(&images, system, &user)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
 /// Persist edited flashcards as one normal flashcard material.
 #[tauri::command]
 pub fn save_flashcards_to_subject(state: State<AppState>, subject_id: String, topic_id: Option<String>, cards: Vec<CardDraft>, title: String) -> Result<u32> {
@@ -5271,6 +5316,14 @@ pub async fn literature_explain(
 #[tauri::command]
 pub fn literature_repair(text: String) -> String {
     crate::literature::repair_paper_text(&text)
+}
+
+/// 2.6 公式修复 — make extracted-paper math KaTeX-renderable: convert \[..\]
+/// display delimiters to $$..$$, wrap consecutive equation-like bare lines
+/// into display blocks. Pure heuristic; no LLM.
+#[tauri::command]
+pub fn literature_fix_math(text: String) -> String {
+    crate::literature::fix_paper_math(&text)
 }
 
 /// Persist a paper as a text-kind source under subject_id. Title is the

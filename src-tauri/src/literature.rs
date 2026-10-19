@@ -673,6 +673,82 @@ pub fn repair_paper_text(input: &str) -> String {
     s.trim().to_string()
 }
 
+// ---- math repair (2.6) --------------------------------------------------
+
+/// A line that looks like (part of) an equation rather than prose. Deliberately
+/// conservative: at least one math operator, and at most ONE long alphabetic
+/// word (equations carry symbols and short identifiers; prose carries many
+/// long words like "computed"/"learned"). False positives would wrap ordinary
+/// text into $$…$$ and corrupt the reading view.
+fn is_equation_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.chars().count() < 3 || t.starts_with("$$") || t.starts_with("\\(") || t.starts_with("\\[") {
+        return false;
+    }
+    if t.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        return false;
+    }
+    let ops = t
+        .chars()
+        .filter(|c| {
+            matches!(
+                c,
+                '=' | '+' | '-' | '−' | '×' | '÷' | '^' | '_' | '\\' | '≤' | '≥' | '≈' | '±'
+                    | '∑' | '∫' | '∂' | '∈'
+            )
+        })
+        .count();
+    if ops == 0 {
+        return false;
+    }
+    let long_words = t
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.chars().count() >= 4 && w.chars().all(|c| c.is_alphabetic()))
+        .count();
+    long_words <= 1
+}
+
+/// Make extracted-paper math renderable (2.6 公式修复):
+///   1. `\[ … \]` display delimiters → `$$ … $$` (KaTeX-ready shape the
+///      RichText renderer understands; pdftotext leaks these constantly).
+///   2. Consecutive equation-like bare lines are wrapped into ONE `$$…$$`
+///      display block with internal wraps folded — multi-line equations that
+///      otherwise render as broken prose.
+///   3. Stray Unicode math letters commonly produced by PDF extraction
+///      (e.g. "�" ligature leftovers) are left alone — only structure is
+///      repaired, content is never invented.
+pub fn fix_paper_math(input: &str) -> String {
+    // 1. display delimiters
+    let mut s = input.replace("\\[", "$$").replace("\\]", "$$");
+    // 2. group consecutive equation-like lines — but never touch lines inside
+    //    an existing $$…$$ block (toggle on fence lines).
+    let mut out: Vec<String> = Vec::new();
+    let mut eqbuf: Vec<String> = Vec::new();
+    let mut in_block = false;
+    let flush = |buf: &mut Vec<String>, out: &mut Vec<String>| {
+        if !buf.is_empty() {
+            let joined = buf.join(" ");
+            out.push(format!("$$\n{joined}\n$$"));
+            buf.clear();
+        }
+    };
+    for line in s.lines() {
+        if line.trim() == "$$" {
+            flush(&mut eqbuf, &mut out);
+            in_block = !in_block;
+            out.push(line.to_string());
+        } else if !in_block && is_equation_line(line) {
+            eqbuf.push(line.trim().to_string());
+        } else {
+            flush(&mut eqbuf, &mut out);
+            out.push(line.to_string());
+        }
+    }
+    flush(&mut eqbuf, &mut out);
+    s = out.join("\n");
+    s
+}
+
 // ---- LLM-driven annotation -------------------------------------------
 
 /// Run a focused LLM call for selection-based reading assistance. mode is
@@ -870,6 +946,39 @@ Second paragraph here.";
         assert!(r.contains("
 
 "), "paragraph break should survive: {r:?}");
+    }
+
+    #[test]
+    fn math_wraps_equation_runs_and_converts_display_delims() {
+        // multi-line bare equations get one $$ block; prose untouched
+        let s = "The loss is computed as
+L = Wx + b
+y = softmax(z)
+where W is learned.";
+        let r = fix_paper_math(s);
+        assert!(r.contains("$$
+L = Wx + b y = softmax(z)
+$$"), "eq block wrapped: {r:?}");
+        assert!(r.starts_with("The loss is computed as
+$$"), "prose stays prose: {r:?}");
+        // \[ \] → $$
+        let d = fix_paper_math("we obtain
+\\[ E = mc^2 \\]
+done.");
+        assert!(d.contains("$$ E = mc^2 $$"), "display delims converted: {d:?}");
+    }
+
+    #[test]
+    fn math_never_wraps_cjk_or_ordinary_text() {
+        let s = "训练误差为 0.32，这是一个普通句子。";
+        assert_eq!(fix_paper_math(s), s);
+        let p = "This is plain prose with 12 results and no operators to speak of.";
+        assert_eq!(fix_paper_math(p), p);
+        // already-delimited lines pass through untouched
+        let q = "$$
+E = mc^2
+$$";
+        assert_eq!(fix_paper_math(q), q);
     }
 
     #[test]

@@ -23,6 +23,7 @@
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
+  import RichText from "../components/RichText.svelte";
 
   type Mode = "translate:zh" | "translate:en" | "explain" | "summarize" | "keypoints" | "define";
 
@@ -208,6 +209,19 @@
     finally { loading = false; }
   }
 
+  // 2.6 公式修复：\[..\] → $$..$$、散行公式并成展示块，随后段落经 RichText
+  // (KaTeX) 渲染，公式从死字符串变成真公式。
+  let mathFixed = $state(false);
+  async function fixMath() {
+    if (!rawText) return;
+    loading = true;
+    try {
+      rawText = await api.literatureFixMath(rawText);
+      mathFixed = true;
+    } catch (e) { error = String(e); }
+    finally { loading = false; }
+  }
+
   function onMouseUp() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) { selection = null; return; }
@@ -311,6 +325,10 @@
       <button class="btn" disabled={!rawText || loading} onclick={() => void repairLayout()}>
         <Icon name="refresh" size={12} /> 修复排版
       </button>
+      <button class="btn" disabled={!rawText || loading} onclick={() => void fixMath()}
+              title="把 PDF 提取出的碎公式整理成可渲染的 LaTeX（\\[..\\] → $$..$$，散行公式并为展示块）">
+        <Icon name="pencil" size={12} /> 修公式
+      </button>
       <button class="btn primary" disabled={!canSave} onclick={() => (saveOpen = true)}>
         <Icon name="plus" size={12} /> 保存到项目
       </button>
@@ -375,12 +393,12 @@
                 </p>
               </div>
             {:else}
-              <p>{para.trim()}</p>
+              <RichText text={para.trim()} />
             {/if}
           {/if}
         {/each}
         <div class="paper-foot mono">
-          {wordCount.toLocaleString()} 词 · {charCount.toLocaleString()} 字符{#if repaired} · 已修复排版{/if}
+          {wordCount.toLocaleString()} 词 · {charCount.toLocaleString()} 字符{#if repaired} · 已修复排版{/if}{#if mathFixed} · 已修公式{/if}
         </div>
       {/if}
     </article>

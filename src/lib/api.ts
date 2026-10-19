@@ -790,6 +790,17 @@ export const literatureExplain = (text: string, mode: string) =>
 export const literatureRepair = (text: string) =>
   invoke<string>("literature_repair", { text });
 
+/** 2.6 公式修复 — make extracted math KaTeX-renderable (\\[..\\] → $$..$$,
+ *  wrap equation-like bare lines into display blocks). Pure heuristic. */
+export const literatureFixMath = (text: string) =>
+  invoke<string>("literature_fix_math", { text });
+
+/** 2.6 图表自动解释 — explain the figure(s) on one PDF page (vision model),
+ *  guided by the caption text the user selected. `path` is the source's
+ *  stored_path; `page` is 1-based. */
+export const figureExplain = (path: string, page: number, caption?: string) =>
+  invoke<string>("figure_explain", { path, page, caption: caption ?? null });
+
 /** Persist a paper as a text-kind source under a subject. Returns the new source id. */
 export const literatureSaveSource = (
   subjectId: string,

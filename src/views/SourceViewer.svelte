@@ -192,6 +192,32 @@
     }
   }
 
+  // ---- 2.6 图表自动解释 ------------------------------------------------
+  // 选中的文字（通常是图表题注 "Figure 3: …"）作为定位线索，整页 150dpi 渲染
+  // 后交给 vision 模型解释。结果展示在右侧浮层，可关闭。
+  let figAnswer = $state<string | null>(null);
+  let figBusy = $state(false);
+  let figError = $state<string | null>(null);
+
+  async function explainFigure() {
+    if (!pdfSel || !app.activeSource?.stored_path || figBusy) return;
+    figBusy = true;
+    figError = null;
+    figAnswer = null;
+    try {
+      figAnswer = await api.figureExplain(
+        app.activeSource.stored_path,
+        pdfSel.page,
+        pdfSel.text,
+      );
+    } catch (e) {
+      figError = String(e);
+    } finally {
+      figBusy = false;
+      pdfSel = null;
+    }
+  }
+
   // ---- load chunks on mount / when the active source changes ----
   // Re-runs reactively whenever app.activeSource (or its id) changes. We only
   // need raw chunks when there's no richer preview to fall back to, plus audio
@@ -369,6 +395,31 @@
               <Icon name="book" size={11} /> 摘录
             </button>
             <button class="fb" onclick={copyPdfSelection}><Icon name="check" size={11} /> 复制</button>
+            <button class="fb" onclick={explainFigure} disabled={figBusy}
+                    title="用视觉模型解释本页图表（以选中文字为题注线索）">
+              <Icon name="chart" size={11} /> {figBusy ? "解读中…" : "图解"}
+            </button>
+          </div>
+        {/if}
+        {#if figAnswer || figError || figBusy}
+          <div class="float" style="position:fixed;right:18px;top:76px;max-width:min(420px,40vw);max-height:70vh;overflow-y:auto;text-align:left" role="status">
+            {#if figBusy}
+              <span class="fb mono"><Icon name="chart" size={11} /> 正在解读第 {pdfSel?.page ?? ""} 页图表…</span>
+            {:else if figError}
+              <div class="fb" style="color:var(--err,var(--warn))">图表解读失败：{figError}</div>
+            {:else if figAnswer}
+              <div class="fb" style="display:block;padding:10px 12px">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                  <Icon name="chart" size={11} />
+                  <strong style="font-size:var(--t-xs)">图表解读</strong>
+                  <span style="flex:1"></span>
+                  <button class="fb" onclick={() => { figAnswer = null; figError = null; }} title="关闭">
+                    <Icon name="x" size={11} />
+                  </button>
+                </div>
+                <RichText text={figAnswer} />
+              </div>
+            {/if}
           </div>
         {/if}
         {#if excerptFlash}

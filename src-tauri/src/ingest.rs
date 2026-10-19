@@ -1039,6 +1039,22 @@ pub fn csv_to_text(path: &str) -> Result<String> {
 /// Render up to `max_pages` of a PDF to PNG page images (bytes) via poppler's
 /// `pdftoppm`. Used to OCR scanned/image-only PDFs through a vision model.
 pub fn pdf_page_images(path: &str, max_pages: usize) -> Result<Vec<Vec<u8>>> {
+    rasterize(path, None, max_pages)
+}
+
+/// Rasterize ONE page (1-based) — the figure-explain path (2.6) sends a single
+/// page to the vision model instead of the first-N-pages OCR batch.
+pub fn pdf_page_image(path: &str, page: usize) -> Result<Vec<u8>> {
+    let mut imgs = rasterize(path, Some(page), page)?;
+    match imgs.len() {
+        1 => Ok(imgs.remove(0)),
+        0 => Err(Error::Other(format!("无法渲染第 {page} 页（超出页数范围？）"))),
+        _ => Err(Error::Other("渲染返回了多页".into())),
+    }
+}
+
+/// Shared pdftoppm runner: pages `from..=to` (None from = 1). Returns PNG bytes.
+fn rasterize(path: &str, from: Option<usize>, to: usize) -> Result<Vec<Vec<u8>>> {
     use std::process::Command;
     let Some(pdftoppm) = which("pdftoppm") else {
         return Err(Error::Other(
@@ -1048,8 +1064,15 @@ pub fn pdf_page_images(path: &str, max_pages: usize) -> Result<Vec<Vec<u8>>> {
     let dir = std::env::temp_dir().join(format!("cortex-ocr-{}", crate::db::new_id()));
     std::fs::create_dir_all(&dir)?;
     let prefix = dir.join("page");
+    let mut args = vec!["-png".to_string(), "-r".to_string(), "150".to_string()];
+    if let Some(f) = from {
+        args.push("-f".into());
+        args.push(f.to_string());
+    }
+    args.push("-l".into());
+    args.push(to.to_string());
     let out = Command::new(&pdftoppm)
-        .args(["-png", "-r", "150", "-l", &max_pages.to_string()])
+        .args(&args)
         .arg(path)
         .arg(&prefix)
         .output();
@@ -1229,7 +1252,7 @@ fn runtime_fetched(name: &str, data_dir: Option<&std::path::Path>) -> Option<Str
     } else {
         None
     }
-}
+}
 
 
 /// Split text into bounded, overlapping chunks on word boundaries.
