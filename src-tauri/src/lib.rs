@@ -172,6 +172,15 @@ pub fn run() {
 
             app.manage(state);
 
+            // Bundled personal skills (3.9): seed the user's repeat-workflow
+            // templates once (by name, never overwriting an edited copy).
+            if let Some(state) = app.try_state::<AppState>() {
+                let c = state.db.lock().unwrap();
+                if let Err(e) = crate::agents::seed_bundled_skills(&c) {
+                    eprintln!("[agents] bundled skill seed failed: {e}");
+                }
+            }
+
             // Browser-extension clip server: a loopback-only HTTP listener
             // (127.0.0.1:7878) so the manifest-V3 extension can POST the
             // page the user is reading. Binds on a detached thread, so

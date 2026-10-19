@@ -395,6 +395,80 @@ pub fn upsert_skill(
     ).map_err(Into::into)
 }
 
+/// C3 (3.9): bundled personal skills — the workflows this user actually runs
+/// on repeat, seeded as ready-to-enable templates. Seeded ONCE by (user, name):
+/// the user's copy is theirs to edit/disable/delete, and upgrades never
+/// overwrite it. `enabled = 0` on insert — opting in is one toggle in the
+/// Agents view, and an agent that references skills by name stays unaffected.
+const BUNDLED_SKILLS: &[(&str, &str, &str)] = &[
+    (
+        "文献综述骨架",
+        "给定主题生成可执行的综述写作骨架：主题地图 → 观点对比 → 缺口",
+        "你是科研写作助手。用户给出一个综述主题后，按以下结构输出：\n\
+         1. **检索策略**：列出 3 组中英文检索词（同义词/上下位词），标注适合的数据库。\n\
+         2. **主题地图**：把该领域分成 3-5 个子主题，每个子主题一句话说明它回答什么问题、与相邻子主题的边界。\n\
+         3. **观点对比**：每个子主题下，列出代表性立场/流派（占位：[作者 年份]），用表格对比其方法、样本、结论强度。\n\
+         4. **矛盾与缺口**：明确指出哪两个结论相互冲突、哪些问题尚无人做。\n\
+         5. **骨架**：给出综述的节标题层级（H2/H3），每节 2-3 句要点，供直接扩写。\n\
+         引用一律用 [作者 年份] 占位，禁止编造具体文献细节；不确定就写「待核实」。",
+    ),
+    (
+        "实验复现清单",
+        "从论文方法部分生成逐步复现清单：环境/数据/超参/验证/坑",
+        "你是复现实验的工程师。用户给出一篇论文的方法描述（或摘要）后，输出：\n\
+         1. **环境**：语言/框架/硬件需求推测，给 pip/conda 安装命令占位。\n\
+         2. **数据**：训练/评测数据集、划分方式、预处理步骤（逐条可勾选）。\n\
+         3. **超参表**：论文出现的全部超参，表格列出名称、值、出处章节；缺失的标「论文未给，需实验」。\n\
+         4. **实现步骤**：按依赖顺序编号（先数据管线→模型→训练循环→评测），每步一句验收标准。\n\
+         5. **验证**：复现成功的判定指标与论文报告值的对照表。\n\
+         6. **常见坑**：根据方法类型列出 3-5 个易错点（随机种子、数据泄漏、数值稳定性等）。\n\
+         论文没写的细节必须标注「推测」，不许编造成论文原文。",
+    ),
+    (
+        "章节草稿起草",
+        "按章节号+要点+引用生成学术语气草稿，引用留占位",
+        "你是学术写作助手。用户给出「章节号 + 本章要点 + 可用参考文献列表」后：\n\
+         1. 先用 3-5 行列出本章的逻辑推进顺序（段落规划），等用户确认或直接续写。\n\
+         2. 正文：学术语气、每段一个论点、论点句在段首；句间用「因此/然而/具体而言」显式衔接。\n\
+         3. 引用：只允许使用用户给的参考文献，标注为 [n]（编号对应其列表序号）；需要支撑但没有对应文献的句子，在句尾加 ⚠ 标记。\n\
+         4. 术语：首次出现给中英对照；保持全章一致。\n\
+         5. 结尾给「本节小结」3 句以内 + 下一章衔接句。\n\
+         不堆砌形容词，不写「众所周知」，每段 4-7 句。",
+    ),
+    (
+        "公式推导逐步走",
+        "从假设出发逐步推导，每步标注依据，末尾给直观解释",
+        "你是数学推导助手。用户给出一个定理/公式/题目后：\n\
+         1. **已知与目标**：先列出全部假设、记号约定、要证的目标，单独成行。\n\
+         2. **推导**：每步只做一件事（代入/移项/用某定理/恒等变形），公式用 LaTeX（$$ 块），行内短式用 $...$；每步右侧或下方用「依据：」标注所用定义/定理/前一步编号。\n\
+         3. **关键跳跃**：凡是非显然的一步，先写一句「为什么可以这样做」再写式子。\n\
+         4. **结论**：把证得的结论整理成 boxed 形式，与目标逐条对照。\n\
+         5. **直观解释**：用一段平话解释这个结果的含义和一个具体例子（带数字）。\n\
+         推导卡住时明确说「此处需要 XX 引理，正文未给」，不许跳步伪装完成。",
+    ),
+];
+
+pub fn seed_bundled_skills(conn: &Connection) -> Result<usize> {
+    let mut seeded = 0;
+    for (name, desc, body) in BUNDLED_SKILLS {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_skills WHERE user_id=?1 AND name=?2",
+            params![DEFAULT_USER, name],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            let now = crate::db::now_ms();
+            conn.execute(
+                "INSERT INTO agent_skills (id, user_id, name, description, body, enabled, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,0,?6,?6)",
+                params![crate::db::new_id(), DEFAULT_USER, name, desc, body, now],
+            )?;
+            seeded += 1;
+        }
+    }
+    Ok(seeded)
+}
+
 pub fn list_tools(conn: &Connection, user_id: &str) -> Result<Vec<Tool>> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, name, description, kind, schema_json, enabled, built_in, created_at
@@ -496,5 +570,34 @@ mod tests {
         assert!(upsert_skill(&c, "u1", None, "x", "", "", true).is_err());
         let s = upsert_skill(&c, "u1", None, "ok", "d", "b", true).unwrap();
         assert_eq!(s.name, "ok");
+    }
+
+    #[test]
+    fn bundled_skills_seed_once_and_respect_user_edits() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        // first seed inserts every template, disabled
+        let n = seed_bundled_skills(&c).unwrap();
+        assert_eq!(n, BUNDLED_SKILLS.len());
+        let skills = list_skills(&c, DEFAULT_USER).unwrap();
+        assert_eq!(skills.len(), BUNDLED_SKILLS.len());
+        assert!(skills.iter().all(|s| !s.enabled), "templates start disabled");
+        // every template body is non-trivial (a typo'd template is useless)
+        for s in &skills {
+            assert!(s.body.len() > 100, "template body too short: {}", s.name);
+        }
+
+        // user edits one copy's body and enables it
+        let edited = skills.iter().find(|s| s.name == "文献综述骨架").unwrap();
+        upsert_skill(&c, DEFAULT_USER, Some(&edited.id), &edited.name,
+                     &edited.description, "我的定制版本", true).unwrap();
+
+        // second seed is a no-op — the edited, enabled copy survives untouched
+        assert_eq!(seed_bundled_skills(&c).unwrap(), 0);
+        let after = list_skills(&c, DEFAULT_USER).unwrap();
+        assert_eq!(after.len(), BUNDLED_SKILLS.len());
+        let mine = after.iter().find(|s| s.name == "文献综述骨架").unwrap();
+        assert_eq!(mine.body, "我的定制版本");
+        assert!(mine.enabled);
     }
 }
