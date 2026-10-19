@@ -2431,6 +2431,10 @@ export interface ExtractCell {
   item_id: string;
   field_key: string;
   value: string;
+  /** Verbatim supporting sentence from the paper card (model output). */
+  evidence: string | null;
+  /** Back-link to excerpts — set when the evidence matched or became a card. */
+  excerpt_id: string | null;
   source: "model" | "manual";
   updated_at: number;
 }
@@ -2486,6 +2490,9 @@ export const extractResultCsv = (runId: string) =>
 /** Write the run's table as a CSV file (RFC-4180 + BOM) at `dest`. */
 export const extractResultCsvFile = (runId: string, dest: string) =>
   invoke<void>("extract_result_csv_file", { runId, dest });
+/** Write the run's table as a styled .xlsx workbook (values + evidence cols). */
+export const extractResultXlsxFile = (runId: string, dest: string) =>
+  invoke<void>("extract_result_xlsx_file", { runId, dest });
 export const extractCellSet = (
   runId: string,
   itemId: string,
@@ -2547,6 +2554,9 @@ export const prismaResultCsvFile = (runId: string, dest: string) =>
 /** Summary table as Markdown at `dest`. */
 export const prismaResultMdFile = (runId: string, dest: string) =>
   invoke<void>("prisma_result_md_file", { runId, dest });
+/** Summary table as styled .xlsx workbook (values + evidence cols). */
+export const prismaResultXlsxFile = (runId: string, dest: string) =>
+  invoke<void>("prisma_result_xlsx_file", { runId, dest });
 
 // ---- D6: summary tree --------------------------------------------------------
 

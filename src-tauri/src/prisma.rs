@@ -241,7 +241,9 @@ fn norm_ws(s: &str) -> String {
 /// to that card instead of duplicating it. Otherwise the evidence must be
 /// verbatim in the card to become a NEW excerpt — a quote the card doesn't
 /// contain stays unlinked rather than fabricating provenance.
-fn link_evidence(
+/// Shared with extraction.rs (2.4): same review-grade provenance for the
+/// user-defined-schema tables.
+pub(crate) fn link_evidence(
     conn: &Connection,
     paper_id: &str,
     source_id: Option<&str>,
@@ -553,6 +555,9 @@ pub fn to_markdown(result: &PrismaResult) -> String {
 }
 
 /// RFC-4180 CSV with a UTF-8 BOM so Excel opens CJK content correctly.
+/// After the value columns comes one `{维度}_证据` column per field carrying
+/// the verbatim supporting sentence — a review table exported for others to
+/// check must stay checkable (2.4: provenance now ships with the export).
 pub fn to_csv(result: &PrismaResult) -> String {
     fn esc(s: &str) -> String {
         if s.contains([',', '"', '\n', '\r']) {
@@ -561,9 +566,22 @@ pub fn to_csv(result: &PrismaResult) -> String {
             s.to_string()
         }
     }
+    fn cell<'a>(result: &'a PrismaResult, item_id: &str, key: &str) -> Option<&'a PrismaCell> {
+        result
+            .cells
+            .iter()
+            .find(|c| c.item_id == item_id && c.field_key == key)
+    }
     let mut out = String::from("\u{feff}");
     let mut header = vec!["标题".to_string(), "作者".to_string(), "年份".to_string()];
     header.extend(prisma_labels().into_iter().map(String::from));
+    header.extend(
+        result
+            .run
+            .fields
+            .iter()
+            .map(|f| format!("{}_证据", f.key)),
+    );
     out.push_str(&header.iter().map(|h| esc(h)).collect::<Vec<_>>().join(","));
     out.push('\n');
     for item in &result.items {
@@ -573,18 +591,77 @@ pub fn to_csv(result: &PrismaResult) -> String {
             item.year.map(|y| y.to_string()).unwrap_or_default(),
         ];
         for f in &result.run.fields {
-            let v = result
-                .cells
-                .iter()
-                .find(|c| c.item_id == item.id && c.field_key == f.key)
+            row.push(cell(result, &item.id, &f.key)
                 .map(|c| c.value.clone())
-                .unwrap_or_default();
-            row.push(v);
+                .unwrap_or_default());
+        }
+        for f in &result.run.fields {
+            row.push(cell(result, &item.id, &f.key)
+                .and_then(|c| c.evidence.clone())
+                .unwrap_or_default());
         }
         out.push_str(&row.iter().map(|h| esc(h)).collect::<Vec<_>>().join(","));
         out.push('\n');
     }
     out
+}
+
+/// One sheet carrying the whole run: values, then per-field evidence columns —
+/// the same shape as `to_csv`, but styled through the shared xlsx writer.
+pub fn xlsx_sheets(result: &PrismaResult) -> Vec<crate::office::xlsx::SheetSpec> {
+    use crate::office::xlsx::{Cell, SheetSpec};
+    let cell = |item_id: &str, key: &str| {
+        result
+            .cells
+            .iter()
+            .find(|c| c.item_id == item_id && c.field_key == key)
+    };
+    let mut headers = vec!["论文".to_string(), "年份".to_string()];
+    headers.extend(prisma_labels().into_iter().map(String::from));
+    headers.extend(
+        result
+            .run
+            .fields
+            .iter()
+            .map(|f| format!("{}_证据", f.key)),
+    );
+    let mut widths = vec![34.0, 8.0];
+    widths.extend(result.run.fields.iter().map(|_| 26.0));
+    widths.extend(result.run.fields.iter().map(|_| 34.0));
+    let rows = result
+        .items
+        .iter()
+        .map(|item| {
+            let mut row = vec![
+                Cell::Text(item.title.clone()),
+                match item.year {
+                    Some(y) => Cell::Num(y as f64),
+                    None => Cell::Text(String::new()),
+                },
+            ];
+            for f in &result.run.fields {
+                row.push(Cell::Text(
+                    cell(&item.id, &f.key).map(|c| c.value.clone()).unwrap_or_default(),
+                ));
+            }
+            for f in &result.run.fields {
+                row.push(Cell::Text(
+                    cell(&item.id, &f.key)
+                        .and_then(|c| c.evidence.clone())
+                        .unwrap_or_default(),
+                ));
+            }
+            row
+        })
+        .collect();
+    vec![SheetSpec {
+        name: "PRISMA 汇总".into(),
+        title: Some(result.run.title.clone()),
+        headers,
+        widths,
+        rows,
+        chart: None,
+    }]
 }
 
 // ---- Tauri command surface -------------------------------------------------
@@ -656,6 +733,22 @@ pub fn prisma_result_md_file(
     };
     std::fs::write(&dest, md.as_bytes())
         .map_err(|e| Error::Other(format!("写入 Markdown 失败：{e}")))?;
+    Ok(())
+}
+
+/// Write the run as a styled .xlsx workbook (values + evidence columns).
+#[tauri::command]
+pub fn prisma_result_xlsx_file(
+    state: State<crate::db::AppState>,
+    run_id: String,
+    dest: String,
+) -> Result<()> {
+    let sheets = {
+        let c = state.db.lock().unwrap();
+        xlsx_sheets(&get_result(&c, &run_id)?)
+    };
+    crate::office::xlsx::build_workbook(std::path::Path::new(&dest), &sheets)
+        .map_err(|e| Error::Other(format!("写入 Excel 失败：{e}")))?;
     Ok(())
 }
 

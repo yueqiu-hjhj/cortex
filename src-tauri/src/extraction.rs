@@ -51,6 +51,11 @@ pub struct ExtractCell {
     pub item_id: String,
     pub field_key: String,
     pub value: String,
+    /// Verbatim supporting sentence from the paper card (2.4: PRISMA-grade
+    /// provenance for the user-defined-schema path too).
+    pub evidence: Option<String>,
+    /// Back-link to excerpts — set when the evidence matched or became a card.
+    pub excerpt_id: Option<String>,
     pub source: String, // model | manual
     pub updated_at: i64,
 }
@@ -281,7 +286,7 @@ pub fn get_result(conn: &Connection, run_id: &str) -> Result<ExtractResult> {
         items.push(item);
     }
     let mut st = conn.prepare(
-        "SELECT item_id, field_key, value, source, updated_at
+        "SELECT item_id, field_key, value, evidence, excerpt_id, source, updated_at
          FROM extract_cells WHERE run_id = ?1 ORDER BY item_id, field_key",
     )?;
     let cells = st
@@ -290,8 +295,10 @@ pub fn get_result(conn: &Connection, run_id: &str) -> Result<ExtractResult> {
                 item_id: r.get(0)?,
                 field_key: r.get(1)?,
                 value: r.get(2)?,
-                source: r.get(3)?,
-                updated_at: r.get(4)?,
+                evidence: r.get(3)?,
+                excerpt_id: r.get(4)?,
+                source: r.get(5)?,
+                updated_at: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -299,7 +306,8 @@ pub fn get_result(conn: &Connection, run_id: &str) -> Result<ExtractResult> {
 }
 
 /// Store one human correction. Always writes source='manual' — the flag is what
-/// keeps re-runs and retries from clobbering reviewed values.
+/// keeps re-runs and retries from clobbering reviewed values. Evidence is
+/// cleared with the edit: the old proof sentence no longer backs the new text.
 pub fn set_cell(
     conn: &Connection,
     run_id: &str,
@@ -315,10 +323,11 @@ pub fn set_cell(
         return Err(Error::Other("该论文不在本次提取范围内".into()));
     }
     conn.execute(
-        "INSERT INTO extract_cells (run_id, item_id, field_key, value, source, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'manual', ?5)
+        "INSERT INTO extract_cells (run_id, item_id, field_key, value, evidence, excerpt_id, source, updated_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, NULL, 'manual', ?5)
          ON CONFLICT(run_id, item_id, field_key)
-         DO UPDATE SET value=excluded.value, source='manual', updated_at=excluded.updated_at",
+         DO UPDATE SET value=excluded.value, evidence=NULL, excerpt_id=NULL,
+           source='manual', updated_at=excluded.updated_at",
         params![run_id, item_id, field_key, value, now_ms()],
     )?;
     Ok(())
@@ -338,11 +347,14 @@ fn paper_prompt(fields: &[ExtractField], card: &str) -> (String, String) {
     let system = "You are a systematic-review data-extraction assistant. You get ONE paper card \
         (title, metadata, abstract, verbatim excerpts) and a list of extraction fields keyed by \
         `key`. Fill EVERY field for THIS paper using ONLY the card. Never invent facts, numbers, \
-        or section names; if the card does not answer a field, output an empty string for it. \
-        Quote exact terms, dataset/metric/algorithm names and figures from the card when they \
-        answer the field. Keep each value to 1-3 sentences (under 60 words). Write each value in \
-        the language of that field's prompt. Output ONLY a JSON object of the exact shape \
-        {\"values\":{\"<key>\":\"...\"}} with every key present — no markdown, no commentary.";
+        or section names; if the card does not answer a field, output an empty string for both \
+        its value and its evidence. For every field you CAN fill, also output `evidence`: ONE \
+        sentence copied VERBATIM, character-for-character, from the card that best supports the \
+        value. Quote exact terms, dataset/metric/algorithm names and figures from the card when \
+        they answer the field. Keep each value to 1-3 sentences (under 60 words). Write each \
+        value in the language of that field's prompt. Output ONLY a JSON object of the exact \
+        shape {\"values\":{\"<key>\":\"...\"},\"evidence\":{\"<key>\":\"...\"}} with every key \
+        present in BOTH maps — no markdown, no commentary.";
     let user = format!(
         "FIELDS:\n{}\n\nPAPER CARD:\n{}",
         field_block(fields),
@@ -351,14 +363,23 @@ fn paper_prompt(fields: &[ExtractField], card: &str) -> (String, String) {
     (system.to_string(), user)
 }
 
-fn cell_upsert(conn: &Connection, run_id: &str, item_id: &str, field_key: &str, value: &str) -> Result<()> {
+fn cell_upsert(
+    conn: &Connection,
+    run_id: &str,
+    item_id: &str,
+    field_key: &str,
+    value: &str,
+    evidence: Option<&str>,
+    excerpt_id: Option<&str>,
+) -> Result<()> {
     conn.execute(
-        "INSERT INTO extract_cells (run_id, item_id, field_key, value, source, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'model', ?5)
+        "INSERT INTO extract_cells (run_id, item_id, field_key, value, evidence, excerpt_id, source, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'model', ?7)
          ON CONFLICT(run_id, item_id, field_key) DO UPDATE SET
-           value=excluded.value, source=excluded.source, updated_at=excluded.updated_at
+           value=excluded.value, evidence=excluded.evidence, excerpt_id=excluded.excerpt_id,
+           source=excluded.source, updated_at=excluded.updated_at
          WHERE extract_cells.source != 'manual'",
-        params![run_id, item_id, field_key, value, now_ms()],
+        params![run_id, item_id, field_key, value, evidence, excerpt_id, now_ms()],
     )?;
     Ok(())
 }
@@ -385,8 +406,9 @@ fn fail_run(conn: &Connection, run_id: &str, err: &str) {
     );
 }
 
-/// Extract one paper's cells with the loaded model. Errors bubble to the caller,
-/// which decides per-paper whether to warn-and-continue or abort.
+/// Extract one paper's cells + evidence links with the loaded model. Errors
+/// bubble to the caller, which decides per-paper whether to warn-and-continue
+/// or abort.
 fn extract_one_paper(
     model: &mut Box<dyn crate::llm::Llm>,
     conn: &Connection,
@@ -395,16 +417,26 @@ fn extract_one_paper(
     fields: &[ExtractField],
     card: &str,
 ) -> Result<()> {
+    let excerpts = crate::papers::list_excerpts(conn, Some(item_id))?;
+    let source_id: Option<String> = conn
+        .query_row(
+            "SELECT source_id FROM papers WHERE id = ?1",
+            params![item_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
     let (system, user) = paper_prompt(fields, card);
     let n_fields = fields.len() as u32;
-    model.set_max_tokens((512 + 260 * n_fields).max(1024));
+    model.set_max_tokens((1024 + 520 * n_fields).max(2048)); // values + evidence quotes
     let raw = model.complete(&system, &user)?;
+    crate::tokens::record(conn, "extraction", &model.name(), &format!("{system}\n{user}"), &raw, None);
     let parsed = match crate::llm::extract_json(&raw) {
         Ok(v) => v,
         Err(_) => {
             let raw2 = model.complete(
                 &system,
-                &format!("{user}\n\nIMPORTANT: the previous reply could not be parsed. Respond with ONLY the raw JSON object {{\"values\":{{…}}}}."),
+                &format!("{user}\n\nIMPORTANT: the previous reply could not be parsed. Respond with ONLY the raw JSON object {{\"values\":{{…}},\"evidence\":{{…}}}}."),
             )?;
             crate::llm::extract_json(&raw2)?
         }
@@ -413,13 +445,42 @@ fn extract_one_paper(
         .get("values")
         .and_then(|v| v.as_object())
         .ok_or_else(|| Error::Other("模型输出缺少 values 对象".into()))?;
+    let evidences = parsed.get("evidence").and_then(|v| v.as_object());
     for f in fields {
         let val = values
             .get(&f.key)
             .and_then(|v| v.as_str())
             .map(str::trim)
             .unwrap_or_default();
-        cell_upsert(conn, run_id, item_id, &f.key, val)?;
+        let ev = evidences
+            .and_then(|m| m.get(&f.key))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        // Same review-grade provenance as PRISMA: reuse a matching excerpt,
+        // else create one only if the sentence is verbatim in the card.
+        let excerpt_id = if val.is_empty() || ev.is_empty() {
+            None
+        } else {
+            crate::prisma::link_evidence(
+                conn,
+                item_id,
+                source_id.as_deref(),
+                &f.key,
+                card,
+                ev,
+                &excerpts,
+            )?
+        };
+        cell_upsert(
+            conn,
+            run_id,
+            item_id,
+            &f.key,
+            val,
+            if ev.is_empty() { None } else { Some(ev) },
+            excerpt_id.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -511,6 +572,8 @@ pub fn retry_item(app: &AppHandle, run_id: &str, item_id: &str) -> Result<()> {
 
 /// RFC-4180 CSV with a UTF-8 BOM so Excel opens CJK content correctly. The
 /// header uses field keys; values come from cells (manual edits included).
+/// After the value columns comes one `{key}_证据` column per field — a table
+/// others will check must stay checkable (2.4).
 pub fn to_csv(result: &ExtractResult) -> String {
     fn esc(s: &str) -> String {
         if s.contains([',', '"', '\n', '\r']) {
@@ -519,9 +582,16 @@ pub fn to_csv(result: &ExtractResult) -> String {
             s.to_string()
         }
     }
+    let cell = |item_id: &str, key: &str| {
+        result
+            .cells
+            .iter()
+            .find(|c| c.item_id == item_id && c.field_key == key)
+    };
     let mut out = String::from("\u{feff}");
     let mut header = vec!["标题".to_string(), "作者".to_string(), "年份".to_string()];
     header.extend(result.run.fields.iter().map(|f| f.key.clone()));
+    header.extend(result.run.fields.iter().map(|f| format!("{}_证据", f.key)));
     out.push_str(&header.iter().map(|h| esc(h)).collect::<Vec<_>>().join(","));
     out.push('\n');
     for item in &result.items {
@@ -531,18 +601,71 @@ pub fn to_csv(result: &ExtractResult) -> String {
             item.year.map(|y| y.to_string()).unwrap_or_default(),
         ];
         for f in &result.run.fields {
-            let v = result
-                .cells
-                .iter()
-                .find(|c| c.item_id == item.id && c.field_key == f.key)
+            row.push(cell(&item.id, &f.key)
                 .map(|c| c.value.clone())
-                .unwrap_or_default();
-            row.push(v);
+                .unwrap_or_default());
+        }
+        for f in &result.run.fields {
+            row.push(cell(&item.id, &f.key)
+                .and_then(|c| c.evidence.clone())
+                .unwrap_or_default());
         }
         out.push_str(&row.iter().map(|h| esc(h)).collect::<Vec<_>>().join(","));
         out.push('\n');
     }
     out
+}
+
+/// One sheet carrying the whole run: values, then per-field evidence columns —
+/// the same shape as `to_csv`, styled through the shared xlsx writer.
+pub fn xlsx_sheets(result: &ExtractResult) -> Vec<crate::office::xlsx::SheetSpec> {
+    use crate::office::xlsx::{Cell, SheetSpec};
+    let cell = |item_id: &str, key: &str| {
+        result
+            .cells
+            .iter()
+            .find(|c| c.item_id == item_id && c.field_key == key)
+    };
+    let mut headers = vec!["论文".to_string(), "年份".to_string()];
+    headers.extend(result.run.fields.iter().map(|f| f.key.clone()));
+    headers.extend(result.run.fields.iter().map(|f| format!("{}_证据", f.key)));
+    let mut widths = vec![34.0, 8.0];
+    widths.extend(result.run.fields.iter().map(|_| 26.0));
+    widths.extend(result.run.fields.iter().map(|_| 34.0));
+    let rows = result
+        .items
+        .iter()
+        .map(|item| {
+            let mut row = vec![
+                Cell::Text(item.title.clone()),
+                match item.year {
+                    Some(y) => Cell::Num(y as f64),
+                    None => Cell::Text(String::new()),
+                },
+            ];
+            for f in &result.run.fields {
+                row.push(Cell::Text(
+                    cell(&item.id, &f.key).map(|c| c.value.clone()).unwrap_or_default(),
+                ));
+            }
+            for f in &result.run.fields {
+                row.push(Cell::Text(
+                    cell(&item.id, &f.key)
+                        .and_then(|c| c.evidence.clone())
+                        .unwrap_or_default(),
+                ));
+            }
+            row
+        })
+        .collect();
+    vec![SheetSpec {
+        name: "提取表".into(),
+        title: Some(result.run.title.clone()),
+        headers,
+        widths,
+        rows,
+        chart: None,
+    }]
 }
 
 // ---- Tauri command surface ----------------------------------------------
@@ -637,6 +760,22 @@ pub fn extract_result_csv_file(
     };
     std::fs::write(&dest, csv.as_bytes())
         .map_err(|e| Error::Other(format!("写入 CSV 失败：{e}")))?;
+    Ok(())
+}
+
+/// Write the run's table as a styled .xlsx workbook (values + evidence cols).
+#[tauri::command]
+pub fn extract_result_xlsx_file(
+    state: State<crate::db::AppState>,
+    run_id: String,
+    dest: String,
+) -> Result<()> {
+    let sheets = {
+        let c = state.db.lock().unwrap();
+        xlsx_sheets(&get_result(&c, &run_id)?)
+    };
+    crate::office::xlsx::build_workbook(std::path::Path::new(&dest), &sheets)
+        .map_err(|e| Error::Other(format!("写入 Excel 失败：{e}")))?;
     Ok(())
 }
 
@@ -739,16 +878,18 @@ mod tests {
         assert_eq!(run.item_ids, vec![pid.clone()]);
 
         // model writes a cell, human corrects it — source flips to manual
-        cell_upsert(&c, &run_id, &pid, "sample", "n=128 (model)").unwrap();
+        cell_upsert(&c, &run_id, &pid, "sample", "n=128 (model)", Some("the sample comprised 128 participants"), None).unwrap();
         set_cell(&c, &run_id, &pid, "sample", "n=132 (fixed)").unwrap();
         let res = get_result(&c, &run_id).unwrap();
         assert_eq!(res.items[0].title, "Paper One");
         let cell = res.cells.iter().find(|c| c.field_key == "sample").unwrap();
         assert_eq!(cell.value, "n=132 (fixed)");
         assert_eq!(cell.source, "manual");
+        // a manual edit clears the stale model evidence
+        assert!(cell.evidence.is_none());
 
         // re-run upsert must NOT clobber the manual correction
-        cell_upsert(&c, &run_id, &pid, "sample", "n=999 (rerun)").unwrap();
+        cell_upsert(&c, &run_id, &pid, "sample", "n=999 (rerun)", None, None).unwrap();
         let res = get_result(&c, &run_id).unwrap();
         let cell = res.cells.iter().find(|c| c.field_key == "sample").unwrap();
         assert_eq!(cell.value, "n=132 (fixed)");
@@ -765,11 +906,11 @@ mod tests {
         let pid = seed_paper(&c, "A, \"tricky\" title");
         let tid = save_template(&c, None, "T", None, &fields()).unwrap();
         let run_id = create_run(&c, &tid, &[pid], Some("我的提取")).unwrap();
-        cell_upsert(&c, &run_id, &get_run(&c, &run_id).unwrap().item_ids[0], "sample", "n=42").unwrap();
+        cell_upsert(&c, &run_id, &get_run(&c, &run_id).unwrap().item_ids[0], "sample", "n=42", Some("n = 42"), None).unwrap();
         let res = get_result(&c, &run_id).unwrap();
         let csv = to_csv(&res);
         assert!(csv.starts_with('\u{feff}'));
-        assert!(csv.contains("标题,作者,年份,sample,method"));
+        assert!(csv.contains("标题,作者,年份,sample,method,sample_证据,method_证据"));
         assert!(csv.contains("\"A, \"\"tricky\"\" title\""));
         assert!(csv.contains("n=42"));
         assert!(get_run(&c, &run_id).unwrap().title == "我的提取");

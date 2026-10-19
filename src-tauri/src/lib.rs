@@ -706,6 +706,7 @@ pub fn run() {
             extraction::extract_result_get,
             extraction::extract_result_csv,
             extraction::extract_result_csv_file,
+            extraction::extract_result_xlsx_file,
             extraction::extract_cell_set,
             prisma::prisma_run_create,
             commands::token_usage_summary,
@@ -728,6 +729,7 @@ pub fn run() {
             prisma::prisma_cell_set,
             prisma::prisma_result_csv_file,
             prisma::prisma_result_md_file,
+            prisma::prisma_result_xlsx_file,
             // summary tree (D6) — hierarchical digests + budgeted context
             summary_tree::summary_tree_status,
             summary_tree::summary_tree_build,

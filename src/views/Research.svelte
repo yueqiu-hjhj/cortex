@@ -277,6 +277,9 @@
   function cellIsManual(itemId: string, fieldKey: string): boolean {
     return cellMap.get(`${itemId}\u0000${fieldKey}`)?.source === "manual";
   }
+  function cellObj(itemId: string, fieldKey: string): api.ExtractCell | undefined {
+    return cellMap.get(`${itemId}\u0000${fieldKey}`);
+  }
 
   async function loadExtractData() {
     try {
@@ -448,6 +451,25 @@
       });
       if (!dest) return;
       await api.extractResultCsvFile(extractResult.run.id, dest);
+      say(`表格已导出 → ${dest}`);
+    } catch (e) {
+      extractError = String(e);
+    }
+  }
+
+  async function exportXlsx() {
+    if (!extractResult) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe =
+        extractResult.run.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") ||
+        "extraction";
+      const dest = await save({
+        defaultPath: `${safe}.xlsx`,
+        filters: [{ name: "Excel 工作簿", extensions: ["xlsx"] }],
+      });
+      if (!dest) return;
+      await api.extractResultXlsxFile(extractResult.run.id, dest);
       say(`表格已导出 → ${dest}`);
     } catch (e) {
       extractError = String(e);
@@ -728,6 +750,25 @@
       });
       if (!dest) return;
       await api.prismaResultMdFile(prismaResult.run.id, dest);
+      say(`汇总表已导出 → ${dest}`);
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  async function exportPrismaXlsx() {
+    if (!prismaResult) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe =
+        prismaResult.run.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") ||
+        "prisma";
+      const dest = await save({
+        defaultPath: `${safe}.xlsx`,
+        filters: [{ name: "Excel 工作簿", extensions: ["xlsx"] }],
+      });
+      if (!dest) return;
+      await api.prismaResultXlsxFile(prismaResult.run.id, dest);
       say(`汇总表已导出 → ${dest}`);
     } catch (e) {
       prismaError = String(e);
@@ -1034,7 +1075,7 @@
       <button
         class="btn"
         onclick={openPrisma}
-        title="PRISMA 8 维抽取：固定维度（研究问题 / 方法 / 贡献 / 结果 / 局限 / 适用人群 / 使用前提 / 复现成本）逐篇抽取，证据句回链摘录，导出 CSV / Markdown"
+        title="PRISMA 8 维抽取：固定维度（研究问题 / 方法 / 贡献 / 结果 / 局限 / 适用人群 / 使用前提 / 复现成本）逐篇抽取，证据句回链摘录，导出 CSV / Excel / Markdown"
       >
         PRISMA 抽取
       </button>
@@ -1571,6 +1612,7 @@
                     <div class="faint">{[item.authors, item.year].filter(Boolean).join(" · ")}</div>
                   </td>
                   {#each extractResult.run.fields as f (f.key)}
+                    {@const cell = cellObj(item.id, f.key)}
                     <td>
                       <input
                         value={cellVal(item.id, f.key)}
@@ -1578,6 +1620,12 @@
                         onchange={(e) => saveCell(item.id, f.key, (e.target as HTMLInputElement).value)}
                         title={cellIsManual(item.id, f.key) ? "手动修正过（重跑不会覆盖）" : "点击编辑并校对"}
                       />
+                      {#if cell?.evidence}
+                        <div class="ev" class:linked={!!cell.excerpt_id}
+                             title={cell.evidence + (cell.excerpt_id ? "（已回链摘录卡）" : "（未回链：这句证据没能在论文卡片原文中逐字定位）")}>
+                          {#if cell.excerpt_id}<span class="evl">摘</span>{/if}{cell.evidence}
+                        </div>
+                      {/if}
                       {#if cellIsManual(item.id, f.key)}<span class="mflag" title="手动修正">手</span>{/if}
                     </td>
                   {/each}
@@ -1595,6 +1643,7 @@
         </div>
         <div class="matrix-modal-actions">
           <button class="btn" onclick={exportCsv}>导出 CSV</button>
+          <button class="btn" onclick={exportXlsx}>导出 Excel</button>
           <button class="btn" onclick={() => { extractResult = null; extractView = "pick"; }}>再提一次</button>
           <button class="btn primary" onclick={closeExtract}>完成</button>
         </div>
@@ -1717,6 +1766,7 @@
         <p class="dhint">带「摘」标的证据句已回链到摘录卡（摘录列表里可见「PRISMA · 维度」标注的条目）；没有标的证据句是模型给出但未能在原文逐字定位的，仅作参考。格子可直接改，改过即标记「手」，重跑不覆盖。</p>
         <div class="matrix-modal-actions">
           <button class="btn" onclick={exportPrismaCsv}>导出 CSV</button>
+          <button class="btn" onclick={exportPrismaXlsx}>导出 Excel</button>
           <button class="btn" onclick={exportPrismaMd}>导出 Markdown</button>
           <button class="btn" onclick={() => { prismaResult = null; prismaView = "pick"; }}>再抽一次</button>
           <button class="btn primary" onclick={closePrisma}>完成</button>
