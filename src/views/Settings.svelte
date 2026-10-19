@@ -346,6 +346,7 @@
     dailyTime: "08:00",
     action: "prompt", // "prompt" | "sync"
     connectorId: "",
+    autoFlashcards: false,
   });
   let cronConnectors = $state<api.ConnectorInfo[] | null>(null);
 
@@ -372,6 +373,7 @@
         tz_offset_minutes: -new Date().getTimezoneOffset(),
         action: isSync ? "sync" : "prompt",
         action_ref: isSync ? cronForm.connectorId : null,
+        auto_flashcards: isSync ? cronForm.autoFlashcards : false,
       });
       cronForm = { ...cronForm, name: "", prompt: "", connectorId: "" };
       cronJobs = await api.cronList();
@@ -3697,6 +3699,7 @@ Notes: {about}</pre>
                     {j.name}
                     <span class="slot-hint mono">{cronScheduleText(j)}</span>
                     {#if j.action === "sync"}<span class="slot-hint">🔗 连接器 {j.action_ref}</span>{/if}
+                    {#if j.action === "sync" && j.auto_flashcards}<span class="slot-hint">⚡自动闪卡</span>{/if}
                     {#if !j.enabled}<span class="slot-hint">已暂停</span>{/if}
                   </div>
                   <div class="mt-task-d mono">上次：{cronFmt(j.last_run_at)} · 下次：{cronFmt(j.next_run_at)}</div>
@@ -3790,6 +3793,13 @@ Notes: {about}</pre>
                     <option value={c.id}>{c.label}（{c.id}）</option>
                   {/each}
                 </select>
+              </div>
+              <div class="xtra-row">
+                <div class="xtra-label">
+                  <div class="mt-task-t">同步后自动生成闪卡</div>
+                  <div class="mt-task-d">本次新导入的内容自动提炼 8 张闪卡，直接进入「今日复习」队列（科研 → 学习闭环）</div>
+                </div>
+                <input type="checkbox" bind:checked={cronForm.autoFlashcards} />
               </div>
             {:else}
               <div class="xtra-row">

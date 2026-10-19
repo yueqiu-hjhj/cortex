@@ -2595,6 +2595,43 @@ pub fn srs_grade(
     Ok(SrsResult { due_at, interval_d, reps, ease })
 }
 
+/// Seed brand-new flashcards as due-NOW SRS rows (cron auto-flashcards path).
+/// Unlike a graded card, these have never been studied: interval 0, reps 0,
+/// FSRS init values for a first "good" grade — the first real grading in
+/// Review Today computes from a fresh state. `INSERT OR IGNORE` keyed by
+/// (subject, kind, item_key) so re-syncing the same front text never resets a
+/// card the user has already been scheduling. Returns rows actually seeded.
+pub fn srs_seed_due(
+    conn: &Connection,
+    subject_id: &str,
+    material_id: &str,
+    fronts: &[(i64, String)],
+) -> Result<usize> {
+    let now = now_ms();
+    let mut seeded = 0;
+    for (item_index, item_key) in fronts {
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO srs_cards
+                (id, subject_id, material_id, kind, item_index, item_key,
+                 ease, interval_d, reps, lapses, last_grade, due_at, created_at, updated_at,
+                 stability, difficulty)
+             VALUES (?1,?2,?3,'flashcard',?4,?5, 2.5, 0, 0, 0, NULL, ?6, ?6, ?6, ?7, ?8)",
+            params![
+                new_id(),
+                subject_id,
+                material_id,
+                item_index,
+                item_key,
+                now,
+                fsrs_init_stability(3),
+                fsrs_init_difficulty(3)
+            ],
+        )?;
+        seeded += n;
+    }
+    Ok(seeded)
+}
+
 /// Cards whose `due_at` has arrived (<= now), oldest-due first — the study queue.
 pub fn srs_due(conn: &Connection, subject_id: &str, kind: &str) -> Result<Vec<DueCard>> {
     let mut stmt = conn.prepare(

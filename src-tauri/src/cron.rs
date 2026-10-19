@@ -22,6 +22,9 @@ use tauri::{AppHandle, Manager};
 
 const TICK_SECS: u64 = 30;
 const OUTPUT_CAP: usize = 60_000; // chars stored per run — prompts can't run away
+/// Cards generated per auto-flashcards sync run — small on purpose: a nightly
+/// cron shouldn't burn a big token bill, and 8 due cards/day is a real habit.
+const AUTO_CARD_COUNT: u32 = 8;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CronJob {
@@ -43,6 +46,9 @@ pub struct CronJob {
     pub action: String,
     /// For "sync": the connector_id to pull. Unused for "prompt".
     pub action_ref: Option<String>,
+    /// For "sync": after the pull, auto-generate flashcards from this run's
+    /// imports and seed them as due-now SRS rows (they surface in Review Today).
+    pub auto_flashcards: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +81,9 @@ pub(crate) struct JobIn {
     /// connector_id for "sync" jobs.
     #[serde(default)]
     action_ref: Option<String>,
+    /// Only meaningful for "sync" jobs (see CronJob::auto_flashcards).
+    #[serde(default)]
+    auto_flashcards: Option<bool>,
 }
 fn default_tz() -> i64 {
     480 // UTC+8 — right for this user, and the frontend always sends the real one
@@ -144,11 +153,13 @@ fn row_to_job(r: &rusqlite::Row) -> rusqlite::Result<CronJob> {
             .filter(|a| !a.trim().is_empty())
             .unwrap_or_else(|| "prompt".into()),
         action_ref: r.get(12)?,
+        auto_flashcards: r.get::<_, Option<i64>>(13)?.unwrap_or(0) != 0,
     })
 }
 
 const JOB_COLS: &str = "id, name, prompt, subject_id, kind, interval_minutes, daily_time, \
-                        tz_offset_minutes, enabled, last_run_at, next_run_at, action, action_ref";
+                        tz_offset_minutes, enabled, last_run_at, next_run_at, action, action_ref, \
+                        auto_flashcards";
 
 // ---- CRUD (used by the tauri commands below) ----------------------------
 
@@ -174,6 +185,8 @@ pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob
     if action == "prompt" && input.prompt.trim().is_empty() {
         return Err(Error::Other("提示词任务需要填写提示词".into()));
     }
+    // The flashcard follow-up only makes sense for pulls; ignore it elsewhere.
+    let auto_fc = (action == "sync" && input.auto_flashcards.unwrap_or(false)) as i64;
     let id = new_id();
     let next = compute_next_run(
         &input.kind,
@@ -184,8 +197,9 @@ pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob
     );
     c.execute(
         "INSERT INTO cron_jobs (id, name, prompt, subject_id, kind, interval_minutes, \
-         daily_time, tz_offset_minutes, enabled, next_run_at, created_at, action, action_ref) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,?11,?12)",
+         daily_time, tz_offset_minutes, enabled, next_run_at, created_at, action, action_ref, \
+         auto_flashcards) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,?11,?12,?13)",
         params![
             id,
             name,
@@ -198,7 +212,8 @@ pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob
             next,
             now_ms(),
             action,
-            action_ref
+            action_ref,
+            auto_fc
         ],
     )?;
     get_job(c, &id)
@@ -234,6 +249,7 @@ pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> R
     if action == "prompt" && input.prompt.trim().is_empty() {
         return Err(Error::Other("提示词任务需要填写提示词".into()));
     }
+    let auto_fc = (action == "sync" && input.auto_flashcards.unwrap_or(false)) as i64;
     // Editing recomputes the schedule from now (and re-captures the tz offset).
     let next = compute_next_run(
         &input.kind,
@@ -244,7 +260,8 @@ pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> R
     );
     let n = c.execute(
         "UPDATE cron_jobs SET name=?2, prompt=?3, subject_id=?4, kind=?5, interval_minutes=?6, \
-         daily_time=?7, tz_offset_minutes=?8, next_run_at=?9, action=?10, action_ref=?11 WHERE id=?1",
+         daily_time=?7, tz_offset_minutes=?8, next_run_at=?9, action=?10, action_ref=?11, \
+         auto_flashcards=?12 WHERE id=?1",
         params![
             id,
             name,
@@ -256,7 +273,8 @@ pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> R
             input.tz_offset_minutes,
             next,
             action,
-            action_ref
+            action_ref,
+            auto_fc
         ],
     )?;
     if n == 0 {
@@ -469,7 +487,7 @@ fn sync_action(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>
     let summary = tauri::async_runtime::block_on(crate::connectors::sync(
         app.clone(),
         connector,
-        sid,
+        sid.clone(),
         None,
     ))?;
 
@@ -481,6 +499,59 @@ fn sync_action(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>
         text.push_str("\n错误：\n");
         for e in &summary.errors {
             text.push_str(&format!("- {e}\n"));
+        }
+    }
+
+    // The stitch that closes the research→learning loop: new imports become
+    // due-now flashcards. A generation failure must NOT fail the run — the
+    // pull itself succeeded; we note it and move on.
+    if job.auto_flashcards && !summary.imported_ids.is_empty() {
+        let stamp = local_stamp(now_ms(), job.tz_offset_minutes);
+        let title = format!("自动闪卡 · {} · {}", job.name, stamp);
+        match tauri::async_runtime::block_on(crate::commands::generate_material(
+            app.clone(),
+            sid.clone(),
+            None,
+            "flashcards".into(),
+            Some(title),
+            None,
+            Some(summary.imported_ids.clone()),
+            Some(AUTO_CARD_COUNT),
+        )) {
+            Ok(mat) => {
+                let fronts: Vec<(i64, String)> = mat
+                    .payload
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .enumerate()
+                            .filter_map(|(i, c)| {
+                                c.get("q")
+                                    .and_then(|q| q.as_str())
+                                    .map(|q| (i as i64, q.to_string()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !fronts.is_empty() {
+                    let state = app.state::<AppState>();
+                    let c = state.db.lock().unwrap();
+                    match repo::srs_seed_due(&c, &sid, &mat.id, &fronts) {
+                        Ok(n) => {
+                            text.push_str(&format!(
+                                "\n已从本次导入生成 {} 张闪卡（材料「{}」），其中 {} 张进入今日复习。",
+                                fronts.len(),
+                                mat.title,
+                                n
+                            ));
+                        }
+                        Err(e) => text.push_str(&format!("\n闪卡入队失败：{e}")),
+                    }
+                } else {
+                    text.push_str("\n模型未返回可用闪卡，本次跳过。");
+                }
+            }
+            Err(e) => text.push_str(&format!("\n闪卡自动生成失败（不影响同步结果）：{e}")),
         }
     }
     Ok((text, None))
@@ -698,6 +769,7 @@ mod tests {
                 tz_offset_minutes: 480,
                 action: None,
                 action_ref: None,
+                auto_flashcards: None,
             },
         )
         .unwrap();
@@ -721,6 +793,7 @@ mod tests {
                 tz_offset_minutes: 480,
                 action: None,
                 action_ref: None,
+                auto_flashcards: None,
             },
         )
         .unwrap();
@@ -750,6 +823,7 @@ mod tests {
             tz_offset_minutes: 480,
             action: Some("sync".into()),
             action_ref: r.map(str::to_string),
+            auto_flashcards: None,
         }
     }
 
@@ -768,8 +842,24 @@ mod tests {
         let job = add_job(&c, &sync_input("每日 arXiv", Some("s1"), Some("arxiv-cs"))).unwrap();
         assert_eq!(job.action, "sync");
         assert_eq!(job.action_ref.as_deref(), Some("arxiv-cs"));
+        assert!(!job.auto_flashcards);
         let reread = get_job(&c, &job.id).unwrap();
         assert_eq!(reread.action, "sync");
+
+        // the flashcard follow-up flag persists on sync jobs…
+        let mut inp = sync_input("拉+卡", Some("s1"), Some("arxiv-cs"));
+        inp.auto_flashcards = Some(true);
+        let fc = add_job(&c, &inp).unwrap();
+        assert!(fc.auto_flashcards);
+        assert_eq!(get_job(&c, &fc.id).unwrap().auto_flashcards, true);
+        // …but is ignored (stored 0) when the action isn't sync
+        let mut inp2 = sync_input("x", Some("s1"), Some("arxiv-cs"));
+        inp2.auto_flashcards = Some(true);
+        let mut prompt_in = inp2;
+        prompt_in.action = None;
+        prompt_in.prompt = "提示词".into();
+        let p = add_job(&c, &prompt_in).unwrap();
+        assert!(!p.auto_flashcards);
 
         // update can flip it back to a prompt job (action cleared, prompt required again)
         let mut inp = sync_input("改名", Some("s1"), Some("arxiv-cs"));
@@ -793,5 +883,36 @@ mod tests {
         let job = add_job(&c, &inp).unwrap();
         assert_eq!(job.action, "prompt");
         assert_eq!(job.action_ref, None);
+    }
+
+    #[test]
+    fn seeded_flashcards_are_due_now_and_never_reset_a_graded_card() {
+        use crate::repo;
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "科研", None, None, None).unwrap();
+
+        // one card already scheduled by the user (graded "good" → due in days)
+        let graded = repo::srs_grade(&c, &sid, Some("m1"), "flashcard", 0, "老卡", 4).unwrap();
+
+        // seed a fresh batch (cron auto-flashcards path)
+        let fronts = vec![
+            (0i64, "什么是注意力机制？".to_string()),
+            (1i64, "SM-2 与 FSRS 的区别？".to_string()),
+        ];
+        let n = repo::srs_seed_due(&c, &sid, "m2", &fronts).unwrap();
+        assert_eq!(n, 2);
+
+        // due-now queue contains exactly the new cards, old one stays on schedule
+        let due = repo::srs_due(&c, &sid, "flashcard").unwrap();
+        assert_eq!(due.len(), 2);
+        assert!(due.iter().all(|d| d.item_key != "老卡"));
+        assert!(due.iter().any(|d| d.item_key == "什么是注意力机制？"));
+
+        // re-seeding the same fronts is a no-op (user progress never resets)
+        assert_eq!(repo::srs_seed_due(&c, &sid, "m2", &fronts).unwrap(), 0);
+        // …and re-grading the old card does not snap back to due-now
+        let again = repo::srs_grade(&c, &sid, Some("m1"), "flashcard", 0, "老卡", 4).unwrap();
+        assert!(again.due_at > graded.due_at - 86_400_000 / 2);
     }
 }

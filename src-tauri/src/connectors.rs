@@ -547,6 +547,10 @@ pub struct ConnectorSyncSummary {
     pub imported: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
+    /// source ids of the newly imported items — lets a cron sync follow up
+    /// with flashcard generation scoped to exactly this run's imports.
+    #[serde(default)]
+    pub imported_ids: Vec<String>,
 }
 
 /// Fetch everything the connector declares, map items, dedup by origin, and
@@ -582,6 +586,7 @@ pub async fn sync(
         imported: 0,
         skipped: 0,
         errors: Vec::new(),
+        imported_ids: Vec::new(),
     };
     let mut seen_origins: HashSet<String> = HashSet::new();
     for item in &fetched {
@@ -640,7 +645,10 @@ pub async fn sync(
             }
         };
         match crate::commands::add_source(app.clone(), input).await {
-            Ok(_) => summary.imported += 1,
+            Ok(res) => {
+                summary.imported += 1;
+                summary.imported_ids.push(res.source.id);
+            }
             Err(e) => {
                 if summary.errors.len() < 5 {
                     summary.errors.push(format!("{}: {e}", m.item_id));

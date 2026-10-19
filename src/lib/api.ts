@@ -727,6 +727,7 @@ export interface CronJob {
   next_run_at: number;
   action: string; // "prompt" | "sync"
   action_ref: string | null; // connector_id for "sync"
+  auto_flashcards: boolean; // sync only: generate + seed due-now SRS cards after pull
 }
 export interface CronRun {
   id: string;
@@ -748,6 +749,7 @@ export interface CronJobIn {
   tz_offset_minutes?: number;
   action?: string; // "prompt" | "sync"
   action_ref?: string | null; // connector_id for "sync"
+  auto_flashcards?: boolean; // sync only
 }
 export const cronList = () => invoke<CronJob[]>("cron_list");
 export const cronAdd = (job: CronJobIn) => invoke<CronJob>("cron_add", { job });
