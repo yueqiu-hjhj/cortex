@@ -497,6 +497,90 @@
     return prismaCellMap.get(`${itemId}\u0000${fieldKey}`) ?? null;
   }
 
+  // ----- 3.3: cross-paper tension analysis (0050) -----
+  let tensionOpen = $state(false);
+  let tensionView = $state<"pick" | "runs" | "result">("pick");
+  let tensionRuns = $state<api.TensionRun[]>([]);
+  let tensionResult = $state<api.TensionResult | null>(null);
+  let tensionTitle = $state("");
+  let tensionBusy = $state(false);
+  let tensionError = $state<string | null>(null);
+  const tensionRunning = $derived(tensionResult?.run.status === "running");
+  const tensionPaperTitle = (id: string) =>
+    tensionResult?.papers.find(([pid]) => pid === id)?.[1] ?? id;
+
+  async function loadTensionRuns() {
+    try { tensionRuns = await api.tensionRunList(); }
+    catch (e) { tensionError = String(e); }
+  }
+  function openTensions() {
+    tensionOpen = true;
+    tensionError = null;
+    void loadTensionRuns();
+  }
+  function closeTensions() {
+    tensionOpen = false;
+    tensionResult = null;
+    tensionError = null;
+    tensionView = "pick";
+  }
+  async function startTension() {
+    if (matrixSelectionCount < 2 || tensionBusy) return;
+    tensionBusy = true;
+    tensionError = null;
+    try {
+      const runId = await api.tensionRunCreate(matrixSelectionIds, tensionTitle.trim() || undefined);
+      tensionTitle = "";
+      tensionResult = await api.tensionRunResult(runId);
+      tensionView = "result";
+      jobs.start({
+        kind: "tension",
+        label: `文献张力 · ${matrixSelectionCount} 篇`,
+        subjectId: app.activeSubject?.id ?? "",
+        run: () => api.tensionRunExecute(runId),
+        onDone: () => void refreshTension(runId),
+      });
+    } catch (e) { tensionError = String(e); }
+    finally { tensionBusy = false; }
+  }
+  async function refreshTension(runId: string) {
+    try {
+      const fresh = await api.tensionRunResult(runId);
+      if (tensionResult?.run.id === runId) tensionResult = fresh;
+      tensionRuns = await api.tensionRunList();
+    } catch { /* transient */ }
+  }
+  $effect(() => {
+    if (!tensionOpen || !tensionRunning || !tensionResult) return;
+    const iv = setInterval(() => void refreshTension(tensionResult!.run.id), 2500);
+    return () => clearInterval(iv);
+  });
+  async function openTensionRun(id: string) {
+    try {
+      tensionResult = await api.tensionRunResult(id);
+      tensionView = "result";
+    } catch (e) { tensionError = String(e); }
+  }
+  async function deleteTensionRun(id: string) {
+    if (!await app.confirm({ title: "删除这次张力分析？", danger: true })) return;
+    await api.tensionRunDelete(id).catch(() => {});
+    await loadTensionRuns();
+    if (tensionResult?.run.id === id) { tensionResult = null; tensionView = "pick"; }
+  }
+  async function exportTensionMd() {
+    if (!tensionResult) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const dest = await save({
+      defaultPath: `文献张力-${tensionResult.run.title}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!dest) return;
+    try {
+      await api.tensionMdFile(tensionResult.run.id, dest);
+      app.pushToast({ kind: "success", title: "已导出 Markdown" });
+    } catch (e) { app.pushToast({ kind: "error", title: "导出失败", body: String(e) }); }
+  }
+
   async function loadPrismaRuns() {
     try {
       prismaRuns = await api.prismaRunList();
@@ -930,6 +1014,13 @@
         title="PRISMA 8 维抽取：固定维度（研究问题 / 方法 / 贡献 / 结果 / 局限 / 适用人群 / 使用前提 / 复现成本）逐篇抽取，证据句回链摘录，导出 CSV / Markdown"
       >
         PRISMA 抽取
+      </button>
+      <button
+        class="btn"
+        onclick={openTensions}
+        title="文献张力分析：模型通读勾选的论文，找出文献间互相矛盾/互补/证据冲突的地方，每条张力带双方原话（至少勾选 2 篇）"
+      >
+        张力分析
       </button>
       {#if matrixSelectionCount > 0}
         <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
@@ -1606,6 +1697,100 @@
           <button class="btn" onclick={exportPrismaMd}>导出 Markdown</button>
           <button class="btn" onclick={() => { prismaResult = null; prismaView = "pick"; }}>再抽一次</button>
           <button class="btn primary" onclick={closePrisma}>完成</button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if tensionOpen}
+  <div class="matrix-modal-bg" onclick={closeTensions} role="presentation"></div>
+  <div class="matrix-modal extract-modal" role="dialog" aria-label="文献张力分析">
+    {#if tensionError}
+      <div class="matrix-modal-bd err">
+        {tensionError}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (tensionError = null)}>返回</button>
+          <button class="btn" onclick={closeTensions}>关闭</button>
+        </div>
+      </div>
+    {:else if tensionView === "pick"}
+      <div class="matrix-modal-bd">
+        <div class="shead">文献张力分析 <span class="n">已勾选 {matrixSelectionCount} 篇</span></div>
+        <p class="dhint">知源式「整理助手」：模型通读勾选论文的卡片，找出文献之间真正不一致的地方——矛盾断言、互补拼图、证据互斥、适用范围冲突。每条张力必须附双方原话；没有引用的张力不会被记录。张量是待核查的假设，不是事实。</p>
+        {#if matrixSelectionCount < 2}
+          <p class="dhint" style="color:var(--warn)">至少勾选 2 篇论文（在论文列表勾选）。</p>
+        {/if}
+        <input class="dt" bind:value={tensionTitle} placeholder="本次分析标题（可选）" />
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (tensionView = "runs")}>分析历史</button>
+          <button class="btn" onclick={closeTensions}>取消</button>
+          <button class="btn primary" disabled={matrixSelectionCount < 2 || tensionBusy} onclick={startTension}>
+            {tensionBusy ? "创建中…" : `分析 ${matrixSelectionCount} 篇`}
+          </button>
+        </div>
+      </div>
+    {:else if tensionView === "runs"}
+      <div class="matrix-modal-bd">
+        <div class="shead">分析历史 <span class="n">{tensionRuns.length}</span></div>
+        {#if !tensionRuns.length}
+          <p class="dhint">还没有分析记录。</p>
+        {:else}
+          <ul class="runlist">
+            {#each tensionRuns as r (r.id)}
+              <li>
+                <button class="runpick" onclick={() => openTensionRun(r.id)}>
+                  <span class="mono">{r.title}</span>
+                  <span class="mut mono">{r.item_ids.length} 篇 · {new Date(r.created_at).toLocaleDateString("zh-CN")}</span>
+                </button>
+                <button class="x" title="删除" onclick={() => deleteTensionRun(r.id)}><Icon name="x" size={11} /></button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (tensionView = "pick")}>返回</button>
+          <button class="btn" onclick={closeTensions}>关闭</button>
+        </div>
+      </div>
+    {:else if tensionResult}
+      <div class="matrix-modal-bd">
+        <div class="shead">
+          {tensionResult.run.title}
+          {#if tensionResult.run.status === "running"}<span class="runbadge">进行中</span>
+          {:else if tensionResult.run.status === "error"}<span class="runbadge failed">失败</span>{/if}
+          <span class="n">{tensionResult.tensions.length} 条张力</span>
+        </div>
+        {#if tensionResult.tensions.length === 0 && !tensionRunning}
+          <p class="dhint">{#if tensionResult.run.status === "error"}{tensionResult.run.error}{:else}未检测到显著张力——要么文献高度一致，要么卡片信息不足。{/if}</p>
+        {:else}
+          {#each tensionResult.tensions as t (t.id)}
+            <div class="tension-card">
+              <div class="tension-h">
+                <span class="tension-topic">{t.topic}</span>
+                <span class="tension-tags">
+                  <span class="ttag" title="冲突类型">{t.conflict}</span>
+                  <span class="ttag sev-{t.severity}" title="严重度">{t.severity}</span>
+                </span>
+              </div>
+              <div class="tension-side">
+                <div class="ts-label mono">{tensionPaperTitle(t.paper_a_id)}</div>
+                <div class="ts-claim">{t.claim_a}</div>
+                <div class="ts-quote">「{t.quote_a}」</div>
+              </div>
+              <div class="tension-vs mono">vs</div>
+              <div class="tension-side">
+                <div class="ts-label mono">{tensionPaperTitle(t.paper_b_id)}</div>
+                <div class="ts-claim">{t.claim_b}</div>
+                <div class="ts-quote">「{t.quote_b}」</div>
+              </div>
+            </div>
+          {/each}
+        {/if}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={exportTensionMd}>导出 Markdown</button>
+          <button class="btn" onclick={() => { tensionResult = null; tensionView = "pick"; }}>再分析一次</button>
+          <button class="btn primary" onclick={closeTensions}>完成</button>
         </div>
       </div>
     {/if}
@@ -2394,5 +2579,31 @@
     border-radius: 3px;
     padding: 0 3px;
     margin-right: 4px;
+  }
+  .tension-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: var(--surface);
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 4px 12px;
+    align-items: stretch;
+  }
+  .tension-h { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .tension-topic { font-weight: 600; color: var(--fg-bright); font-size: var(--t-s); }
+  .tension-tags { display: flex; gap: 4px; }
+  .ttag { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--fg-muted); font-family: var(--font-mono); }
+  .ttag.sev-high { color: var(--err, #e5484d); border-color: color-mix(in oklab, var(--err, #e5484d) 45%, transparent); }
+  .ttag.sev-medium { color: var(--warn); }
+  .tension-side { min-width: 0; }
+  .ts-label { font-size: 10.5px; color: var(--fg-faint); margin-bottom: 3px; }
+  .ts-claim { font-size: var(--t-s); color: var(--fg); margin-bottom: 5px; }
+  .ts-quote { font-size: var(--t-xs); color: var(--fg-muted); border-left: 2px solid var(--border); padding-left: 8px; }
+  .tension-vs { align-self: center; color: var(--fg-faint); font-size: 10px; }
+  @media (max-width: 760px) {
+    .tension-card { grid-template-columns: 1fr; }
+    .tension-vs { text-align: center; }
   }
 </style>

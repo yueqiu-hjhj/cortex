@@ -66,6 +66,7 @@ pub mod drafts;
 pub mod extraction;
 pub mod prisma;
 pub mod tokens;
+pub mod tensions;
 pub mod summary_tree;
 pub mod rerank;
 pub mod eval;
@@ -696,6 +697,13 @@ pub fn run() {
             extraction::extract_cell_set,
             prisma::prisma_run_create,
             commands::token_usage_summary,
+            tensions::tension_run_create,
+            tensions::tension_run_list,
+            tensions::tension_run_result,
+            tensions::tension_run_delete,
+            tensions::tension_run_execute,
+            tensions::tension_export_md,
+            tensions::tension_md_file,
             prisma::prisma_run_list,
             prisma::prisma_run_delete,
             prisma::prisma_run_execute,

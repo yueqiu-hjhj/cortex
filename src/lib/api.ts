@@ -958,6 +958,35 @@ export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
 /** Backfill char offsets for pre-0046 chunks (idempotent; returns count). */
 export const backfillChunkOffsets = () => invoke<number>("backfill_chunk_offsets");
 
+// ---- 3.3: cross-paper tension analysis (0050) ----
+export interface TensionRun {
+  id: string; title: string; status: "running" | "done" | "error";
+  error: string | null; item_ids: string[]; created_at: number; updated_at: number;
+}
+export interface Tension {
+  id: string; run_id: string; topic: string;
+  paper_a_id: string; paper_b_id: string; claim_a: string; claim_b: string;
+  conflict: string; severity: string; quote_a: string; quote_b: string; created_at: number;
+}
+export interface TensionResult {
+  run: TensionRun;
+  papers: [string, string][];
+  tensions: Tension[];
+}
+export const tensionRunCreate = (itemIds: string[], title?: string) =>
+  invoke<string>("tension_run_create", { itemIds, title });
+export const tensionRunList = () => invoke<TensionRun[]>("tension_run_list");
+export const tensionRunResult = (runId: string) =>
+  invoke<TensionResult>("tension_run_result", { runId });
+export const tensionRunDelete = (runId: string) =>
+  invoke<void>("tension_run_delete", { runId });
+export const tensionRunExecute = (runId: string) =>
+  invoke<void>("tension_run_execute", { runId });
+export const tensionExportMd = (runId: string) =>
+  invoke<string>("tension_export_md", { runId });
+export const tensionMdFile = (runId: string, dest: string) =>
+  invoke<void>("tension_md_file", { runId, dest });
+
 // ---- token accounting (0049, estimates) ----
 export interface TokenDayBucket { day: string; prompt: number; completion: number; calls: number }
 export interface TokenBucket { kind: string; total: number; calls: number }
