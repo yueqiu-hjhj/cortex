@@ -67,6 +67,7 @@ pub mod extraction;
 pub mod prisma;
 pub mod tokens;
 pub mod tensions;
+pub mod skill_cards;
 pub mod summary_tree;
 pub mod rerank;
 pub mod eval;
@@ -704,6 +705,10 @@ pub fn run() {
             tensions::tension_run_execute,
             tensions::tension_export_md,
             tensions::tension_md_file,
+            skill_cards::skill_card_candidates,
+            skill_cards::skill_cards_list,
+            skill_cards::skill_card_delete,
+            skill_cards::skill_cards_precipitate,
             prisma::prisma_run_list,
             prisma::prisma_run_delete,
             prisma::prisma_run_execute,

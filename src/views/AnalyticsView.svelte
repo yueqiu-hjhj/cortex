@@ -60,6 +60,34 @@
   );
   const hasPlan = $derived((planVs?.planned_min ?? 0) > 0);
 
+  // ── 跨书技能卡（0051) ──
+  let skillCards = $state<api.SkillCard[]>([]);
+  let skillBusy = $state(false);
+  async function loadSkillCards() {
+    try { skillCards = await api.skillCardsList(); } catch { /* ignore */ }
+  }
+  $effect(() => { void app.view; void loadSkillCards(); });
+  async function precipitateSkills() {
+    if (skillBusy) return;
+    skillBusy = true;
+    try {
+      const [made, skipped] = await api.skillCardsPrecipitate(5);
+      await loadSkillCards();
+      app.pushToast({
+        kind: "success",
+        title: made > 0 ? `沉淀了 ${made} 张技能卡` : "没有新概念可沉淀",
+        body: made > 0 ? `跨书复现的方法论已变成技能卡${skipped ? ` · ${skipped} 个已有` : ""}` : "为已有卡片的概念会被跳过",
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "沉淀失败", body: String(e) });
+    } finally { skillBusy = false; }
+  }
+  async function removeSkillCard(id: string) {
+    if (!await app.confirm({ title: "删除这张技能卡？", danger: true })) return;
+    await api.skillCardDelete(id).catch(() => {});
+    await loadSkillCards();
+  }
+
   // ── token 消耗（估算,0049) ──
   let tok = $state<api.TokenSummary | null>(null);
   $effect(() => {
@@ -1416,4 +1444,15 @@
   .tok-break { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .tok-chip { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--fg-muted); }
   .tok-chip.tok-model { color: var(--fg-faint); }
+  .skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .skill-card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 10px 12px; }
+  .skill-card summary { cursor: pointer; display: flex; align-items: baseline; gap: 8px; }
+  .skill-t { font-weight: 600; color: var(--fg-bright); font-size: var(--t-s); }
+  .skill-books { font-size: 10px; color: var(--fg-faint); }
+  .skill-body { margin-top: 8px; position: relative; }
+  .skill-sum { font-size: var(--t-s); color: var(--fg); margin: 0 0 6px; }
+  .skill-when { font-size: var(--t-xs); color: var(--fg-muted); margin-bottom: 6px; }
+  .skill-k { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--border); margin-right: 6px; }
+  .skill-steps { margin: 0; padding-left: 18px; font-size: var(--t-s); color: var(--fg); }
+  .skill-body .x { position: absolute; top: 0; right: 0; }
 </style>

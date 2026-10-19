@@ -958,6 +958,19 @@ export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
 /** Backfill char offsets for pre-0046 chunks (idempotent; returns count). */
 export const backfillChunkOffsets = () => invoke<number>("backfill_chunk_offsets");
 
+// ---- 3.4: cross-book skill cards (0051) ----
+export interface SkillCandidate { concept: string; title: string; books: [string, string][] }
+export interface SkillCard {
+  id: string; concept: string; title: string; summary: string; when_to_use: string;
+  steps: string[]; appearances: [string, string][]; model: string; created_at: number;
+}
+export const skillCardCandidates = (limit?: number) =>
+  invoke<SkillCandidate[]>("skill_card_candidates", { limit: limit ?? null });
+export const skillCardsList = () => invoke<SkillCard[]>("skill_cards_list");
+export const skillCardDelete = (id: string) => invoke<void>("skill_card_delete", { id });
+export const skillCardsPrecipitate = (limit?: number) =>
+  invoke<[number, number]>("skill_cards_precipitate", { limit: limit ?? null });
+
 // ---- 3.3: cross-paper tension analysis (0050) ----
 export interface TensionRun {
   id: string; title: string; status: "running" | "done" | "error";

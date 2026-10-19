@@ -3518,7 +3518,7 @@ fn coverage_step(observed: i64, total: i64) -> f64 {
 /// Upsert one framework node and return its id. Existing rows keep their mastery
 /// but have their title/summary/parent/coverage refreshed, so a sync never
 /// silently discards learning history.
-fn upsert_knowledge_node(
+pub fn upsert_knowledge_node(
     conn: &Connection,
     subject_id: &str,
     topic_id: Option<&str>,
