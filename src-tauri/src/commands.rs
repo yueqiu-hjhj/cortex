@@ -843,6 +843,19 @@ pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result
     repo::set_setting(&c, &key, &value)
 }
 
+/// PDF engine settings for the ingest pipeline (B1 2.12): `pdf_engine`
+/// (auto | docling | poppler) plus an optional `docling_bin` path override.
+/// Missing/unset keys degrade to the default (auto, no override).
+fn load_pdf_cfg(state: &State<AppState>) -> ingest::PdfEngineCfg {
+    let c = state.db.lock().unwrap();
+    let engine = repo::get_setting(&c, "pdf_engine").ok().flatten().unwrap_or_default();
+    let docling_bin = repo::get_setting(&c, "docling_bin")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty());
+    ingest::PdfEngineCfg { engine, docling_bin }
+}
+
 // ---- ingestion ---------------------------------------------------------
 
 fn emit_progress(app: &AppHandle, source_id: &str, stage: &str, detail: &str, pct: u8) {
@@ -1201,7 +1214,8 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
         }
 
         emit_progress(&app, &id, "parsing", "re-reading source", 15);
-        let (mut text, mut warning) = ingest::parse(&src.kind, &input)?;
+        let pdf_cfg = load_pdf_cfg(&state);
+        let (mut text, mut warning) = ingest::parse(&src.kind, &input, &pdf_cfg)?;
 
         // Same enrichment as add_source: OCR for images/scanned PDFs, Whisper for audio.
         let needs_ocr = src.kind == "image" || (src.kind == "pdf" && text.trim().is_empty());
@@ -1439,8 +1453,9 @@ pub async fn add_source(
         return Ok(IngestResult { source, chunk_count: 0, chars: 0, warning: None });
     }
 
-    // 2. parse (no lock — may hit network / libreoffice)
-    let parse_res = ingest::parse(&kind, &input);
+    // 2. parse (no lock — may hit network / libreoffice / docling)
+    let pdf_cfg = load_pdf_cfg(&state);
+    let parse_res = ingest::parse(&kind, &input, &pdf_cfg);
     let (text, warning) = match parse_res {
         Ok(v) => v,
         Err(e) => {
@@ -2225,7 +2240,8 @@ pub async fn set_subject_framework(
             tags: Vec::new(),
         };
         let kind = ingest::detect_kind(&input);
-        let (text, _warn) = ingest::parse(&kind, &input)?;
+        let pdf_cfg = load_pdf_cfg(&app.state::<AppState>());
+        let (text, _warn) = ingest::parse(&kind, &input, &pdf_cfg)?;
         let text = text.trim().to_string();
 
         // Persist a viewable original, mirroring the source pipeline: pdf/image
@@ -4047,6 +4063,7 @@ pub fn dependency_status() -> DependencyReport {
     struct Dep { name: &'static str, detail: &'static str, bins: &'static [&'static str], pac: &'static str, apt: &'static str, dnf: &'static str, brew: &'static str, pip: bool }
     let table: &[Dep] = &[
         Dep { name: "PDF text & page images", detail: "poppler", bins: &["pdftotext", "pdftoppm"], pac: "poppler", apt: "poppler-utils", dnf: "poppler-utils", brew: "poppler", pip: false },
+        Dep { name: "Docling PDF parsing (optional, complex layouts)", detail: "docling", bins: &["docling"], pac: "", apt: "", dnf: "", brew: "", pip: true },
         Dep { name: "Office documents (docx/pptx)", detail: "LibreOffice", bins: &["libreoffice", "soffice"], pac: "libreoffice-fresh", apt: "libreoffice", dnf: "libreoffice", brew: "libreoffice", pip: false },
         Dep { name: "Audio conversion", detail: "ffmpeg", bins: &["ffmpeg"], pac: "ffmpeg", apt: "ffmpeg", dnf: "ffmpeg", brew: "ffmpeg", pip: false },
         Dep { name: "OCR (scanned PDFs/images)", detail: "Tesseract", bins: &["tesseract"], pac: "tesseract tesseract-data-eng", apt: "tesseract-ocr", dnf: "tesseract", brew: "tesseract", pip: false },

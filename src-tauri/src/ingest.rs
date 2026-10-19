@@ -9,6 +9,44 @@ use crate::models::AddSourceInput;
 use calamine::Reader;
 use std::path::Path;
 
+/// PDF 解析引擎配置（设置项 `pdf_engine` / `docling_bin`）。
+///
+/// - `auto`（默认）：装有 docling 就用 docling（IBM，版面感知，复杂双栏/表格/公式
+///   远好于 pdftotext 的原始文本流），失败或空输出静默回退 poppler 旧链
+/// - `docling`：强制 docling，失败回退 poppler 并附 warning
+/// - `poppler`：跳过 docling，直接走 pdftotext → pdf-extract 旧链（最快）
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdfEngineCfg {
+    pub engine: String,
+    /// docling 可执行文件路径覆盖（不在 PATH 时手动指定）
+    pub docling_bin: Option<String>,
+}
+impl Default for PdfEngineCfg {
+    fn default() -> Self {
+        Self { engine: "auto".into(), docling_bin: None }
+    }
+}
+
+/// Resolve the docling executable for this parse, honoring the engine switch:
+/// `poppler` force-disables; an explicit `docling_bin` wins; otherwise probe
+/// sidecar / data-dir bin / PATH (like every other ingest tool).
+pub(crate) fn resolve_docling_bin(cfg: &PdfEngineCfg) -> Option<String> {
+    if cfg.engine == "poppler" {
+        return None;
+    }
+    if let Some(b) = cfg.docling_bin.as_deref() {
+        let b = b.trim();
+        if !b.is_empty() {
+            return Some(b.to_string());
+        }
+    }
+    if cfg!(windows) {
+        tool("docling.exe").or_else(|| tool("docling"))
+    } else {
+        tool("docling")
+    }
+}
+
 /// Detect the source kind from explicit input, then path/url extension.
 pub fn detect_kind(input: &AddSourceInput) -> String {
     if let Some(k) = &input.kind {
@@ -48,7 +86,7 @@ pub fn detect_kind(input: &AddSourceInput) -> String {
 }
 
 /// Extract plaintext for a source. Returns `(text, optional_warning)`.
-pub fn parse(kind: &str, input: &AddSourceInput) -> Result<(String, Option<String>)> {
+pub fn parse(kind: &str, input: &AddSourceInput, pdf: &PdfEngineCfg) -> Result<(String, Option<String>)> {
     match kind {
         "txt" | "md" => {
             if let Some(t) = &input.text {
@@ -73,7 +111,7 @@ pub fn parse(kind: &str, input: &AddSourceInput) -> Result<(String, Option<Strin
                 .path
                 .as_deref()
                 .ok_or_else(|| Error::Other("pdf source needs a file path".into()))?;
-            pdf_to_text(p)
+            pdf_to_text(p, pdf)
         }
         "docx" | "pptx" => {
             let p = input
@@ -262,13 +300,26 @@ fn decode_entities(s: &str) -> String {
 /// and remain previewable. So a missing `pdftotext` binary OR empty/whitespace
 /// output returns `Ok((empty, Some(warning)))` rather than an error. Only a real
 /// non-zero exit with stderr is a hard error.
-fn pdf_to_text(path: &str) -> Result<(String, Option<String>)> {
+fn pdf_to_text(path: &str, cfg: &PdfEngineCfg) -> Result<(String, Option<String>)> {
     use std::process::Command;
     let src = Path::new(path);
     if !src.exists() {
         return Err(Error::NotFound(format!("file not found: {path}")));
     }
     const NO_TEXT: &str = "warning: no extractable text (scanned PDF?); preview still available";
+
+    // B1 (2.12): Docling head. IBM's layout-aware parser turns a PDF into
+    // structured Markdown — headings, tables and math survive instead of
+    // pdftotext's interleaved text stream. Any failure or empty output falls
+    // through to the classic chain below (never blocks an ingest).
+    let mut docling_failed = false;
+    if let Some(bin) = resolve_docling_bin(cfg) {
+        match docling_to_text(src, &bin) {
+            Ok(t) if !t.trim().is_empty() => return Ok((t, None)),
+            Ok(_) => docling_failed = true,
+            Err(_) => docling_failed = true,
+        }
+    }
 
     // Desktop: poppler's `pdftotext -layout` is fastest + highest fidelity. On a hard
     // failure with a real message, surface it; an empty/soft result falls through to
@@ -283,7 +334,9 @@ fn pdf_to_text(path: &str) -> Result<(String, Option<String>)> {
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout).into_owned();
                 if !text.trim().is_empty() {
-                    return Ok((text, None));
+                    let warn = docling_failed
+                        .then_some("docling returned no text; used pdftotext fallback".to_string());
+                    return Ok((text, warn));
                 }
             }
             Ok(o) => {
@@ -301,9 +354,78 @@ fn pdf_to_text(path: &str) -> Result<(String, Option<String>)> {
     // come through fully; a scanned/image-only PDF yields nothing here and degrades to
     // the "scanned?" warning (OCR is the homelab ingest service's job).
     match pdf_extract_text_layer(src) {
-        Some(t) if !t.trim().is_empty() => Ok((t, None)),
+        Some(t) if !t.trim().is_empty() => {
+            let warn = docling_failed
+                .then_some("docling returned no text; used pdftotext fallback".to_string());
+            Ok((t, warn))
+        }
         _ => Ok((String::new(), Some(NO_TEXT.into()))),
     }
+}
+
+/// Run `docling --to md --output <tmp> <pdf>` and return the produced Markdown.
+///
+/// Docling (IBM) is layout-aware: two-column papers, tables, section headers and
+/// inline math come out as structured Markdown that the RichText renderer already
+/// understands. First run downloads models and can take minutes — same blocking
+/// model as the LibreOffice/Whisper paths. Errors are soft: callers fall back.
+fn docling_to_text(path: &Path, bin: &str) -> Result<String> {
+    use std::process::Command;
+    let out = std::env::temp_dir().join(format!(
+        "cortex-docling-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&out)?;
+    let res = Command::new(bin)
+        .args(["--to", "md", "--output"])
+        .arg(&out)
+        .arg(path)
+        .output();
+    let text = match res {
+        Ok(o) if o.status.success() => find_md_file(&out)
+            .and_then(|md| std::fs::read_to_string(&md).ok())
+            .unwrap_or_default(),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let _ = std::fs::remove_dir_all(&out);
+            return Err(Error::Other(format!(
+                "docling failed for {}: {}",
+                path.display(),
+                if stderr.is_empty() { "unknown error".to_string() } else { stderr }
+            )));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&out);
+            return Err(Error::Other(format!("docling exec failed ({bin}): {e}")));
+        }
+    };
+    let _ = std::fs::remove_dir_all(&out);
+    Ok(text)
+}
+
+/// Recursively find the first `.md` file docling wrote under `dir` (alphabetical
+/// order for determinism). Docling writes `<stem>.md` at the top level, but the
+/// output layout has shifted between versions — a walk is version-proof.
+fn find_md_file(dir: &Path) -> Option<std::path::PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let mut entries: Vec<std::fs::DirEntry> =
+            std::fs::read_dir(&d).ok()?.collect::<std::io::Result<_>>().ok()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|x| x == "md").unwrap_or(false) {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Extract a PDF's embedded text layer with the pure-Rust `pdf-extract` crate.
@@ -340,7 +462,10 @@ fn libreoffice_to_text(path: &str) -> Result<(String, Option<String>)> {
         std::fs::create_dir_all(&tmp)?;
         let pdf = tmp.join("deck.pdf");
         let res = libreoffice_to_pdf(path, &pdf).and_then(|_| {
-            pdf_to_text(pdf.to_str().ok_or_else(|| Error::Other("bad temp path".into()))?)
+            // Temp render of a converted deck — skip the docling head (slow, and
+            // the deck PDF is machine-generated text anyway); poppler chain only.
+            let poppler = PdfEngineCfg { engine: "poppler".into(), docling_bin: None };
+            pdf_to_text(pdf.to_str().ok_or_else(|| Error::Other("bad temp path".into()))?, &poppler)
         });
         let _ = std::fs::remove_dir_all(&tmp);
         return res;
@@ -1318,6 +1443,39 @@ mod tests {
     #[test]
     fn chunker_empty_input() {
         assert!(chunk_text("   ", 100, 10).is_empty());
+    }
+
+    #[test]
+    fn docling_engine_resolution_respects_switch_and_override() {
+        // poppler switch hard-disables docling, even with an explicit path
+        let cfg = PdfEngineCfg {
+            engine: "poppler".into(),
+            docling_bin: Some("C:/tools/docling.exe".into()),
+        };
+        assert_eq!(resolve_docling_bin(&cfg), None);
+        // an explicit non-empty docling_bin wins over PATH probing (trimmed)
+        let cfg = PdfEngineCfg {
+            engine: "auto".into(),
+            docling_bin: Some(" /custom/docling ".into()),
+        };
+        assert_eq!(resolve_docling_bin(&cfg), Some("/custom/docling".into()));
+        // empty override falls back to probing — on a machine without docling
+        // in PATH/sidecar this is None (parse then silently uses poppler)
+        let cfg = PdfEngineCfg { engine: "auto".into(), docling_bin: Some("  ".into()) };
+        let found = resolve_docling_bin(&cfg);
+        assert!(found.is_none() || found.unwrap().contains("docling"));
+    }
+
+    #[test]
+    fn docling_md_finder_walks_nested_dirs() {
+        let base = std::env::temp_dir().join(format!("cortex-md-find-{}", crate::db::new_id()));
+        let nested = base.join("out").join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(base.join("out").join("a.txt"), "not md").unwrap();
+        std::fs::write(nested.join("paper.md"), "# heading").unwrap();
+        assert_eq!(find_md_file(&base), Some(nested.join("paper.md")));
+        assert_eq!(find_md_file(&base.join("out").join("a.txt")), None);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

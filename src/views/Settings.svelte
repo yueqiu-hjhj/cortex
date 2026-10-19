@@ -287,6 +287,8 @@
   let ttsEndpoint  = $state("");
   let ttsKey       = $state("");
   let embedOv      = $state("");
+  let pdfEngine    = $state("auto");
+  let doclingBin   = $state("");
   function saveSpeech(e: Event) {
     const v = (e.target as HTMLInputElement).value.trim();
     speechModel = v;
@@ -306,6 +308,16 @@
     const v = (e.target as HTMLInputElement).value.trim();
     embedOv = v;
     api.setSetting("embed_model", v).catch(() => {});
+  }
+  function savePdfEngine(e: Event) {
+    const v = (e.target as HTMLSelectElement).value;
+    pdfEngine = v;
+    api.setSetting("pdf_engine", v).catch(() => {});
+  }
+  function saveDoclingBin(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    doclingBin = v;
+    api.setSetting("docling_bin", v).catch(() => {});
   }
 
   // ---- keys state ----
@@ -1379,6 +1391,8 @@
       if (s.tts_endpoint) ttsEndpoint = s.tts_endpoint;
       if (s.tts_api_key)  ttsKey = s.tts_api_key;
       if (s.embed_model)  embedOv = s.embed_model;
+      if (s.pdf_engine === "auto" || s.pdf_engine === "docling" || s.pdf_engine === "poppler") pdfEngine = s.pdf_engine;
+      if (s.docling_bin)  doclingBin = s.docling_bin;
 
       // Local models + web search + remote whisper
       if (s.ollama_url)                    endpoint = s.ollama_url;
@@ -1919,6 +1933,30 @@ Notes: {about}</pre>
                 <div class="mt-task-d mono">对 Gemini / Ollama 生效（默认 text-embedding-004 / nomic-embed-text）。维度变了需重新入库</div>
               </div>
               <input class="input mono" value={embedOv} onchange={saveEmbedOv} placeholder="留空用默认" />
+            </div>
+          </div>
+        </section>
+
+        <section class="set-group" style="margin-top:14px">
+          <div class="set-group-h"><h3 class="set-group-t">文档解析</h3></div>
+          <div class="set-card">
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">PDF 解析引擎</div>
+                <div class="mt-task-d mono">自动：装有 docling（IBM，版面感知，双栏/表格/公式更准）优先，失败回退 poppler。首次解析会下载模型，较慢</div>
+              </div>
+              <select class="input" value={pdfEngine} onchange={savePdfEngine}>
+                <option value="auto">自动（推荐）</option>
+                <option value="docling">Docling</option>
+                <option value="poppler">Poppler（最快）</option>
+              </select>
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">Docling 路径覆盖（可选）</div>
+                <div class="mt-task-d mono">docling 不在 PATH 时填可执行文件完整路径</div>
+              </div>
+              <input class="input mono" value={doclingBin} onchange={saveDoclingBin} placeholder="留空用 PATH 中的 docling" />
             </div>
           </div>
         </section>
