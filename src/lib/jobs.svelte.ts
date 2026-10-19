@@ -21,6 +21,7 @@ export type JobKind =
   | "matrix"
   | "guide"
   | "extract"
+  | "prisma"
   | "sumtree"
   | "connector"
   | "source";
@@ -56,6 +57,7 @@ const KIND_LABEL: Record<JobKind, string> = {
   matrix: "comparison matrix",
   guide: "study guide",
   extract: "paper extraction",
+  prisma: "PRISMA extraction",
   sumtree: "summary tree",
   connector: "connector sync",
   source: "source",

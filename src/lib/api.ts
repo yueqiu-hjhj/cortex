@@ -2358,6 +2358,61 @@ export const extractCellSet = (
   value: string,
 ) => invoke<void>("extract_cell_set", { runId, itemId, fieldKey, value });
 
+// ---- 3.2: PRISMA 8-dimension extraction (review-grade, evidence-traced) -----
+
+export interface PrismaCell {
+  item_id: string;
+  field_key: string;
+  value: string;
+  /** Verbatim supporting sentence from the paper card (model output). */
+  evidence: string | null;
+  /** Back-link to excerpts — set when the evidence matched or became a card. */
+  excerpt_id: string | null;
+  source: "model" | "manual";
+  updated_at: number;
+}
+export interface PrismaRun {
+  id: string;
+  title: string;
+  /** The FIXED 8-field list, snapshotted at run time. */
+  fields: ExtractField[];
+  model: string | null;
+  status: "running" | "done" | "error";
+  error: string | null;
+  item_ids: string[];
+  created_at: number;
+  updated_at: number;
+}
+export interface PrismaResult {
+  run: PrismaRun;
+  items: ExtractItem[];
+  cells: PrismaCell[];
+}
+
+export const prismaRunCreate = (itemIds: string[], title?: string) =>
+  invoke<string>("prisma_run_create", { itemIds, title: title ?? null });
+export const prismaRunList = () => invoke<PrismaRun[]>("prisma_run_list");
+export const prismaRunDelete = (id: string) =>
+  invoke<void>("prisma_run_delete", { id });
+export const prismaRunExecute = (runId: string) =>
+  invoke<void>("prisma_run_execute", { runId });
+export const prismaRunRetry = (runId: string, itemId: string) =>
+  invoke<void>("prisma_run_retry", { runId, itemId });
+export const prismaResultGet = (runId: string) =>
+  invoke<PrismaResult>("prisma_result_get", { runId });
+export const prismaCellSet = (
+  runId: string,
+  itemId: string,
+  fieldKey: string,
+  value: string,
+) => invoke<void>("prisma_cell_set", { runId, itemId, fieldKey, value });
+/** Summary table as CSV (RFC-4180 + BOM) at `dest`. */
+export const prismaResultCsvFile = (runId: string, dest: string) =>
+  invoke<void>("prisma_result_csv_file", { runId, dest });
+/** Summary table as Markdown at `dest`. */
+export const prismaResultMdFile = (runId: string, dest: string) =>
+  invoke<void>("prisma_result_md_file", { runId, dest });
+
 // ---- D6: summary tree --------------------------------------------------------
 
 export interface SummaryTreeStatus {

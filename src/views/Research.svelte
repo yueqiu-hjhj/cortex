@@ -454,6 +454,202 @@
     }
   }
 
+  // ----- 3.2: PRISMA 8-dimension extraction (systematic-review table) -----
+  // Fixed 8-field template (研究问题/方法/贡献/结果/局限/适用人群/使用前提/复现成本),
+  // one LLM call per checked paper, no template to configure. Every value
+  // carries an evidence sentence back-linked to the excerpt pipeline; the
+  // matrix stays the free-form comparison, this is the review-grade table.
+  // Shares the same paper checkboxes as matrix/extract: the checked set IS the
+  // review workset.
+  const PRISMA_LABELS: Record<string, string> = {
+    research_question: "研究问题",
+    method: "方法",
+    contribution: "贡献",
+    results: "结果",
+    limitations: "局限",
+    audience: "适用人群",
+    constraints: "使用前提",
+    repro_cost: "复现成本",
+  };
+  function prismaLabel(key: string): string {
+    return PRISMA_LABELS[key] ?? key;
+  }
+
+  let prismaOpen = $state(false);
+  let prismaView = $state<"pick" | "runs" | "result">("pick");
+  let prismaRuns = $state<api.PrismaRun[]>([]);
+  let prismaRunTitle = $state("");
+  let prismaResult = $state<api.PrismaResult | null>(null);
+  let prismaBusy = $state(false);
+  let prismaError = $state<string | null>(null);
+  let prismaRetrying = $state<string | null>(null);
+
+  const prismaCellMap = $derived.by(() => {
+    const m = new Map<string, api.PrismaCell>();
+    if (prismaResult) {
+      for (const c of prismaResult.cells) m.set(`${c.item_id}\u0000${c.field_key}`, c);
+    }
+    return m;
+  });
+  const prismaRunning = $derived(prismaResult?.run.status === "running");
+
+  function prismaEvidence(itemId: string, fieldKey: string): api.PrismaCell | null {
+    return prismaCellMap.get(`${itemId}\u0000${fieldKey}`) ?? null;
+  }
+
+  async function loadPrismaRuns() {
+    try {
+      prismaRuns = await api.prismaRunList();
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  function openPrisma() {
+    prismaOpen = true;
+    prismaError = null;
+    void loadPrismaRuns();
+  }
+
+  function closePrisma() {
+    prismaOpen = false;
+    prismaResult = null;
+    prismaError = null;
+    prismaView = "pick";
+  }
+
+  async function startPrisma() {
+    if (matrixSelectionCount === 0 || prismaBusy) return;
+    prismaBusy = true;
+    prismaError = null;
+    try {
+      const runId = await api.prismaRunCreate(
+        matrixSelectionIds,
+        prismaRunTitle.trim() || undefined
+      );
+      prismaRunTitle = "";
+      // Open the (initially empty) table right away — cells fill in live.
+      prismaResult = await api.prismaResultGet(runId);
+      prismaView = "result";
+      jobs.start({
+        kind: "prisma",
+        label: `PRISMA 8 维 · ${matrixSelectionCount} 篇`,
+        subjectId: app.activeSubject?.id ?? "",
+        run: () => api.prismaRunExecute(runId),
+        onDone: () => void refreshPrisma(runId),
+      });
+    } catch (e) {
+      prismaError = String(e);
+    } finally {
+      prismaBusy = false;
+    }
+  }
+
+  async function refreshPrisma(runId: string) {
+    try {
+      const fresh = await api.prismaResultGet(runId);
+      if (prismaResult?.run.id === runId) prismaResult = fresh;
+      prismaRuns = await api.prismaRunList();
+    } catch {
+      /* transient poll errors are non-fatal */
+    }
+  }
+
+  // While the open run is executing, poll so extracted cells appear live.
+  $effect(() => {
+    if (!prismaOpen || !prismaRunning || !prismaResult) return;
+    const runId = prismaResult.run.id;
+    const t = setInterval(() => void refreshPrisma(runId), 3000);
+    return () => clearInterval(t);
+  });
+
+  async function openPrismaRun(id: string) {
+    prismaError = null;
+    try {
+      prismaResult = await api.prismaResultGet(id);
+      prismaView = "result";
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  async function prismaSaveCell(itemId: string, fieldKey: string, value: string) {
+    if (!prismaResult) return;
+    const cur = prismaEvidence(itemId, fieldKey)?.value ?? "";
+    if (value === cur) return;
+    try {
+      await api.prismaCellSet(prismaResult.run.id, itemId, fieldKey, value);
+      await refreshPrisma(prismaResult.run.id);
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  async function prismaRetryRow(itemId: string) {
+    if (!prismaResult || prismaRetrying) return;
+    prismaRetrying = itemId;
+    prismaError = null;
+    try {
+      await api.prismaRunRetry(prismaResult.run.id, itemId);
+      await refreshPrisma(prismaResult.run.id);
+    } catch (e) {
+      prismaError = String(e);
+    } finally {
+      prismaRetrying = null;
+    }
+  }
+
+  async function prismaDeleteRun(id: string) {
+    try {
+      await api.prismaRunDelete(id);
+      if (prismaResult?.run.id === id) {
+        prismaResult = null;
+        prismaView = "runs";
+      }
+      await loadPrismaRuns();
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  async function exportPrismaCsv() {
+    if (!prismaResult) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe =
+        prismaResult.run.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") ||
+        "prisma";
+      const dest = await save({
+        defaultPath: `${safe}.csv`,
+        filters: [{ name: "CSV 表格", extensions: ["csv"] }],
+      });
+      if (!dest) return;
+      await api.prismaResultCsvFile(prismaResult.run.id, dest);
+      say(`汇总表已导出 → ${dest}`);
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
+  async function exportPrismaMd() {
+    if (!prismaResult) return;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe =
+        prismaResult.run.title.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") ||
+        "prisma";
+      const dest = await save({
+        defaultPath: `${safe}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!dest) return;
+      await api.prismaResultMdFile(prismaResult.run.id, dest);
+      say(`汇总表已导出 → ${dest}`);
+    } catch (e) {
+      prismaError = String(e);
+    }
+  }
+
   let quote = $state("");
   let page = $state<number | null>(null);
   let note = $state("");
@@ -727,6 +923,13 @@
         title="结构化提取：按固定字段（样本量 / 方法 / 效应量 …）对勾选的论文逐篇提取成可校对表格"
       >
         提取表格
+      </button>
+      <button
+        class="btn"
+        onclick={openPrisma}
+        title="PRISMA 8 维抽取：固定维度（研究问题 / 方法 / 贡献 / 结果 / 局限 / 适用人群 / 使用前提 / 复现成本）逐篇抽取，证据句回链摘录，导出 CSV / Markdown"
+      >
+        PRISMA 抽取
       </button>
       {#if matrixSelectionCount > 0}
         <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
@@ -1280,6 +1483,129 @@
           <button class="btn" onclick={exportCsv}>导出 CSV</button>
           <button class="btn" onclick={() => { extractResult = null; extractView = "pick"; }}>再提一次</button>
           <button class="btn primary" onclick={closeExtract}>完成</button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if prismaOpen}
+  <div class="matrix-modal-bg" onclick={closePrisma} role="presentation"></div>
+  <div class="matrix-modal extract-modal" role="dialog" aria-label="PRISMA 8 维抽取">
+    {#if prismaError}
+      <div class="matrix-modal-bd err">
+        {prismaError}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (prismaError = null)}>返回</button>
+          <button class="btn" onclick={closePrisma}>关闭</button>
+        </div>
+      </div>
+    {:else if prismaView === "pick"}
+      <div class="matrix-modal-bd">
+        <div class="shead">PRISMA 8 维抽取 <span class="n">已勾选 {matrixSelectionCount} 篇</span></div>
+        <p class="dhint">系统综述专用表：固定 8 维（研究问题 / 方法 / 贡献 / 结果 / 局限 / 适用人群 / 使用前提 / 复现成本）逐篇抽取，每个值附证据句并回链摘录卡。和对比矩阵、提取表格共用同一组勾选；Matrix 是自由对比，这张表是综述用的。</p>
+        <input class="dt" bind:value={prismaRunTitle} placeholder="本次抽取标题（可选，默认「PRISMA 8 维 · N 篇」）" />
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (prismaView = "runs")}>抽取历史</button>
+          <button class="btn" onclick={closePrisma}>取消</button>
+          <button class="btn primary" disabled={matrixSelectionCount === 0 || prismaBusy}
+                  title={matrixSelectionCount === 0 ? "先在论文列表勾选论文" : ""}
+                  onclick={startPrisma}>
+            {prismaBusy ? "创建中…" : `开始抽取 ${matrixSelectionCount} 篇`}
+          </button>
+        </div>
+      </div>
+    {:else if prismaView === "runs"}
+      <div class="matrix-modal-bd">
+        <div class="shead">抽取历史 <span class="n">{prismaRuns.length}</span></div>
+        {#if !prismaRuns.length}
+          <p class="none">还没有抽取记录。</p>
+        {/if}
+        {#each prismaRuns as r (r.id)}
+          <div class="lrow">
+            <button type="button" class="lbody" onclick={() => openPrismaRun(r.id)}>
+              <div class="ltitle">{r.title}</div>
+              <div class="lsub">
+                {r.item_ids.length} 篇 · 8 维 ·
+                <span class:running={r.status === "running"} class:failed={r.status === "error"}>
+                  {r.status === "running" ? "抽取中" : r.status === "error" ? "失败" : "完成"}
+                </span>
+                · {new Date(r.created_at).toLocaleString("zh-CN")}
+              </div>
+            </button>
+            <button class="x" title="删除记录" onclick={() => prismaDeleteRun(r.id)}><Icon name="x" size={10} /></button>
+          </div>
+        {/each}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (prismaView = "pick")}>返回</button>
+          <button class="btn" onclick={closePrisma}>关闭</button>
+        </div>
+      </div>
+    {:else if prismaResult}
+      <div class="matrix-modal-bd">
+        <div class="shead">
+          {prismaResult.run.title}
+          <span class="n">{prismaResult.items.length} 篇 · 8 维</span>
+          {#if prismaRunning}<span class="runbadge"><span class="is-spin" style="width:10px;height:10px"></span>抽取中…</span>
+          {:else if prismaResult.run.status === "error"}<span class="runbadge failed">失败</span>{/if}
+        </div>
+        {#if prismaResult.run.error}
+          <p class="dhint" style="color:var(--warn)">{prismaResult.run.error}</p>
+        {/if}
+        <div class="xtable-wrap">
+          <table class="xtable">
+            <thead>
+              <tr>
+                <th class="sticky">论文</th>
+                {#each prismaResult.run.fields as f (f.key)}
+                  <th title={f.prompt}>{prismaLabel(f.key)}</th>
+                {/each}
+                <th class="ops"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each prismaResult.items as item (item.id)}
+                <tr>
+                  <td class="sticky">
+                    <div class="ptitle">{item.title}</div>
+                    <div class="faint">{[item.authors, item.year].filter(Boolean).join(" · ")}</div>
+                  </td>
+                  {#each prismaResult.run.fields as f (f.key)}
+                    {@const cell = prismaEvidence(item.id, f.key)}
+                    <td>
+                      <input
+                        value={cell?.value ?? ""}
+                        placeholder={prismaRunning ? "…" : "空"}
+                        onchange={(e) => prismaSaveCell(item.id, f.key, (e.target as HTMLInputElement).value)}
+                        title={cell?.source === "manual" ? "手动修正过（重跑不会覆盖）" : "点击编辑并校对"}
+                      />
+                      {#if cell?.evidence}
+                        <div class="ev" class:linked={!!cell.excerpt_id}
+                             title={cell.evidence + (cell.excerpt_id ? "（已回链摘录卡）" : "（未回链：这句证据没能在论文卡片原文中逐字定位）")}>
+                          {#if cell.excerpt_id}<span class="evl">摘</span>{/if}{cell.evidence}
+                        </div>
+                      {/if}
+                      {#if cell?.source === "manual"}<span class="mflag" title="手动修正">手</span>{/if}
+                    </td>
+                  {/each}
+                  <td class="ops">
+                    <button class="x" title="重新抽取这一行（手动修正过的格子不会被覆盖）"
+                            disabled={prismaRetrying === item.id || prismaRunning}
+                            onclick={() => prismaRetryRow(item.id)}>
+                      <Icon name="refresh" size={11} />
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="dhint">带「摘」标的证据句已回链到摘录卡（摘录列表里可见「PRISMA · 维度」标注的条目）；没有标的证据句是模型给出但未能在原文逐字定位的，仅作参考。格子可直接改，改过即标记「手」，重跑不覆盖。</p>
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={exportPrismaCsv}>导出 CSV</button>
+          <button class="btn" onclick={exportPrismaMd}>导出 Markdown</button>
+          <button class="btn" onclick={() => { prismaResult = null; prismaView = "pick"; }}>再抽一次</button>
+          <button class="btn primary" onclick={closePrisma}>完成</button>
         </div>
       </div>
     {/if}
@@ -2047,4 +2373,26 @@
   .runbadge.failed { color: var(--err); }
   .lsub .running { color: var(--accent); }
   .lsub .failed { color: var(--err); }
+  /* PRISMA evidence line under each cell value */
+  .ev {
+    margin-top: 3px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    max-width: 220px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .ev.linked { color: var(--fg); opacity: 0.85; }
+  .ev .evl {
+    font-size: 9px;
+    color: var(--accent);
+    border: 1px solid var(--accent-dim);
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-right: 4px;
+  }
 </style>
