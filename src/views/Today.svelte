@@ -77,6 +77,35 @@
     !!board && board.overdue.length === 0 && board.today.length === 0 && board.inbox.length === 0,
   );
 
+  // ----- 动线条: what the night automation did + what's due now -----------
+  // Review Today's due queue (reps===0 → never-studied cards, e.g. the ones
+  // cron's auto-flashcards seeded overnight) and the latest finished run per
+  // cron job. Non-fatal loads: the bar just doesn't render when empty.
+  let dueCards = $state<api.ReviewTodayCard[] | null>(null);
+  let cronLatest = $state<api.CronRecentRun[] | null>(null);
+  $effect(() => {
+    api.reviewToday(500).then((cs) => { dueCards = cs; }).catch(() => { dueCards = null; });
+    api.cronRecentRuns(3).then((rs) => { cronLatest = rs; }).catch(() => { cronLatest = null; });
+  });
+  const dueCount = $derived(dueCards?.length ?? 0);
+  const dueNew = $derived(dueCards?.filter((c) => c.reps === 0).length ?? 0);
+  function whenLabel(ms: number | null): string {
+    if (ms == null) return "";
+    const d = new Date(ms);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if (sameDay) return `今天 ${hhmm}`;
+    const yest = new Date(now.getTime() - 86_400_000);
+    if (d.toDateString() === yest.toDateString()) return `昨天 ${hhmm}`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+  }
+  function runBrief(r: api.CronRecentRun): string {
+    const first = (r.output ?? "").split("\n")[0] ?? "";
+    const t = first.trim() || (r.status === "error" ? "运行失败" : "完成");
+    return t.length > 72 ? t.slice(0, 72) + "…" : t;
+  }
+
   // Capture is the one interaction that must never fail: Enter files it into
   // the inbox, Cmd/Ctrl+Enter commits it straight to today.
   async function capture(intoTodaysLane: boolean) {
@@ -294,6 +323,30 @@
     </div>
   </header>
 
+  {#if dueCount > 0 || (cronLatest?.length ?? 0) > 0}
+    <div class="flowbar">
+      {#if dueCount > 0}
+        <button class="flow-chip flow-review" title="进入今日复习" onclick={() => app.setView("review")}>
+          <Icon name="cards" size={13} />
+          <b>复习 {dueCount} 张</b>
+          {#if dueNew > 0}<span class="flow-sub mono">· 含新卡 {dueNew}</span>{/if}
+        </button>
+      {/if}
+      {#each cronLatest ?? [] as r (r.job_id)}
+        <button
+          class="flow-chip flow-cron"
+          class:err={r.status === "error"}
+          title={(r.output ?? "").slice(0, 400)}
+          onclick={() => app.openSettings("cron")}
+        >
+          <span class="flow-dot" class:err={r.status === "error"}></span>
+          <b>{r.job_name}</b>
+          <span class="flow-sub">{whenLabel(r.finished_at)} · {runBrief(r)}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="capture">
     <Icon name="plus" size={13} />
     <input
@@ -425,14 +478,70 @@
     color: var(--fg-faint);
   }
 
+  /* 动线条 — night automation report + due-now review, one row of chips */
+  .flowbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .flow-chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 100%;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    font-size: var(--t-xs, 12px);
+    color: var(--fg-muted);
+    cursor: pointer;
+    text-align: left;
+  }
+  .flow-chip b {
+    font-weight: 500;
+    color: var(--fg-bright);
+    white-space: nowrap;
+  }
+  .flow-chip:hover {
+    border-color: var(--accent);
+    color: var(--fg-bright);
+  }
+  .flow-review {
+    border-color: var(--accent);
+  }
+  .flow-review b {
+    color: var(--accent);
+  }
+  .flow-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-faint);
+    font-size: 11px;
+  }
+  .flow-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok, #639922);
+    flex: none;
+  }
+  .flow-dot.err {
+    background: var(--danger, #e24b4a);
+  }
+  .flow-chip.err b {
+    color: var(--danger, #e24b4a);
+  }
+
   .capture {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 8px 10px;
     border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
+    border-radius: 10px;    background: var(--surface);
     margin-bottom: 22px;
   }
   .capture:focus-within {

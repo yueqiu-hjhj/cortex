@@ -760,6 +760,16 @@ export const cronSetEnabled = (id: string, enabled: boolean) =>
 export const cronDelete = (id: string) => invoke<void>("cron_delete", { id });
 export const cronRuns = (jobId: string) => invoke<CronRun[]>("cron_runs", { jobId });
 export const cronRunNow = (id: string) => invoke<CronRun>("cron_run_now", { id });
+export interface CronRecentRun {
+  job_id: string;
+  job_name: string;
+  action: string; // "prompt" | "sync"
+  status: string; // "ok" | "error"
+  finished_at: number | null;
+  output: string | null;
+}
+export const cronRecentRuns = (limit = 3) =>
+  invoke<CronRecentRun[]>("cron_recent_runs", { limit });
 
 // ---- MCP client (4.4) ----
 export interface McpSyncReport {

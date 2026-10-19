@@ -686,6 +686,67 @@ pub fn cron_runs(state: tauri::State<'_, AppState>, job_id: String) -> Result<Ve
     list_runs(&c, &job_id, 20)
 }
 
+/// One-line brief for the Today "flow bar": the latest FINISHED run per job,
+/// most recent first. Today's cockpit shows what the night automation did
+/// without making the user open Settings → 自动化.
+#[derive(Debug, Clone, Serialize)]
+pub struct CronRecentRun {
+    pub job_id: String,
+    pub job_name: String,
+    pub action: String,
+    pub status: String,
+    pub finished_at: Option<i64>,
+    pub output: Option<String>,
+}
+
+pub(crate) fn recent_runs(c: &rusqlite::Connection, limit: i64) -> Result<Vec<CronRecentRun>> {
+    let mut st = c.prepare(
+        "SELECT r.job_id, j.name, COALESCE(j.action,'prompt'), r.status, r.finished_at, r.output \
+         FROM cron_runs r JOIN cron_jobs j ON j.id = r.job_id \
+         WHERE r.status != 'running' AND r.finished_at IS NOT NULL \
+         ORDER BY r.finished_at DESC",
+    )?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let rows = st
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (job_id, job_name, action, status, finished_at, output) in rows {
+        if seen.insert(job_id.clone()) {
+            out.push(CronRecentRun {
+                job_id,
+                job_name,
+                action,
+                status,
+                finished_at,
+                output,
+            });
+            if out.len() >= limit as usize {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn cron_recent_runs(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<CronRecentRun>> {
+    let c = state.db.lock().unwrap();
+    recent_runs(&c, limit.unwrap_or(3).clamp(1, 10))
+}
+
 #[tauri::command]
 pub async fn cron_run_now(app: AppHandle, id: String) -> Result<CronRun> {
     tauri::async_runtime::spawn_blocking(move || run_now(&app, &id))
@@ -914,5 +975,40 @@ mod tests {
         // …and re-grading the old card does not snap back to due-now
         let again = repo::srs_grade(&c, &sid, Some("m1"), "flashcard", 0, "老卡", 4).unwrap();
         assert!(again.due_at > graded.due_at - 86_400_000 / 2);
+    }
+
+    #[test]
+    fn recent_runs_dedupes_to_latest_per_job() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let j1 = add_job(&c, &sync_input("拉论文", Some("s1"), Some("arxiv"))).unwrap();
+        let mut j2_in = sync_input("晨报", None, None);
+        j2_in.action = None;
+        j2_in.prompt = "晨报提示词".into();
+        let j2 = add_job(&c, &j2_in).unwrap();
+        let ins = |job: &str, started: i64, fin: Option<i64>, status: &str, out: &str| {
+            c.execute(
+                "INSERT INTO cron_runs (id, job_id, started_at, finished_at, status, output) \
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                rusqlite::params![new_id(), job, started, fin, status, out],
+            )
+            .unwrap();
+        };
+        // j1: old ok run, then a newer one — only the newer must surface.
+        ins(&j1.id, 1_000, Some(1_100), "ok", "旧的一次");
+        ins(&j1.id, 2_000, Some(2_100), "ok", "连接器 arxiv：新入库 3 条。");
+        // j2: a running row must be skipped entirely.
+        ins(&j2.id, 2_500, None, "running", "");
+        ins(&j2.id, 900, Some(950), "error", "模型未配置");
+
+        let runs = recent_runs(&c, 10).unwrap();
+        assert_eq!(runs.len(), 2, "one row per job, running skipped");
+        assert_eq!(runs[0].job_id, j1.id, "newest finished first");
+        assert_eq!(runs[0].output.as_deref(), Some("连接器 arxiv：新入库 3 条。"));
+        assert_eq!(runs[1].job_id, j2.id);
+        assert_eq!(runs[1].status, "error");
+
+        // limit truncates after the per-job dedup, not before
+        assert_eq!(recent_runs(&c, 1).unwrap().len(), 1);
     }
 }

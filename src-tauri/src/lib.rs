@@ -758,6 +758,7 @@ pub fn run() {
             summary_tree::summary_tree_build,
             // cron / scheduled automation (3.4)
             cron::cron_list,
+            cron::cron_recent_runs,
             cron::cron_add,
             cron::cron_update,
             cron::cron_set_enabled,
