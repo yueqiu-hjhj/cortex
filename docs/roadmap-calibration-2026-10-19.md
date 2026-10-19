@@ -32,12 +32,14 @@ MCP 服务端 ✅(`974970a`) · `.cortex-pkg` 可移植归档 ✅ · Studio 确�
 |---|---|---|
 | 1.4 | `cortex-mcp` npm 包装（bin + 下载解析 + README 配置片段） | **repo 侧，本轮已开工**（`packages/cortex-mcp/`） |
 | 1.1 | Anki/Obsidian 迁移脚本 `scripts/cortex-import-*.mjs` | **✅ 本轮完成**：`cortex-import-anki.mjs` / `cortex-import-obsidian.mjs`（Node 22+ 内置 sqlite、直写 cortex.db、幂等、`--dry-run`、自测 `scripts/import-selftest.mjs`；用法见 `scripts/README-import.md`） |
-| 1.2 | skills.sh 发布 Anthropic Skills 包 | **用户动作**（发布 + 命名；按用户铁律用其本人 namespace，不用 `PndaMan/` scope） |
-| 1.3 | Homebrew formula | **基础设施已存在**：`.github/workflows/release.yml` 的 publish-packages job 每个 tag 自动推 Homebrew cask 到 `PndaMan/homebrew-cortex` + AUR `cortex-bin`。注意：这是**上游**基础设置（发布者身份 Aidan McConnon）——若要在你的 fork 启用需换 tap 仓库与密钥 |
-| 1.5/1.6 | Reddit/HN 帖子、Demo 视频 | **用户动作** |
+| 1.2 | skills.sh 发布 Anthropic Skills 包 | **❌ 不做**（2026-10-19 用户决定：自用、不发布） |
+| 1.3 | Homebrew formula | **❌ 不做**：上游 `release.yml` 自带 Homebrew/AUR 发布属分发基础设施，自用无需启用 |
+| 1.5/1.6 | Reddit/HN 帖子、Demo 视频 | **❌ 不做**（同上，纯推广动作） |
 
 **命名提醒**：路线图 1.2 的示例 `npx skills add PndaMan/cortex` 用了上游组织名——按「代码只推/归属用户自己仓库」的铁律，Skills 包与 npm scope 应使用用户本人 namespace（如 `@yueqiu-hjhj`），发布前确认。
 
 ## 5. 结论
 
-综合路线图的战略判断（不追 Python/R kernel / SSH/Slurm；放大「桌面本地 × 学习 OS × 多模态 × 录音」交叉点）与两批调研结论一致，维持有效。执行顺序建议：1.4 ✅ → 1.1 ✅ → 1.3（formula 骨架）→ 用户执行 1.2/1.5/1.6。
+综合路线图的战略判断（不追 Python/R kernel / SSH/Slurm；放大「桌面本地 × 学习 OS × 多模态 × 录音」交叉点）与两批调研结论一致，维持有效。执行顺序回顾：1.4 ✅ → 1.1 ✅ → **Phase 1 至此收尾**——用户 2026-10-19 决定**自用、不发布**，1.2/1.3/1.5/1.6 等发布类任务全部不做。后续只做自用向功能（真实 LLM 冒烟、数据迁移脚本的实际使用等）。
+
+> 注：`packages/cortex-mcp` 只是仓库里的源码文件，**不执行 `npm publish` 就永远不会发布**；README 的 npx 段仅是备用用法。推送到自己的 GitHub 仓库也不等于发布——想完全私有可把 fork 设为 private，一切功能照常（全部本地运行）。
