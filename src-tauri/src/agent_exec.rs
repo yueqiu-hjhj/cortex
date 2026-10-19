@@ -26,6 +26,7 @@ use crate::error::Result;
 use crate::llm::Llm;
 use crate::repo;
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 
 /// Tool output is truncated before it enters the transcript — a 200 KB PDF
 /// dump would eat the context window of every following step.
@@ -198,6 +199,36 @@ fn resolve_tools(c: &Connection, user_id: &str, agent: &Agent) -> Result<Vec<&'s
         .collect())
 }
 
+/// C2 (4.4): MCP tools visible to this agent — registry rows with kind='mcp'
+/// (synced from the configured servers by `mcp_sync_tools`) that the agent's
+/// whitelist grants. The `description` column carries the pre-rendered usage
+/// line; server/tool split out of the `mcp__<server>__<tool>` name.
+struct McpToolInfo {
+    name: String,
+    usage: String,
+    server: String,
+    tool: String,
+}
+
+fn resolve_mcp_tools(c: &Connection, user_id: &str, agent: &Agent) -> Result<Vec<McpToolInfo>> {
+    let mut stmt = c.prepare(
+        "SELECT name, description FROM agent_tools WHERE user_id=?1 AND kind='mcp' AND enabled=1",
+    )?;
+    let rows = stmt
+        .query_map(params![user_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(n, _)| agent.tools.iter().any(|a| a == n))
+        .filter_map(|(n, usage)| {
+            let (server, tool) = crate::mcp_client::split_mcp_tool_name(&n)?;
+            Some(McpToolInfo { name: n, usage, server, tool })
+        })
+        .collect())
+}
+
 fn skill_bodies(c: &Connection, user_id: &str, agent: &Agent) -> Result<String> {
     let mut out = String::new();
     if agent.skills.is_empty() {
@@ -211,14 +242,22 @@ fn skill_bodies(c: &Connection, user_id: &str, agent: &Agent) -> Result<String> 
     Ok(out)
 }
 
-fn system_prompt(tools: &[&BuiltinTool], skills: &str, agent: &Agent) -> String {
+fn system_prompt(
+    tools: &[&BuiltinTool],
+    mcp_tools: &[McpToolInfo],
+    skills: &str,
+    agent: &Agent,
+) -> String {
     let mut s = agent.system_prompt.clone();
-    if !tools.is_empty() {
+    if !tools.is_empty() || !mcp_tools.is_empty() {
         s.push_str("\n\n## 可用工具\n每次回复只能是下面两种格式之一：\n\
             1. `TOOL 工具名 {json参数}` —— 调用一次工具，结果会在下一轮给你；\n\
             2. `ANSWER: 最终回答` —— 结束运行。\n\
             先用工具查证，再回答；不要编造来源。可用工具：\n");
         for t in tools {
+            s.push_str(&format!("- {}\n", t.usage));
+        }
+        for t in mcp_tools {
             s.push_str(&format!("- {}\n", t.usage));
         }
     } else {
@@ -283,8 +322,19 @@ pub fn execute_run(
     model: &dyn Llm,
 ) -> Result<crate::agents::AgentRun> {
     let tools = resolve_tools(c, user_id, agent)?;
+    let mcp_tools = resolve_mcp_tools(c, user_id, agent)?;
     let skills = skill_bodies(c, user_id, agent)?;
-    let system = system_prompt(&tools, &skills, agent);
+    let system = system_prompt(&tools, &mcp_tools, &skills, agent);
+    // Server configs resolved once; sessions spawn lazily on first call —
+    // a run that never touches MCP boots nothing.
+    let mcp_cfgs: std::collections::HashMap<String, crate::mcp_client::McpServerCfg> =
+        crate::mcp_client::parse_server_cfgs(
+            repo::get_setting(c, "mcp_servers").ok().flatten().as_deref(),
+        )
+        .into_iter()
+        .map(|cfg| (cfg.name.clone(), cfg))
+        .collect();
+    let mut mcp_sessions: HashMap<String, crate::mcp_client::McpSession> = HashMap::new();
 
     let mut final_answer: Option<String> = None;
     let mut run_error: Option<String> = None;
@@ -313,15 +363,45 @@ pub fn execute_run(
         if let Some((name, args)) = parse_tool_call(&reply) {
             let impl_tool = tools.iter().find(|t| t.name == name);
             append_message(c, run_id, "assistant", &reply, Some(&name))?;
-            let output = match impl_tool {
-                Some(t) => match (t.run)(c, &args) {
+            let output = if let Some(t) = impl_tool {
+                match (t.run)(c, &args) {
                     Ok(o) => o,
                     Err(e) => format!("工具执行失败：{e}"),
-                },
-                None => format!(
+                }
+            } else if let Some(mt) = mcp_tools.iter().find(|t| t.name == name) {
+                // MCP tool: lazily boot the owning server's session, then call.
+                let output = (|| -> std::result::Result<String, String> {
+                    if !mcp_sessions.contains_key(&mt.server) {
+                        let cfg = mcp_cfgs.get(&mt.server).ok_or_else(|| {
+                            format!("MCP server {} 未在设置中配置", mt.server)
+                        })?;
+                        if !cfg.enabled {
+                            return Err(format!("MCP server {} 已停用", mt.server));
+                        }
+                        let session = crate::mcp_client::McpSession::spawn(cfg)
+                            .map_err(|e| e.to_string())?;
+                        mcp_sessions.insert(mt.server.clone(), session);
+                    }
+                    mcp_sessions
+                        .get_mut(&mt.server)
+                        .expect("session just inserted")
+                        .call_tool(&mt.tool, args)
+                        .map_err(|e| e.to_string())
+                })();
+                match output {
+                    Ok(o) => o,
+                    Err(e) => format!("MCP 工具执行失败：{e}"),
+                }
+            } else {
+                format!(
                     "没有名为 {name} 的可用工具。可用：{}",
-                    tools.iter().map(|t| t.name).collect::<Vec<_>>().join("、")
-                ),
+                    tools
+                        .iter()
+                        .map(|t| t.name)
+                        .chain(mcp_tools.iter().map(|t| t.name.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )
             };
             append_message(c, run_id, "tool", &snippet(&output, TOOL_RESULT_CHARS), Some(&name))?;
             continue;
@@ -528,9 +608,47 @@ mod tests {
         let agent = agent_with(&c, &["search_notebook"], &["引用优先"], 6);
         let tools = resolve_tools(&c, crate::agents::DEFAULT_USER, &agent).unwrap();
         assert_eq!(tools.len(), 1);
-        let sp = system_prompt(&tools, &skill_bodies(&c, crate::agents::DEFAULT_USER, &agent).unwrap(), &agent);
+        let sp = system_prompt(&tools, &[], &skill_bodies(&c, crate::agents::DEFAULT_USER, &agent).unwrap(), &agent);
         assert!(sp.contains("search_notebook"));
         assert!(sp.contains("回答必须引用来源文件名"));
         assert!(sp.contains("ANSWER"));
+    }
+
+    #[test]
+    fn mcp_tools_resolve_and_inject_into_the_prompt() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let now = crate::db::now_ms();
+        let usage = crate::mcp_client::usage_for(
+            &crate::mcp_client::mcp_tool_name("homelab", "query_db"),
+            "Query the homelab database.",
+            &serde_json::json!({"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}),
+        );
+        for (name, kind, enabled) in [
+            (crate::mcp_client::mcp_tool_name("homelab", "query_db"), "mcp", 1),
+            (crate::mcp_client::mcp_tool_name("fs", "read_file"), "mcp", 1),
+            (crate::mcp_client::mcp_tool_name("off", "dead"), "mcp", 0), // disabled server
+            ("list_notebooks".to_string(), "read", 1),
+        ] {
+            // description carries the usage line in the real sync flow
+            let desc = if name == "mcp__homelab__query_db" { usage.clone() } else { "x".into() };
+            c.execute(
+                "INSERT OR IGNORE INTO agent_tools (id, user_id, name, description, kind, schema_json, enabled, built_in, created_at)
+                 VALUES (?1,?2,?3,?4,?5,'{}',?6,0,?7)",
+                params![crate::db::new_id(), crate::agents::DEFAULT_USER, name, desc, kind, enabled, now],
+            )
+            .unwrap();
+        }
+        // agent whitelists one MCP tool + one builtin; the disabled one must not resolve
+        let agent = agent_with(&c, &["mcp__homelab__query_db", "list_notebooks"], &[], 4);
+        let mcp = resolve_mcp_tools(&c, crate::agents::DEFAULT_USER, &agent).unwrap();
+        assert_eq!(mcp.len(), 1, "only the whitelisted+enabled MCP tool resolves");
+        assert_eq!(mcp[0].server, "homelab");
+        assert_eq!(mcp[0].tool, "query_db");
+        let tools = resolve_tools(&c, crate::agents::DEFAULT_USER, &agent).unwrap();
+        let sp = system_prompt(&tools, &mcp, "", &agent);
+        assert!(sp.contains("mcp__homelab__query_db"), "MCP usage lands in prompt");
+        assert!(sp.contains(r#""sql": string*"#), "schema summary in usage: {}", sp);
+        assert!(sp.contains("list_notebooks"));
     }
 }

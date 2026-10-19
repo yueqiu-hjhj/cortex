@@ -411,6 +411,47 @@
   }
   const cronFmt = (ms: number | null) => (ms ? new Date(ms).toLocaleString() : "—");
 
+  // ---- mcp client (4.4) ----
+  let mcpServersJson = $state("");
+  let mcpBusy = $state(false);
+  const MCP_PLACEHOLDER = '[{"name":"homelab","command":"npx","args":["-y","mcp-server-xxx"]}]';
+  async function saveMcpServers() {
+    const raw = mcpServersJson.trim() || "[]";
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("必须是数组");
+      for (const s of parsed) {
+        if (!s.name || !s.command) throw new Error("每项需要 name 和 command");
+        if (!/^[a-z0-9_-]+$/.test(s.name)) throw new Error(`name「${s.name}」只能用小写字母/数字/-/_`);
+      }
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "MCP 配置 JSON 无效", body: String(e) });
+      return;
+    }
+    api.setSetting("mcp_servers", raw).catch(() => {});
+    app.pushToast({ kind: "success", title: "MCP 配置已保存" });
+  }
+  async function mcpSync() {
+    if (mcpBusy) return;
+    mcpBusy = true;
+    try {
+      const reports = await api.mcpSyncTools();
+      for (const r of reports) {
+        if (r.ok) {
+          app.pushToast({ kind: "success", title: `MCP ${r.server}：同步 ${r.tools} 个工具` });
+        } else {
+          app.pushToast({ kind: "error", title: `MCP ${r.server} 连接失败`, body: r.error ?? "" });
+        }
+      }
+      if (reports.length === 0) {
+        app.pushToast({ kind: "warning", title: "没有启用的 MCP server" });
+      }
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "同步失败", body: String(e) });
+    }
+    mcpBusy = false;
+  }
+
   // ---- keys state ----
   let keys = $state({
     openrouter: "",
@@ -1487,6 +1528,7 @@
       if (s.docling_bin)  doclingBin = s.docling_bin;
       if (s.economy_mode === "1" || s.economy_mode === "true" || s.economy_mode === "on") economyOn = true;
       if (s.model_cheap)  economySpec = s.model_cheap;
+      if (s.mcp_servers)  mcpServersJson = s.mcp_servers;
 
       // Local models + web search + remote whisper
       if (s.ollama_url)                    endpoint = s.ollama_url;
@@ -3674,6 +3716,36 @@ Notes: {about}</pre>
                 </div>
               {/if}
             {/each}
+          </div>
+        </section>
+
+        <section class="set-group" style="margin-top:14px">
+          <div class="set-group-h"><h3 class="set-group-t">MCP Client</h3></div>
+          <div class="set-card">
+            <div class="xtra-row" style="align-items:flex-start">
+              <div class="xtra-label">
+                <div class="mt-task-t">外部 MCP servers（stdio）</div>
+                <div class="mt-task-d mono">JSON 数组，每项含 name / command / args / env / enabled；name 会拼进工具名 mcp__&lt;name&gt;__&lt;tool&gt;（见输入框示例）</div>
+              </div>
+              <textarea
+                class="input mono"
+                rows="5"
+                style="min-width:280px"
+                value={mcpServersJson}
+                onchange={(e) => (mcpServersJson = (e.target as HTMLTextAreaElement).value)}
+                placeholder={MCP_PLACEHOLDER}
+              ></textarea>
+            </div>
+          </div>
+          <div class="set-foot-actions">
+            <button class="btn btn--ghost" onclick={saveMcpServers}>保存配置</button>
+            <button class="btn btn--primary" onclick={mcpSync} disabled={mcpBusy}>
+              <Icon name="refresh" size={13} /> 连接并同步工具
+            </button>
+          </div>
+          <div class="set-note mono">
+            <Icon name="diamond" size={11} color="var(--accent)" />
+            同步后工具进入 Agent 工具列表（mcp__ 前缀），在 Agents 视图里给需要的 agent 勾选即可调用。停用的 server 其工具仍会显示但调用时报错。
           </div>
         </section>
 

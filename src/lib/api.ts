@@ -755,6 +755,15 @@ export const cronDelete = (id: string) => invoke<void>("cron_delete", { id });
 export const cronRuns = (jobId: string) => invoke<CronRun[]>("cron_runs", { jobId });
 export const cronRunNow = (id: string) => invoke<CronRun>("cron_run_now", { id });
 
+// ---- MCP client (4.4) ----
+export interface McpSyncReport {
+  server: string;
+  ok: boolean;
+  tools: number;
+  error: string | null;
+}
+export const mcpSyncTools = () => invoke<McpSyncReport[]>("mcp_sync_tools");
+
 // ---- chat history (persisted per subject) ----
 export interface ChatMsg {
   role: string;

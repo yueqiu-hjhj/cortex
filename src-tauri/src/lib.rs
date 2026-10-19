@@ -49,6 +49,7 @@ pub mod zotero;
 pub mod experiments;
 pub mod ics;
 pub mod mcp_server;
+pub mod mcp_client;
 pub mod pkg;
 pub mod note_links;
 pub mod fallback;
@@ -763,6 +764,8 @@ pub fn run() {
             cron::cron_delete,
             cron::cron_runs,
             cron::cron_run_now,
+            // mcp client (4.4)
+            mcp_client::mcp_sync_tools,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")
