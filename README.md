@@ -221,6 +221,23 @@ Open **Settings** in the app:
 
 > No keys? The app still runs end-to-end with a clearly-marked offline stub so you can explore the flow.
 
+## Migrating from Anki / Obsidian
+
+Two zero-dependency Node scripts move an existing collection into Cortex
+without opening the app — for bulk migration and automation. They write into
+the same `cortex.db` the app uses (launch Cortex once, then close it):
+
+```bash
+# Anki deck (.apkg) → one subject per deck + reviewable flashcards
+node scripts/cortex-import-anki.mjs biology.apkg
+
+# Obsidian vault → one subject + notes with working [[backlinks]]
+node scripts/cortex-import-obsidian.mjs ~/Documents/MyVault
+```
+
+Both accept `--db`, `--subject`, `--dry-run`; the Obsidian script adds
+`--by-folder`. See [`scripts/README-import.md`](scripts/README-import.md).
+
 ## MCP server (use your library from Claude Code / Codex / Cursor)
 
 `cortex-mcp` is a read-only **MCP (Model Context Protocol) server over stdio**.
