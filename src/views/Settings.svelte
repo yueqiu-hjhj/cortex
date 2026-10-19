@@ -290,6 +290,17 @@
   let embedOv      = $state("");
   let pdfEngine    = $state("auto");
   let doclingBin   = $state("");
+  let economyOn    = $state(false);
+  let economySpec  = $state("");
+  function saveEconomyMode(e: Event) {
+    economyOn = (e.target as HTMLInputElement).checked;
+    api.setSetting("economy_mode", economyOn ? "1" : "0").catch(() => {});
+  }
+  function saveEconomySpec(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    economySpec = v;
+    api.setSetting("model_cheap", v).catch(() => {});
+  }
   function saveSpeech(e: Event) {
     const v = (e.target as HTMLInputElement).value.trim();
     speechModel = v;
@@ -1474,6 +1485,8 @@
       if (s.embed_model)  embedOv = s.embed_model;
       if (s.pdf_engine === "auto" || s.pdf_engine === "docling" || s.pdf_engine === "poppler") pdfEngine = s.pdf_engine;
       if (s.docling_bin)  doclingBin = s.docling_bin;
+      if (s.economy_mode === "1" || s.economy_mode === "true" || s.economy_mode === "on") economyOn = true;
+      if (s.model_cheap)  economySpec = s.model_cheap;
 
       // Local models + web search + remote whisper
       if (s.ollama_url)                    endpoint = s.ollama_url;
@@ -1987,6 +2000,26 @@ Notes: {about}</pre>
             </div>
           {/each}
         </div>
+
+        <section class="set-group" style="margin-top:14px">
+          <div class="set-group-h"><h3 class="set-group-t">经济模式</h3></div>
+          <div class="set-card">
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">经济模式（Economy tier）</div>
+                <div class="mt-task-d mono">Quiz / Flashcard 生成自动派给下面的便宜模型（未单独配置槽位时）；Cheatsheet / Chat / Audio 保持主力模型。显式配置过的槽位永远优先</div>
+              </div>
+              <input type="checkbox" checked={economyOn} onchange={saveEconomyMode} />
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">经济模型（model_cheap）</div>
+                <div class="mt-task-d mono">完整 spec：provider:model，如 openrouter:google/gemini-2.0-flash 或 ollama:qwen2.5:7b（本地免费）</div>
+              </div>
+              <input class="input mono" value={economySpec} onchange={saveEconomySpec} placeholder="openrouter:google/gemini-2.0-flash" />
+            </div>
+          </div>
+        </section>
 
         <section class="set-group" style="margin-top:14px">
           <div class="set-group-h"><h3 class="set-group-t">语音与检索</h3></div>

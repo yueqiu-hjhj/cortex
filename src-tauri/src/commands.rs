@@ -151,6 +151,16 @@ pub(crate) fn apply_budget(model: &mut Box<dyn llm::Llm>, c: &Connection, task: 
 ///    Flash), which would silently break OCR / figure explanation — it keeps
 ///    its own multimodal default;
 /// 4. final fallback is `DEFAULT_CHAT_MODEL`.
+/// Low-severity task slots: structured, high-volume generation where a cheap
+/// model loses almost nothing. With economy mode on, these fall to
+/// `model_cheap` before the inherit chain — but an explicit per-slot
+/// assignment still wins (the user's explicit choice always beats the tier).
+const ECONOMY_SLOTS: &[&str] = &["quiz", "flashcard"];
+
+fn economy_enabled(v: Option<String>) -> bool {
+    matches!(v.as_deref(), Some("1") | Some("true") | Some("on"))
+}
+
 pub(crate) fn model_spec_for(c: &Connection, slot: &str) -> String {
     let want =
         |key: &str| -> Option<String> {
@@ -161,6 +171,15 @@ pub(crate) fn model_spec_for(c: &Connection, slot: &str) -> String {
         };
     if let Some(s) = want(&format!("model_{slot}")) {
         return s;
+    }
+    // Economy tier (4.1): no explicit assignment + economy on + cheap model
+    // configured → low-severity slots go to the cheap model instead of the
+    // (usually expensive) primary. Missing any of the three → inherit chain.
+    if ECONOMY_SLOTS.contains(&slot)
+        && economy_enabled(want("economy_mode"))
+        && want("model_cheap").is_some()
+    {
+        return want("model_cheap").unwrap();
     }
     match slot {
         "vision" => DEFAULT_VISION_MODEL.to_string(),
@@ -7467,5 +7486,29 @@ mod model_routing_tests {
         repo::set_setting(&c, "model_quiz", "  ").unwrap();
         repo::set_setting(&c, "model_cheatsheet", "ollama:llama3").unwrap();
         assert_eq!(model_spec_for(&c, "quiz"), "ollama:llama3");
+    }
+
+    #[test]
+    fn economy_mode_routes_low_severity_slots_to_the_cheap_model() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        repo::set_setting(&c, "model_cheatsheet", "gemini:gemini-2.5-pro").unwrap();
+        repo::set_setting(&c, "model_cheap", "openrouter:google/gemini-2.0-flash").unwrap();
+        // economy off → quiz/flashcard still inherit the primary
+        assert_eq!(model_spec_for(&c, "quiz"), "gemini:gemini-2.5-pro");
+        repo::set_setting(&c, "economy_mode", "1").unwrap();
+        // economy on → low-severity slots fall to the cheap model
+        assert_eq!(model_spec_for(&c, "quiz"), "openrouter:google/gemini-2.0-flash");
+        assert_eq!(model_spec_for(&c, "flashcard"), "openrouter:google/gemini-2.0-flash");
+        // heavy slots keep the primary regardless
+        assert_eq!(model_spec_for(&c, "chat"), "gemini:gemini-2.5-pro");
+        assert_eq!(model_spec_for(&c, "audio"), "gemini:gemini-2.5-pro");
+        assert_eq!(model_spec_for(&c, "cheatsheet"), "gemini:gemini-2.5-pro");
+        // explicit per-slot assignment beats the economy tier
+        repo::set_setting(&c, "model_quiz", "openai:gpt-4o-mini").unwrap();
+        assert_eq!(model_spec_for(&c, "quiz"), "openai:gpt-4o-mini");
+        // no cheap model configured → inherit chain untouched
+        repo::set_setting(&c, "model_cheap", "").unwrap();
+        assert_eq!(model_spec_for(&c, "flashcard"), "gemini:gemini-2.5-pro");
     }
 }
