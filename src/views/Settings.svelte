@@ -354,6 +354,19 @@
     api.setSettings({ reading_font: rf, density: d }).catch(() => {});
   });
 
+  // ---- custom appearance (2.10) ----
+  // The accent picker applies instantly on every input event (color swatches
+  // fire rapidly — setCustomAppearance is cheap, one <style> textContent write).
+  // Custom CSS is debounced: keystrokes shouldn't thrash a full-document
+  // restyle mid-sentence, 500ms quiet is the sweet spot between "live" and
+  // "I pressed apply".
+  let customCssDraft = $state(app.customCss);
+  let cssTimer: ReturnType<typeof setTimeout> | null = null;
+  function onCustomCssInput() {
+    if (cssTimer) clearTimeout(cssTimer);
+    cssTimer = setTimeout(() => app.setCustomCss(customCssDraft), 500);
+  }
+
   // ---- keybinds state ----
   // Binds live in the shared keybinds module (persisted + applied live).
   let listening = $state<Action | null>(null);
@@ -2114,6 +2127,36 @@ Notes: {about}</pre>
                 </button>
               {/each}
             </div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h"><h3 class="set-group-t">自定义主题色</h3></div>
+          <div class="set-card">
+            <div class="set-row">
+              <div class="set-row-l">
+                <div class="set-row-t">强调色覆盖</div>
+                <div class="set-row-d">替换当前主题的强调色（--accent / --accent-dim，文字前景自动按亮度推导）。对 Omarchy 跟随模式同样生效；点「恢复」回到主题原色。</div>
+              </div>
+              <div class="set-row-r" style="display:flex; align-items:center; gap:8px;">
+                <input type="color" class="set-accent-pick" aria-label="自定义强调色"
+                       value={app.customAccent || "#2dd5b7"}
+                       oninput={(e) => app.setCustomAccent(e.currentTarget.value)} />
+                {#if app.customAccent}
+                  <button type="button" class="btn" onclick={() => app.setCustomAccent("")}>恢复</button>
+                {/if}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h"><h3 class="set-group-t">自定义 CSS</h3></div>
+          <div class="set-card set-css-card">
+            <textarea class="set-css mono" rows="7" bind:value={customCssDraft} oninput={onCustomCssInput}
+                      spellcheck="false" aria-label="自定义 CSS"
+                      placeholder={"/* 覆盖任意变量或选择器，例如：\n:root[data-theme] { --rad-3: 12px; }\n.chat-msg { line-height: 1.7; } */"}></textarea>
+            <div class="set-css-hint mono">即时生效，停顿 0.5s 自动保存。只存本机，改坏了清空即可。</div>
           </div>
         </section>
 

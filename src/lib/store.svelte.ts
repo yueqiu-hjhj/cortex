@@ -818,6 +818,11 @@ class AppStore {
         "data-density",
         all["density"] === "compact" ? "compact" : "regular"
       );
+      // Custom appearance (2.10) also lands before reveal — the injected sheet
+      // must exist in the first painted frame or custom colors/CSS flash in late.
+      this.customAccent = all["custom_accent"] ?? "";
+      this.customCss = all["custom_css"] ?? "";
+      this.applyCustomAppearance();
       // Appearance is fully applied (theme + reading font + density) and the shell
       // has rendered — reveal the window now so the first frame the user sees is
       // already correctly themed (no white flash, no default-theme flash). Use a
@@ -1548,6 +1553,58 @@ class AppStore {
     this.theme = t;
     this.applyTheme(t);
     api.setSetting("theme", t).catch(() => {});
+  }
+
+  // ---- custom appearance (2.10): user accent override + custom CSS ----
+  // Both live in ONE <style id="cortex-custom-appear"> appended to <head>, so
+  // they win over the theme blocks by document order and survive theme
+  // switches. The accent override uses `:root[data-theme]` (specificity 0-2-0)
+  // to beat the per-theme `[data-theme="x"]` variable blocks (0-1-0) no matter
+  // which theme is active — including an Omarchy-mirrored one.
+  customAccent = $state<string>(""); // "" = follow the theme palette
+  customCss = $state<string>("");
+
+  #hexRgb(hex: string): [number, number, number] | null {
+    const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return null;
+    let s = m[1];
+    if (s.length === 3) s = s.split("").map((c) => c + c).join("");
+    return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+  }
+
+  applyCustomAppearance() {
+    let el = document.getElementById("cortex-custom-appear") as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "cortex-custom-appear";
+      document.head.appendChild(el);
+    }
+    const parts: string[] = [];
+    const rgb = this.customAccent ? this.#hexRgb(this.customAccent) : null;
+    if (rgb) {
+      const hex = ([r, g, b]: [number, number, number]) =>
+        "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("");
+      const [r, g, b] = rgb;
+      // --accent-dim across the shipped themes is a ~0.7× shade of --accent.
+      const dim = hex([Math.round(r * 0.72), Math.round(g * 0.72), Math.round(b * 0.72)]);
+      // Accent surfaces carry text: dark ink on light accents, light on dark.
+      const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      const fg = lum > 0.55 ? "#101413" : "#f4f7f6";
+      parts.push(`:root[data-theme] { --accent: ${hex(rgb)}; --accent-dim: ${dim}; --accent-fg: ${fg}; }`);
+    }
+    if (this.customCss.trim()) parts.push(this.customCss);
+    el.textContent = parts.join("\n");
+  }
+
+  setCustomAccent(c: string) {
+    this.customAccent = c.trim();
+    this.applyCustomAppearance();
+    api.setSetting("custom_accent", this.customAccent).catch(() => {});
+  }
+  setCustomCss(css: string) {
+    this.customCss = css;
+    this.applyCustomAppearance();
+    api.setSetting("custom_css", css).catch(() => {});
   }
   uiScale = $state<number>(100);
   /** Apply the UI scale as a CSS zoom on the document root (NOT webview zoom, which is
