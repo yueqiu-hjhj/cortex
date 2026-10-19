@@ -297,6 +297,59 @@
     }
   }
 
+  // ── 2.3: built-in research connectors (arXiv / PubMed) ──
+  // No manifest, no API key: fixed fetchers (arXiv Atom, PubMed esearch→efetch).
+  // Every hit goes through the normal add_source pipeline with origin = paper
+  // URL, so re-running the same query never duplicates.
+  let researchConns = $state<api.ResearchConnector[]>([]);
+  let researchLoaded = $state(false);
+  let researchQuery = $state<Record<string, string>>({});
+  let researchMax = $state<Record<string, number>>({});
+  let researchPdf = $state<Record<string, boolean>>({});
+
+  $effect(() => {
+    if (method !== "connector" || researchLoaded) return;
+    let cancelled = false;
+    api.researchConnectorList()
+      .then((r) => {
+        if (cancelled) return;
+        researchConns = r ?? [];
+        for (const c of researchConns) if (researchMax[c.id] == null) researchMax[c.id] = 20;
+        researchLoaded = true;
+      })
+      .catch(() => { if (!cancelled) researchLoaded = true; });
+    return () => { cancelled = true; };
+  });
+
+  function researchFetch(c: api.ResearchConnector) {
+    if (!guardSubject()) return;
+    const q = (researchQuery[c.id] ?? "").trim();
+    if (!q) {
+      app.pushToast({ kind: "error", title: "检索式为空", body: `先输入 ${c.name} 的检索式。` });
+      return;
+    }
+    const max = Math.min(Math.max(Math.trunc(researchMax[c.id] ?? 20), 1), 100);
+    const withPdf = c.supports_pdf && (researchPdf[c.id] ?? false);
+    jobs.start({
+      kind: "connector",
+      label: `检索 ${c.name}`,
+      subjectId: selectedSubjectId,
+      topicId,
+      run: () => api.researchConnectorFetch(c.id, q, max, selectedSubjectId, topicId, withPdf),
+      onDone: (result) => {
+        app.refresh();
+        const s = result as api.ResearchFetchSummary;
+        app.pushToast({
+          kind: s.errors.length ? "warning" : "success",
+          title: `${c.name}：新增 ${s.imported} · 跳过 ${s.skipped}`,
+          body: s.errors.length ? s.errors[0] : `命中 ${s.fetched} 条`,
+        });
+      },
+    });
+    app.openSubject(selectedSubjectId);
+    app.setTab("sources");
+  }
+
   function handleBegin() {
     if (method === "upload") beginUpload();
     else if (method === "url") beginUrl();
@@ -492,7 +545,42 @@
             <p class="mono faint">正在打开讲座录音…</p>
           </div>
         {:else if method === "connector"}
-          <span class="onb-label mono">连接器</span>
+          <span class="onb-label mono">内置文献检索</span>
+          {#if !researchLoaded}
+            <p class="mono faint">读取内置检索…</p>
+          {:else}
+            <div class="conn-list">
+              {#each researchConns as c (c.id)}
+                <div class="conn-card">
+                  <div class="conn-head">
+                    <div class="conn-name">{c.name}</div>
+                    <div class="conn-meta mono"><span class="conn-pill ok">内置 · 无需 Key</span></div>
+                  </div>
+                  <div class="conn-note">{c.desc}</div>
+                  <div class="conn-form">
+                    <span class="onb-label mono">检索式</span>
+                    <input class="input" placeholder={c.hint} bind:value={researchQuery[c.id]} />
+                    <div class="conn-inline">
+                      <span class="onb-label mono">条数上限</span>
+                      <input class="input conn-max mono" type="number" min="1" max="100" bind:value={researchMax[c.id]} />
+                      {#if c.supports_pdf}
+                        <label class="conn-check mono">
+                          <input type="checkbox" bind:checked={researchPdf[c.id]} /> 同时下载 PDF 全文
+                        </label>
+                      {/if}
+                    </div>
+                    <div class="conn-actions">
+                      <button class="btn btn--primary btn--sm" disabled={!selectedSubject} onclick={() => researchFetch(c)}>
+                        <Icon name="search" size={12} /> 检索并入库
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <span class="onb-label mono">连接器插件</span>
           {#if !connsLoaded}
             <p class="mono faint">读取连接器…</p>
           {:else if connectors.length === 0}
@@ -688,6 +776,17 @@
   .conn-form { display: flex; flex-direction: column; gap: 6px; }
   .conn-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .conn-danger { color: var(--warn); }
+  /* ---- 2.3: built-in research connector rows ---- */
+  .conn-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .conn-max { width: 84px; }
+  .conn-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--fg-faint);
+    cursor: pointer;
+  }
   @media (max-width: 760px) {
     .addsrc { overflow: auto; }
     .addsrc-grid { grid-template-columns: 1fr; }

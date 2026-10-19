@@ -936,15 +936,37 @@
     }
   }
 
-  // ── Zotero import (管理引用: read the LOCAL Zotero library, DOI-deduped) ──
+  // ── Zotero bridge (2.2): repeatable sync, not one-shot import. Reads only
+  // items changed since the last stamp; linked papers get metadata refreshed
+  // in place (status/rating/notes/subject untouched), new items import, and
+  // Zotero-side trash only unlinks (paper rows are kept). The FIRST sync is a
+  // full import with the same DOI dedupe as before.
   let zoteroBusy = $state(false);
-  async function importZotero() {
+  let zoteroLastMs = $state<number | null>(null);
+  $effect(() => {
+    let cancelled = false;
+    api.zoteroSyncState()
+      .then((s) => { if (!cancelled) zoteroLastMs = s.last_sync_ms; })
+      .catch(() => { /* state line is cosmetic; real failures surface on sync */ });
+    return () => { cancelled = true; };
+  });
+  function zoteroLastLabel(): string {
+    if (!zoteroLastMs) return "从未同步";
+    const d = new Date(zoteroLastMs);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `上次同步 ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  async function syncZotero() {
     if (zoteroBusy) return;
     zoteroBusy = true;
     error = null;
     try {
-      const r = await api.zoteroImport(app.activeSubject?.id ?? null, null);
-      say(`Zotero 导入完成：新增 ${r.imported} 篇${r.skipped ? `，跳过已在库 ${r.skipped} 篇` : ""}（共发现 ${r.found}）`);
+      const r = await api.zoteroSync(app.activeSubject?.id ?? null, null);
+      zoteroLastMs = r.last_sync_ms;
+      const bits = [`更新 ${r.updated}`, `新增 ${r.added}`];
+      if (r.unlinked) bits.push(`断链 ${r.unlinked}`);
+      say(`Zotero 同步完成：${bits.join(" · ")}（变更 ${r.changed} 条）`);
+      if (r.warnings.length) error = r.warnings.slice(0, 3).join("；");
       await load();
     } catch (e) {
       error = String(e);
@@ -984,10 +1006,11 @@
     </div>
     <div class="controls">
       <input class="search" bind:value={search} placeholder="搜索标题 / 作者 / 摘要" oninput={() => load()} />
-      <button class="btn" disabled={zoteroBusy} onclick={importZotero}
-              title="读取本地 Zotero 数据库（~/Zotero/zotero.sqlite），按 DOI 去重导入阅读清单">
-        <Icon name="upload" size={12} /> {zoteroBusy ? "Zotero 导入中…" : "从 Zotero 导入"}
+      <button class="btn" disabled={zoteroBusy} onclick={syncZotero}
+              title={`读取本地 Zotero 数据库（~/Zotero/zotero.sqlite）增量同步：刷新元数据、导入新条目；阅读状态/评分/笔记不受影响，Zotero 侧删除只断链不删论文`}>
+        <Icon name="refresh" size={12} /> {zoteroBusy ? "Zotero 同步中…" : "同步 Zotero"}
       </button>
+      <span class="zlast mono">{zoteroLastLabel()}</span>
       <button class="btn" onclick={() => (importOpen = !importOpen)}>导入 BibTeX</button>
       <button class="btn primary" onclick={() => (drOpen = !drOpen)} title="课题 → 多源检索 → AI 筛选 → 入库 → 综述初稿">
         {drBusy ? "深度研究中…" : "深度研究"}
@@ -1843,6 +1866,11 @@
   }
   .search:focus {
     border-color: var(--accent-dim);
+  }
+  .zlast {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    white-space: nowrap;
   }
   .btn {
     border: 1px solid var(--border);

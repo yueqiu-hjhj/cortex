@@ -865,6 +865,28 @@ export const zoteroImport = (subjectId?: string | null, dbPath?: string | null) 
     dbPath: dbPath ?? null,
   });
 
+// ---- Zotero incremental sync (2.2): refresh linked papers, link by DOI, unlink trash ----
+export interface ZoteroSyncResult {
+  db_path: string;
+  changed: number;
+  updated: number;
+  added: number;
+  unlinked: number;
+  warnings: string[];
+  titles_sample: string[];
+  last_sync_ms: number;
+}
+export interface ZoteroSyncState {
+  last_sync_ms: number | null;
+}
+export const zoteroSync = (subjectId?: string | null, dbPath?: string | null) =>
+  invoke<ZoteroSyncResult>("zotero_sync", {
+    subjectId: subjectId ?? null,
+    dbPath: dbPath ?? null,
+  });
+export const zoteroSyncState = () =>
+  invoke<ZoteroSyncState>("zotero_sync_state");
+
 // ---- Experiments (科研一体化 gap: 复现实验, lightweight cards) ----
 export type ExperimentStatus = "planned" | "running" | "done" | "failed";
 export interface Experiment {
@@ -2536,4 +2558,41 @@ export const connectorSync = (
     connectorId,
     subjectId,
     topicId: topicId ?? null,
+  });
+
+// ---- 2.3: built-in research connectors (arXiv / PubMed) -----------------------
+
+export interface ResearchConnector {
+  id: string;
+  name: string;
+  desc: string;
+  hint: string;
+  supports_pdf: boolean;
+}
+
+export interface ResearchFetchSummary {
+  fetched: number;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  titles_sample: string[];
+}
+
+export const researchConnectorList = () =>
+  invoke<ResearchConnector[]>("research_connector_list");
+export const researchConnectorFetch = (
+  connectorId: string,
+  query: string,
+  max: number,
+  subjectId: string,
+  topicId?: string | null,
+  withPdf = false,
+) =>
+  invoke<ResearchFetchSummary>("research_connector_fetch", {
+    connectorId,
+    query,
+    max,
+    subjectId,
+    topicId: topicId ?? null,
+    withPdf,
   });

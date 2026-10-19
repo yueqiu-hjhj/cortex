@@ -6603,6 +6603,41 @@ pub async fn zotero_import(
     .map_err(|e| Error::Other(format!("zotero task failed: {e}")))?
 }
 
+/// Incremental Zotero sync (2.2): only items changed since the last stamp are
+/// re-read; linked papers get their metadata refreshed in place (status/rating/
+/// notes/subject untouched), new items import, trashed items unlink (paper kept).
+#[tauri::command]
+pub async fn zotero_sync(
+    app: AppHandle,
+    db_path: Option<String>,
+    subject_id: Option<String>,
+) -> Result<crate::zotero::ZoteroSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::zotero::ZoteroSyncResult> {
+        let state = app.state::<AppState>();
+        let mut progress = |_n: usize| {};
+        let result = {
+            let c = state.db.lock().unwrap();
+            crate::zotero::sync(
+                &c,
+                db_path.as_deref().map(Path::new),
+                subject_id.as_deref(),
+                &mut progress,
+            )?
+        };
+        Ok(result)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("zotero task failed: {e}")))?
+}
+
+/// When did the last successful Zotero sync finish (null = never).
+#[tauri::command]
+pub fn zotero_sync_state(app: AppHandle) -> Result<crate::zotero::ZoteroSyncState> {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    Ok(crate::zotero::sync_state(&c))
+}
+
 /// Deep Research (gap D2): 课题 → 多源文献发现 → AI 筛选 → 阅读清单 → 有据综述
 /// 初稿（存为科目笔记）。网络重（五源并发检索 + 多次模型调用），所以整个管线
 /// 在阻塞线程上跑，并使用**独立 SQLite 连接**——与 agent 执行器同理，绝不在

@@ -37,6 +37,8 @@ sha2 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Atom (arXiv) + PubMed XML parsing for the built-in research connectors (2.3).
+roxmltree = "0.20"
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 # sqlite-vec: statically-linked vector search extension (registered via
 # sqlite3_auto_extension at startup — no runtime .so to load).

@@ -62,6 +62,7 @@ pub mod papers;
 pub mod plugins;
 pub mod providers;
 pub mod connectors;
+pub mod research_connectors;
 pub mod drafts;
 pub mod extraction;
 pub mod prisma;
@@ -496,6 +497,11 @@ pub fn run() {
             commands::deep_research,
             commands::synthesize_video_overview,
             commands::zotero_import,
+            commands::zotero_sync,
+            commands::zotero_sync_state,
+            // built-in research connectors (2.3) — arXiv / PubMed as first-class citizens
+            research_connectors::research_connector_list,
+            research_connectors::research_connector_fetch,
             commands::experiment_create,
             commands::experiment_list,
             commands::experiment_update,
