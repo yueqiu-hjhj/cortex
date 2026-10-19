@@ -63,6 +63,7 @@ pub mod plugins;
 pub mod providers;
 pub mod connectors;
 pub mod research_connectors;
+pub mod slides;
 pub mod drafts;
 pub mod extraction;
 pub mod prisma;
@@ -502,6 +503,10 @@ pub fn run() {
             // built-in research connectors (2.3) — arXiv / PubMed as first-class citizens
             research_connectors::research_connector_list,
             research_connectors::research_connector_fetch,
+            // slides two-round confirm workflow (2.7): outline → edit → render → per-slide redo
+            slides::slides_outline,
+            slides::render_slides,
+            slides::regenerate_slide,
             commands::experiment_create,
             commands::experiment_list,
             commands::experiment_update,

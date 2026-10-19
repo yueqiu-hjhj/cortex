@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-const NO_MODEL: &str =
+pub(crate) const NO_MODEL: &str =
     "No model configured — add an API key in Settings → API keys (Gemini or OpenRouter), then pick it under Settings → Models.";
 
 /// Default for everything that reads the `model_chat` setting (chat, plus the
@@ -442,7 +442,7 @@ fn profile_preamble(c: &Connection) -> Result<String> {
 }
 
 /// Map `profile_style` to a one-line length/verbosity instruction for synthesis.
-fn style_instruction(c: &Connection) -> String {
+pub(crate) fn style_instruction(c: &Connection) -> String {
     let style = repo::get_setting(c, "profile_style")
         .ok()
         .flatten()
@@ -476,7 +476,7 @@ fn tone_instruction(tone: &str) -> String {
 /// tone, and what to prioritise, but explicitly defer to the system prompt's
 /// output format/JSON contract above them. Empty/whitespace input yields an empty
 /// string so prompts stay byte-identical to before when no custom prompt is set.
-fn custom_focus(custom: Option<&str>) -> String {
+pub(crate) fn custom_focus(custom: Option<&str>) -> String {
     match custom.map(str::trim).filter(|s| !s.is_empty()) {
         Some(c) => format!(
             "\n\nUSER FOCUS — the student gave these custom instructions for what to \

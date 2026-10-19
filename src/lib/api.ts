@@ -497,6 +497,67 @@ export const generateMaterial = (
   sourceIds?: string[],
   count?: number
 ) => invoke<MaterialRec>("generate_material", { subjectId, kind, topicId, title, customPrompt, sourceIds, count });
+
+// ---- 2.7: slides two-round confirm (outline → edit → render → single redo) ----
+
+/** One slide of an editable deck plan: what the slide is + what it must land. */
+export interface SlidePlan {
+  title: string;
+  focus: string;
+}
+export interface SlidesOutline {
+  suggested_title: string;
+  slides: SlidePlan[];
+}
+export interface SlidesProgress {
+  idx: number;
+  total: number;
+  title: string;
+}
+
+/** Round 1 — plan the deck (editable outline; nothing saved). */
+export const slidesOutline = (
+  subjectId: string,
+  topicId?: string | null,
+  customPrompt?: string,
+  sourceIds?: string[],
+  count?: number
+) =>
+  invoke<SlidesOutline>("slides_outline", {
+    subjectId,
+    topicId: topicId ?? null,
+    customPrompt: customPrompt ?? null,
+    sourceIds: sourceIds ?? null,
+    count: count ?? null,
+  });
+
+/** Round 2 — render the confirmed outline, one focused call per slide. */
+export const renderSlides = (
+  subjectId: string,
+  outline: SlidePlan[],
+  title?: string,
+  topicId?: string | null,
+  customPrompt?: string
+) =>
+  invoke<MaterialRec>("render_slides", {
+    subjectId,
+    outline,
+    title: title ?? null,
+    topicId: topicId ?? null,
+    customPrompt: customPrompt ?? null,
+  });
+
+/** Post-render: redo ONE saved slide (optional steering instruction). */
+export const regenerateSlide = (materialId: string, index: number, instruction?: string | null) =>
+  invoke<Record<string, unknown>>("regenerate_slide", {
+    materialId,
+    index,
+    instruction: instruction ?? null,
+  });
+
+/** Per-slide progress while render_slides is running. */
+export const onSlidesProgress = (cb: (p: SlidesProgress) => void): Promise<UnlistenFn> =>
+  listen<SlidesProgress>("slides:progress", (e) => cb(e.payload));
 /** Synthesize a real audio-overview mp3 from the script segments via cloud TTS.
  *  Returns the file path (serve to <audio> with convertFileSrc). Errors offline /
  *  without an OpenAI key — caller falls back to on-device speech synthesis. */

@@ -1383,6 +1383,18 @@ pub fn rename_material(conn: &Connection, id: &str, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Patch a material's payload in place (slides single-page regeneration, 2.7).
+pub fn update_material_payload(conn: &Connection, id: &str, payload: &serde_json::Value) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE materials SET payload=?2 WHERE id=?1",
+        params![id, payload.to_string()],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("material {id}")));
+    }
+    Ok(())
+}
+
 pub fn list_materials(conn: &Connection, subject_id: &str) -> Result<Vec<MaterialRec>> {
     let mut stmt = conn.prepare(
         "SELECT m.id, m.kind, m.title, m.meta, m.status, m.payload, t.name

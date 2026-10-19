@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import * as api from "../lib/api";
+  import { app } from "../lib/store.svelte";
 
   export interface Slide {
     title: string;
@@ -142,6 +143,31 @@
   const hasNext = $derived(idx < slides.length - 1);
   const hasNotes = $derived(!!current?.notes);
 
+  // ── Single-slide regeneration (2.7) ──────────────────────────────────
+  // Deck-aware rewrite of the CURRENT slide, patched into the material
+  // payload in place; the local array is mutated so the stage updates live.
+  let regenBusy = $state(false);
+  async function regenerateCurrent() {
+    if (!materialId || regenBusy || !current) return;
+    const instruction = await app.prompt({
+      title: `重写第 ${idx + 1} 页`,
+      label: "指令（可选）",
+      placeholder: "留空 = 自动润色；或写「加一个例子」「更精炼」…",
+    });
+    if (instruction === null) return; // cancelled
+    regenBusy = true;
+    try {
+      const payload = await api.regenerateSlide(materialId, idx, instruction.trim() || null);
+      const arr = (payload as { slides?: Slide[] }).slides;
+      if (Array.isArray(arr) && arr[idx]) slides[idx] = arr[idx];
+      app.pushToast({ kind: "success", title: `第 ${idx + 1} 页已重写`, body: "其余页面保持不变。" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "重写失败", body: String(e) });
+    } finally {
+      regenBusy = false;
+    }
+  }
+
   function prev() { if (hasPrev) { idx -= 1; } }
   function next() { if (hasNext) { idx += 1; } }
 
@@ -166,6 +192,16 @@
       </button>
     {/if}
     <span class="eyebrow" style="flex:1">{title}</span>
+    {#if materialId && slides.length > 0}
+      <button
+        class="btn btn--sm btn--ghost"
+        disabled={regenBusy}
+        onclick={regenerateCurrent}
+        title="AI 重写当前页（可给指令；会考虑前后页衔接，其余页不动）"
+      >
+        <Icon name="refresh" size={12} /> {regenBusy ? "重写中…" : "重写本页"}
+      </button>
+    {/if}
     {#if materialId && slides.length > 0}
       <button
         class="btn btn--sm btn--primary"

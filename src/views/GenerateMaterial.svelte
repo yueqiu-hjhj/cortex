@@ -43,6 +43,11 @@
   let cardCount = $state(COUNT_LIMITS.flashcards.def);
   let quizCount = $state(COUNT_LIMITS.quiz.def);
 
+  // ── 2.7: slides two-round confirm (outline → edit → render per slide) ──
+  let outline = $state<api.SlidePlan[] | null>(null);
+  let outlineBusy = $state(false);
+  let renderProgress = $state<api.SlidesProgress | null>(null);
+
   // ── Derived ───────────────────────────────────────────────────
   const selSources = $derived(allSources.filter(s => sel.includes(s.id)));
   const countLimit = $derived(COUNT_LIMITS[type] ?? null);
@@ -74,6 +79,14 @@
     api.pluginsList()
       .then((pl) => { pluginTypes = pl.plugins.flatMap((p) => p.material_types); })
       .catch(() => {});
+  });
+  // Per-slide render progress (2.7): the backend emits one event per page.
+  $effect(() => {
+    let un: (() => void) | null = null;
+    let alive = true;
+    api.onSlidesProgress((p) => { renderProgress = p; })
+      .then((u) => { if (alive) un = u; else u(); });
+    return () => { alive = false; un?.(); };
   });
   type GenType = { id: string; label: string; ico: string; desc: string; color: string; plugin?: api.PluginMaterialType };
   const allTypes = $derived<GenType[]>([
@@ -165,6 +178,65 @@
     app.setView("subject");
     app.setTab("materials");
   }
+
+  // ── 2.7: slides two-round confirm ──────────────────────────────
+  // Round 1: one call → editable outline (nothing saved). The user edits,
+  // then round 2 renders one focused LLM call per slide via the jobs system.
+  function steerText(): string {
+    return [activePlugin?.prompt, customPrompt.trim()].filter(Boolean).join("\n\n");
+  }
+
+  async function planOutline() {
+    const sub = app.activeSubject;
+    if (!sub || outlineBusy) return;
+    outlineBusy = true;
+    try {
+      const r = await api.slidesOutline(sub.id, dominantTopicId, steerText() || undefined, [...sel]);
+      outline = r.slides;
+      if (!title.trim()) title = finalTitle || r.suggested_title;
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "大纲生成失败", body: String(e) });
+    } finally {
+      outlineBusy = false;
+    }
+  }
+
+  function renderDeck() {
+    const sub = app.activeSubject;
+    if (!sub || !outline?.length) return;
+    const subjectId = sub.id;
+    const plan = outline;
+    renderProgress = null;
+    jobs.start({
+      kind: "slideshow",
+      label: `渲染 ${plan.length} 页 · ${finalTitle || type}`,
+      subjectId,
+      topicId: dominantTopicId,
+      // Stay on this view so the per-page progress line is visible; jump on done.
+      run: () =>
+        api.renderSlides(subjectId, plan, finalTitle || undefined, dominantTopicId, steerText() || undefined),
+      onDone: () => {
+        outline = null;
+        app.setView("subject");
+        app.setTab("materials");
+      },
+    });
+  }
+
+  function moveSlide(i: number, d: number) {
+    if (!outline) return;
+    const j = i + d;
+    if (j < 0 || j >= outline.length) return;
+    const arr = [...outline];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    outline = arr;
+  }
+  function removeSlide(i: number) {
+    if (outline) outline = outline.filter((_, k) => k !== i);
+  }
+  function addSlide() {
+    outline = [...(outline ?? []), { title: "", focus: "" }];
+  }
 </script>
 
 <!-- ── Side-by-side launcher (mirrors AddSource: header · two-column · sticky foot,
@@ -184,6 +256,42 @@
     </div>
   </div>
 
+  {#if outline}
+  <!-- Round 1.5 — the editable deck outline. Render runs ONE focused call per
+       slide, so a sharper "focus" line here directly buys a better page. -->
+  <div class="gm2-outline">
+    <div class="gm2-outline-head">
+      <div>
+        <div class="eyebrow">第 1 / 2 轮 · 大纲已生成</div>
+        <h2 class="ol-h">确认或改写每一页</h2>
+        <p class="mono faint ol-sub">渲染时每页单独调用模型——把 focus 写具体，那一页就更准。</p>
+      </div>
+      <button class="btn btn--sm" onclick={addSlide}><Icon name="plus" size={12} /> 添加一页</button>
+    </div>
+    <div class="gm2-panel ol-list">
+      {#each outline as s, i}
+        <div class="ol-row">
+          <span class="ol-idx mono">{i + 1}</span>
+          <div class="ol-fields">
+            <input class="input ol-title" bind:value={s.title} placeholder="页标题" />
+            <input class="input ol-focus" bind:value={s.focus} placeholder="这一页要讲透什么（一句话）" />
+          </div>
+          <div class="ol-ops">
+            <button class="btn btn--icon btn--sm btn--ghost" disabled={i === 0} onclick={() => moveSlide(i, -1)} title="上移">
+              <span style="display:inline-flex;transform:rotate(-90deg)"><Icon name="chevron" size={12} /></span>
+            </button>
+            <button class="btn btn--icon btn--sm btn--ghost" disabled={i === outline.length - 1} onclick={() => moveSlide(i, 1)} title="下移">
+              <span style="display:inline-flex;transform:rotate(90deg)"><Icon name="chevron" size={12} /></span>
+            </button>
+            <button class="btn btn--icon btn--sm btn--ghost" onclick={() => removeSlide(i)} title="删除本页">
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  </div>
+  {:else}
   <div class="gm2-grid">
     <!-- LEFT — format, count, details -->
     <div class="gm2-left">
@@ -299,13 +407,32 @@
       </div>
     </div>
   </div>
+  {/if}
 
   <!-- Sticky footer — always visible, no scrolling to reach Generate -->
   <div class="add-foot gm2-foot">
-    <button class="btn btn--ghost" onclick={cancel}>取消</button>
-    <button class="btn btn--primary" disabled={!ready} onclick={generate}>
-      <Icon name="bolt" size={13} /> 生成{tm?.label ?? type}
+    <button class="btn btn--ghost" onclick={outline ? () => (outline = null) : cancel}>
+      {outline ? "← 返回配置" : "取消"}
     </button>
+    {#if outline}
+      <div class="gm2-foot-r">
+        {#if renderProgress}
+          <span class="mono faint gm2-prog">第 {renderProgress.idx}/{renderProgress.total} 页 · {renderProgress.title}</span>
+        {/if}
+        <button class="btn" disabled={outlineBusy} onclick={planOutline}>
+          <Icon name="refresh" size={12} /> 重新出大纲
+        </button>
+        <button class="btn btn--primary" disabled={outline.length === 0 || !app.activeSubject} onclick={renderDeck}>
+          <Icon name="bolt" size={13} /> 第二步 · 渲染 {outline.length} 页
+        </button>
+      </div>
+    {:else}
+      <button class="btn btn--primary" disabled={!ready || outlineBusy}
+              onclick={type === "slideshow" && !activePlugin ? planOutline : generate}>
+        <Icon name="bolt" size={13} />
+        {outlineBusy ? "出大纲中…" : type === "slideshow" && !activePlugin ? "第一步 · 生成大纲" : `生成${tm?.label ?? type}`}
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -366,6 +493,20 @@
   }
 
   .gm2-foot { flex: 0 0 auto; margin: 0; }
+
+  /* ---- 2.7: outline editor (two-round confirm) ---- */
+  .gm2-outline { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .gm2-outline-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+  .ol-h { margin: 2px 0 0; font-size: var(--t-md); }
+  .ol-sub { margin: 4px 0 0; font-size: var(--t-xs); }
+  .ol-list { flex: 1 1 auto; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .ol-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--rad-3, 8px); background: var(--surface-2); }
+  .ol-idx { flex: none; width: 22px; text-align: right; color: var(--fg-faint); font-size: 11px; }
+  .ol-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ol-title { font-weight: 600; }
+  .ol-ops { flex: none; display: flex; gap: 4px; }
+  .gm2-foot-r { display: flex; align-items: center; gap: 10px; }
+  .gm2-prog { font-size: 11px; }
 
   @media (max-width: 860px) {
     .genmat2 { overflow: auto; }
