@@ -21,7 +21,7 @@
 //! round is buying. A slide whose JSON comes back unusable falls back to a
 //! minimal plan-shaped slide rather than failing the whole deck.
 
-use crate::commands::{apply_budget, custom_focus, guard_offline_llm, read_keys, style_instruction, NO_MODEL};
+use crate::commands::{apply_budget, custom_focus, guard_offline_llm, model_spec_for, read_keys, style_instruction, NO_MODEL};
 use crate::db::AppState;
 use crate::error::{Error, Result};
 use crate::models::MaterialRec;
@@ -86,8 +86,7 @@ fn setup(
         .or_else(|| subj.topics.first())
         .map(|t| t.name.clone())
         .unwrap_or_default();
-    let spec = repo::get_setting(&c, "model_cheatsheet")?
-        .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+    let spec = model_spec_for(&c, "cheatsheet");
     guard_offline_llm(&c, &spec)?;
     let keys = read_keys(&c)?;
     let style = style_instruction(&c);
@@ -355,8 +354,7 @@ pub async fn regenerate_slide(
             let peek = |i: usize| {
                 serde_json::to_string_pretty(&slides[i]).unwrap_or_default()
             };
-            let spec = repo::get_setting(&c, "model_cheatsheet")?
-                .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+            let spec = model_spec_for(&c, "cheatsheet");
             guard_offline_llm(&c, &spec)?;
             let keys = read_keys(&c)?;
             let style = style_instruction(&c);

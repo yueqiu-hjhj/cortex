@@ -60,9 +60,12 @@ impl Embedder for StubEmbedder {
     }
 }
 
-/// Gemini text-embedding-004 (BYOK). Requires `gemini_api_key` in settings.
+/// Gemini text-embedding models (BYOK). Requires `gemini_api_key` in settings.
+/// Model defaults to text-embedding-004; `embed_model` (Settings → Models)
+/// overrides it — any model on the same batchEmbedContents wire format works.
 pub struct GeminiEmbedder {
     pub api_key: String,
+    pub model: String,
 }
 
 impl Embedder for GeminiEmbedder {
@@ -71,8 +74,8 @@ impl Embedder for GeminiEmbedder {
         // per 100 chunks instead of one per chunk.
         let client = reqwest::blocking::Client::new();
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key={}",
-            self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:batchEmbedContents?key={}",
+            self.model, self.api_key
         );
         let mut out = Vec::with_capacity(texts.len());
         for batch in texts.chunks(100) {
@@ -80,7 +83,7 @@ impl Embedder for GeminiEmbedder {
                 .iter()
                 .map(|t| {
                     serde_json::json!({
-                        "model": "models/text-embedding-004",
+                        "model": format!("models/{}", self.model),
                         "content": { "parts": [{ "text": t }] }
                     })
                 })
@@ -300,6 +303,7 @@ pub fn from_settings(
     keys: &crate::llm::Keys,
     ollama_url: Option<&str>,
     data_dir: Option<&std::path::Path>,
+    embed_model: Option<&str>,
 ) -> Box<dyn Embedder> {
     // Registry providers resolve first — the bespoke arms below cover the ones
     // with a non-OpenAI wire format. Plugin providers (plugins/*.json) follow,
@@ -330,12 +334,13 @@ pub fn from_settings(
         "gemini" => match keys.for_provider("gemini") {
             Some(k) => Box::new(GeminiEmbedder {
                 api_key: k.to_string(),
+                model: embed_model.unwrap_or("text-embedding-004").to_string(),
             }),
             None => Box::new(StubEmbedder),
         },
         "ollama" => Box::new(OllamaEmbedder {
             base_url: ollama_url.unwrap_or("http://localhost:11434").to_string(),
-            model: "nomic-embed-text".to_string(),
+            model: embed_model.unwrap_or("nomic-embed-text").to_string(),
         }),
         "onnx" => match data_dir {
             Some(d) => Box::new(crate::embed_onnx::OnnxEmbedder::new(d.to_path_buf())),

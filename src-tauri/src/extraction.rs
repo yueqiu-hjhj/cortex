@@ -385,8 +385,7 @@ fn cell_upsert(
 }
 
 fn model_spec(conn: &Connection) -> Result<String> {
-    let spec = crate::repo::get_setting(conn, "model_cheatsheet")?
-        .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+    let spec = crate::commands::model_spec_for(conn, "cheatsheet");
     crate::commands::guard_offline_llm(conn, &spec)?;
     Ok(spec)
 }

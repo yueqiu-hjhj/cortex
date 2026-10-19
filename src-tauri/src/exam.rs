@@ -6,7 +6,7 @@
 //! (model_quiz spec → gemini fallback, `guard_offline_llm`, `apply_budget`,
 //! `llm::extract_json`) — reusing those helpers verbatim rather than duplicating.
 
-use crate::commands::{apply_budget, guard_offline_llm, read_keys};
+use crate::commands::{apply_budget, guard_offline_llm, model_spec_for, read_keys};
 use crate::db::AppState;
 use crate::error::{Error, Result};
 use crate::llm;
@@ -87,8 +87,7 @@ pub async fn generate_exam(
                     .map(|t| t.name.clone())
                     .collect()
             };
-            let spec = repo::get_setting(&c, "model_quiz")?
-                .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+            let spec = model_spec_for(&c, "quiz");
             guard_offline_llm(&c, &spec)?;
             (context, subj.name, topic_names, spec, read_keys(&c)?)
         };
@@ -293,8 +292,7 @@ fn grade_exam_inner(app: &AppHandle, id: &str, answers: &[ExamAnswer]) -> Result
             let exam = repo::get_exam(&c, id)?;
             let topics: Vec<String> = exam.topic_ids.clone();
             let context = exam_context(&c, &exam.subject_id, &topics)?;
-            let spec = repo::get_setting(&c, "model_quiz")?
-                .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+            let spec = model_spec_for(&c, "quiz");
             (exam, context, spec, read_keys(&c)?)
         };
 

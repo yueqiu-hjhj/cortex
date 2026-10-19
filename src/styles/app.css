@@ -1033,6 +1033,12 @@ html[data-hints="off"] .compose-hint, html[data-hints="off"] .diff-keys, html[da
 .set-group-h.svc-h .status-pill { flex: none; margin-top: 2px; }
 .svc-tools { display: flex; gap: 8px; flex: none; margin-top: 2px; }
 .set-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--rad-3); overflow: hidden; }
+/* Settings → Models: TTS / embedding override rows (label + input) */
+.xtra-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.xtra-row:last-child { border-bottom: none; }
+.xtra-label { flex: 1 1 42%; min-width: 0; }
+.xtra-row > .input { flex: 1 1 58%; min-width: 0; }
+.xtra-stack { flex: 1 1 58%; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 
 /* Custom appearance (2.10): accent swatch + custom CSS editor. */
 .set-accent-pick { width: 42px; height: 30px; padding: 2px; border: 1px solid var(--border); border-radius: var(--rad-2, 6px); background: var(--surface-2); cursor: pointer; }

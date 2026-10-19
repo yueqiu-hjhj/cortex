@@ -252,8 +252,7 @@ fn load_body(conn: &Connection, draft_id: &str) -> Result<(DraftBody, String)> {
 }
 
 fn model_for(conn: &Connection) -> Result<Box<dyn crate::llm::Llm>> {
-    let spec = crate::repo::get_setting(conn, "model_cheatsheet")?
-        .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+    let spec = crate::commands::model_spec_for(conn, "cheatsheet");
     crate::commands::guard_offline_llm(conn, &spec)?;
     let keys = crate::commands::read_keys(conn)?;
     let mut model = crate::llm::from_spec_or_any(&spec, &keys)

@@ -61,10 +61,10 @@ fn decode_data_url(url: &str) -> Result<Vec<u8>> {
 }
 
 /// TTS one narration chunk to an MP3 file, cached by (voice, text) hash.
-/// Same endpoint the audio overview uses — same key, same voices.
+/// Same endpoint the audio overview uses — same TtsConfig (key/model/endpoint).
 fn tts_mp3(
     client: &reqwest::blocking::Client,
-    key: &str,
+    tts: &crate::commands::TtsConfig,
     voice: &str,
     text: &str,
     out: &Path,
@@ -73,14 +73,14 @@ fn tts_mp3(
         return Ok(());
     }
     let body = serde_json::json!({
-        "model": "tts-1",
+        "model": tts.model,
         "voice": voice,
         "input": text,
         "response_format": "mp3",
     });
     let resp = client
-        .post("https://api.openai.com/v1/audio/speech")
-        .header("Authorization", format!("Bearer {}", key.trim()))
+        .post(&tts.endpoint)
+        .header("Authorization", format!("Bearer {}", tts.key.trim()))
         .json(&body)
         .send()?;
     if !resp.status().is_success() {
@@ -172,7 +172,7 @@ pub fn synthesize(
     material_id: &str,
     slides: &[VideoSlideInput],
     voice: &str,
-    openai_key: &str,
+    tts: &crate::commands::TtsConfig,
     force: bool,
     ffmpeg_url: Option<&str>,
     progress: &mut dyn FnMut(&str, &str, u8),
@@ -239,7 +239,7 @@ pub fn synthesize(
             }
         } else {
             let mp3 = work.join(format!("narr_{i}.mp3"));
-            tts_mp3(&client, openai_key, voice, narration, &mp3)?;
+            tts_mp3(&client, tts, voice, narration, &mp3)?;
         }
 
         progress(
@@ -331,8 +331,13 @@ mod tests {
         }
 
         let mut calls = 0;
+        let tts = crate::commands::TtsConfig {
+            key: "sk-dummy".into(),
+            model: "tts-1".into(),
+            endpoint: "https://api.openai.com/v1/audio/speech".into(),
+        };
         let res = synthesize(
-            &dir, &dir, "smoke", &slides, "alloy", "sk-dummy", false, None,
+            &dir, &dir, "smoke", &slides, "alloy", &tts, false, None,
             &mut |stage, detail, pct| {
                 calls += 1;
                 let _ = (stage, detail, pct);

@@ -103,6 +103,18 @@ fn effective_embed_provider(c: &Connection) -> String {
     }
 }
 
+/// Optional user override for the embedding model NAME (setting `embed_model`).
+/// Applies to the bespoke arms whose model was hardcoded (gemini
+/// text-embedding-004, ollama nomic-embed-text); registry providers declare
+/// their own. NOTE: switching to a model with different dimensions invalidates
+/// the existing vector index — re-ingest after changing it.
+pub(crate) fn embed_model_override(c: &Connection) -> Option<String> {
+    repo::get_setting(c, "embed_model")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+}
+
 /// Whether retrieval should be reranked after the cosine/keyword pass. On by
 /// default: cosine similarity measures topical closeness, not whether the chunk
 /// answers the query, and the reranker is offline and free. Setting
@@ -127,6 +139,77 @@ pub(crate) fn apply_budget(model: &mut Box<dyn llm::Llm>, c: &Connection, task: 
             model.set_max_tokens(n);
         }
     }
+}
+
+/// Resolve the model spec for a task slot (LiteLLM-style routing):
+///
+/// 1. an explicitly-set `model_<slot>` setting wins (Settings → Models rows);
+/// 2. otherwise every TEXT slot inherits `model_cheatsheet` — the de-facto
+///    primary. Set one good model there and every unset task follows it,
+///    instead of each silently reverting to a hardcoded default;
+/// 3. `vision` never inherits: the primary may be text-only (DeepSeek V4
+///    Flash), which would silently break OCR / figure explanation — it keeps
+///    its own multimodal default;
+/// 4. final fallback is `DEFAULT_CHAT_MODEL`.
+pub(crate) fn model_spec_for(c: &Connection, slot: &str) -> String {
+    let want =
+        |key: &str| -> Option<String> {
+            repo::get_setting(c, key)
+                .ok()
+                .flatten()
+                .filter(|s| !s.trim().is_empty())
+        };
+    if let Some(s) = want(&format!("model_{slot}")) {
+        return s;
+    }
+    match slot {
+        "vision" => DEFAULT_VISION_MODEL.to_string(),
+        "cheatsheet" => DEFAULT_CHAT_MODEL.to_string(),
+        _ => want("model_cheatsheet").unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
+    }
+}
+
+/// Build the model for a task slot: resolve the spec (`model_spec_for`), guard
+/// offline mode, and fall back across keyed providers. This is THE construction
+/// point for task models — commands call this instead of repeating the
+/// get_setting → guard → from_spec_or_any → NO_MODEL dance, and provider-level
+/// fallback policies land here in one place.
+pub(crate) fn load_model(
+    c: &Connection,
+    keys: &llm::Keys,
+    slot: &str,
+) -> Result<Box<dyn llm::Llm>> {
+    let spec = model_spec_for(c, slot);
+    guard_offline_llm(c, &spec)?;
+    llm::from_spec_or_any(&spec, keys).ok_or_else(|| Error::Other(NO_MODEL.into()))
+}
+
+/// Resolved cloud-TTS configuration. `model_speech` picks the TTS model
+/// ("tts-1" / "tts-1-hd" / …); `tts_endpoint` + `tts_api_key` let any
+/// OpenAI-compatible speech endpoint replace api.openai.com (one-api style
+/// aggregators, homelab gateways). Defaults: OpenAI with its own key.
+pub(crate) struct TtsConfig {
+    pub key: String,
+    pub model: String,
+    pub endpoint: String,
+}
+
+pub(crate) fn tts_config(c: &Connection, purpose: &str) -> Result<TtsConfig> {
+    let key = repo::get_setting(c, "tts_api_key")?
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| read_keys(c).ok().and_then(|k| k.openai.filter(|k| !k.trim().is_empty())))
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "Add an OpenAI API key in Settings (or a TTS key under Settings → Models) — {purpose}."
+            ))
+        })?;
+    let model = repo::get_setting(c, "model_speech")?
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "tts-1".into());
+    let endpoint = repo::get_setting(c, "tts_endpoint")?
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://api.openai.com/v1/audio/speech".into());
+    Ok(TtsConfig { key, model, endpoint })
 }
 
 /// Read all configured provider keys from settings.
@@ -782,10 +865,7 @@ fn auto_rename_source(state: &State<AppState>, source_id: &str, original_name: &
     }
     let (spec, keys) = {
         let c = state.db.lock().unwrap();
-        let spec = match repo::get_setting(&c, "model_chat") {
-            Ok(Some(s)) => s,
-            _ => DEFAULT_CHAT_MODEL.to_string(),
-        };
+        let spec = model_spec_for(&c, "chat");
         match read_keys(&c) {
             Ok(k) => (spec, k),
             Err(_) => return,
@@ -825,16 +905,13 @@ fn auto_rename_source(state: &State<AppState>, source_id: &str, original_name: &
 /// the concatenated transcribed Markdown (empty string ⇒ nothing recognised).
 fn ocr_via_vision(state: &State<AppState>, kind: &str, path: Option<&str>) -> Result<String> {
     let path = path.ok_or_else(|| Error::Other("no file to OCR".into()))?;
-    let (spec, keys) = {
+    let model = {
         let c = state.db.lock().unwrap();
-        // Prefer an explicitly-chosen vision model if the user set one; otherwise the
-        // vision default (NOT model_chat, which now defaults to a text-only model).
-        let spec = repo::get_setting(&c, "model_vision")?
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_VISION_MODEL.into());
-        (spec, read_keys(&c)?)
+        // model_spec_for("vision") keeps the multimodal default when unset —
+        // never inherits the (possibly text-only) primary.
+        let keys = read_keys(&c)?;
+        load_model(&c, &keys, "vision")?
     };
-    let model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     let images: Vec<(String, String)> = if kind == "image" {
         // TIFF/BMP scans are re-encoded as PNG here — most vision APIs
         // reject the raw formats.
@@ -884,12 +961,11 @@ pub async fn extract_flashcards_from_image(state: State<'_, AppState>, mime: Str
         if offline_mode(&c) {
             return Err(Error::Other("离线模式下无法使用云端 OCR，请先关闭离线模式".into()));
         }
-        let spec = repo::get_setting(&c, "model_vision")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_VISION_MODEL.into());
+        let spec = model_spec_for(&c, "vision");
         (spec, read_keys(&c)?)
     };
     let model = clipboard_vision_model(&spec, &keys)?;
-    tauri::async_runtime::spawn_blocking(move || model.extract_cards(&[(mime, base64)]))
-        .await.map_err(|e| Error::Other(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || model.extract_cards(&[(mime, base64)]))        .await.map_err(|e| Error::Other(e.to_string()))?
 }
 
 fn validate_clipboard_image(mime: &str, base64: &str) -> Result<()> {
@@ -913,7 +989,7 @@ pub async fn ocr_image_bytes(state: State<'_, AppState>, mime: String, base64: S
     let (spec, keys) = {
         let c = state.db.lock().unwrap();
         if offline_mode(&c) { return Err(Error::Other("离线模式下无法使用云端 OCR".into())); }
-        (repo::get_setting(&c, "model_vision")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_VISION_MODEL.into()), read_keys(&c)?)
+        (model_spec_for(&c, "vision"), read_keys(&c)?)
     };
     let model = clipboard_vision_model(&spec, &keys)?;
     tauri::async_runtime::spawn_blocking(move || model.ocr(&[(mime, base64)]))
@@ -931,20 +1007,14 @@ pub async fn figure_explain(
     page: usize,
     caption: Option<String>,
 ) -> Result<String> {
-    let (spec, keys) = {
+    let model = {
         let c = state.db.lock().unwrap();
         if offline_mode(&c) {
             return Err(Error::Other("离线模式下无法使用云端视觉模型".into()));
         }
-        (
-            repo::get_setting(&c, "model_vision")?
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_VISION_MODEL.into()),
-            read_keys(&c)?,
-        )
+        let keys = read_keys(&c)?;
+        load_model(&c, &keys, "vision")?
     };
-    let model = llm::from_spec_or_any(&spec, &keys)
-        .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     tauri::async_runtime::spawn_blocking(move || -> Result<String> {
         let png = ingest::pdf_page_image(&path, page)?;
         let images = vec![("image/png".to_string(), llm::b64_encode(&png))];
@@ -1007,7 +1077,7 @@ pub async fn ai_suggest_glossary(state: State<'_, AppState>, text: String, max_t
     let (spec, keys) = {
         let c = state.db.lock().unwrap();
         if offline_mode(&c) { return Err(Error::Other("离线模式下无法使用 AI 抽取".into())); }
-        (repo::get_setting(&c, "model_default")?.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.into()), read_keys(&c)?)
+        (model_spec_for(&c, "default"), read_keys(&c)?)
     };
     let model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     let prompt = format!(
@@ -1160,15 +1230,16 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
 
         emit_progress(&app, &id, "chunking", "splitting text", 50);
         let chunks = ingest::chunk_text(&text, 900, 150);
-        let (provider, keys, ollama_url) = {
+        let (provider, keys, ollama_url, embed_model) = {
             let c = state.db.lock().unwrap();
             (
                 effective_embed_provider(&c),
                 read_keys(&c)?,
                 crate::homelab::resolved_setting(&c, "ollama_url"),
+                embed_model_override(&c),
             )
         };
-        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
         emit_progress(&app, &id, "embedding", &format!("{} chunks", chunks.len()), 70);
         let vectors = ingest::embed_chunks(embedder.as_ref(), &chunks)
             .or_else(|_| ingest::embed_chunks(&embed::StubEmbedder, &chunks))?;
@@ -1459,15 +1530,16 @@ pub async fn add_source(
         &format!("{} chunks", chunks.len()),
         60,
     );
-    let (provider, keys, ollama_url) = {
+    let (provider, keys, ollama_url, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
+            embed_model_override(&c),
         )
     };
-    let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
+    let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
     emit_progress(
         &app,
         &source_id,
@@ -1562,12 +1634,13 @@ pub async fn search_chunks(
     subject_id: Option<String>,
     k: Option<usize>,
 ) -> Result<Vec<ChunkHit>> {
-    let (provider, keys, ollama_url) = {
+    let (provider, keys, ollama_url, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
+            embed_model_override(&c),
         )
     };
     // Embed off the event-loop thread — embed() is a blocking network call, and a
@@ -1575,7 +1648,7 @@ pub async fn search_chunks(
     let data_dir = state.data_dir.clone();
     let embed_text = query.clone();
     let qvec = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
         embedder.embed(&[embed_text]).map(|mut v| v.pop().unwrap_or_default())
     })
     .await
@@ -1601,12 +1674,13 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let (provider, keys, ollama_url) = {
+    let (provider, keys, ollama_url, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
+            embed_model_override(&c),
         )
     };
     let mut hits: Vec<SearchHit> = Vec::new();
@@ -1625,7 +1699,7 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     let q = query.clone();
     let data_dir = state.data_dir.clone();
     let qvec: Option<Vec<f32>> = tauri::async_runtime::spawn_blocking(move || {
-        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
+        let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
         if embedder.name() == "stub" {
             return None;
         }
@@ -1795,12 +1869,11 @@ pub async fn chat_answer(
 ) -> Result<ChatAnswer> {
     tauri::async_runtime::spawn_blocking(move || -> Result<ChatAnswer> {
     let state = app.state::<AppState>();
-    let (embed_provider, ollama_url, chat_spec, keys, preamble, searxng, rerank_on) = {
+    let (embed_provider, ollama_url, chat_spec, keys, preamble, searxng, rerank_on, embed_model) = {
         let c = state.db.lock().unwrap();
         // DEFAULT_CHAT_MODEL is a fast non-reasoning model (see its doc comment for why
         // chat must not fall back to a reasoning model like Step 3.7).
-        let chat_spec =
-            repo::get_setting(&c, "model_chat")?.unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+        let chat_spec = model_spec_for(&c, "chat");
         guard_offline_llm(&c, &chat_spec)?;
         (
             effective_embed_provider(&c),
@@ -1810,6 +1883,7 @@ pub async fn chat_answer(
             profile_preamble(&c)?,
             searxng_base(&c)?,
             rerank_enabled(&c),
+            embed_model_override(&c),
         )
     };
     // Require a real model before doing any work.
@@ -1847,7 +1921,7 @@ pub async fn chat_answer(
         Vec::new()
     } else if embeddings_reliable {
         let embedder =
-            embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
+            embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
         let qvec = embedder.embed(std::slice::from_ref(&query))?.pop().unwrap_or_default();
         let c = state.db.lock().unwrap();
         let mut vec_hits = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
@@ -2744,8 +2818,7 @@ pub async fn generate_cheatsheet(
                 .unwrap_or_else(|_| "source".into());
             bucket.push((title, text));
         }
-        let spec =
-            repo::get_setting(&c, "model_cheatsheet")?.unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+        let spec = model_spec_for(&c, "cheatsheet");
         // Studio deterministic fallback (P0 #3): offline / no model is NOT a hard
         // error anymore — the deterministic artifact takes over below.
         let offline_llm = guard_offline_llm(&c, &spec).is_err();
@@ -3195,11 +3268,13 @@ pub async fn generate_material(
 ) -> Result<MaterialRec> {
     tauri::async_runtime::spawn_blocking(move || -> Result<MaterialRec> {
     let state = app.state::<AppState>();
-    let setting_key = match kind.as_str() {
-        "quiz" => "model_quiz",
-        "audio" => "model_audio",
-        "flashcards" => "model_flashcard",
-        _ => "model_cheatsheet",
+    // kind → task slot; everything except the three dedicated slots rides the
+    // cheatsheet slot (and inherits the primary via model_spec_for).
+    let slot = match kind.as_str() {
+        "quiz" => "quiz",
+        "audio" => "audio",
+        "flashcards" => "flashcard",
+        _ => "cheatsheet",
     };
     // Title-case a stored voice id ("nova" → "Nova") for use as a host name.
     let cap = |id: String| {
@@ -3239,8 +3314,7 @@ pub async fn generate_material(
             .or_else(|| subj.topics.first())
             .map(|t| t.name.clone())
             .unwrap_or_default();
-        let spec = repo::get_setting(&c, setting_key)?
-            .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+        let spec = model_spec_for(&c, slot);
         guard_offline_llm(&c, &spec)?;
         let host_a = cap(repo::get_setting(&c, "voice_a")?.unwrap_or_else(|| "maya".into()));
         let host_b = cap(repo::get_setting(&c, "voice_b")?.unwrap_or_else(|| "theo".into()));
@@ -3248,9 +3322,8 @@ pub async fn generate_material(
     };
     let mut model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     {
-        let task = setting_key.strip_prefix("model_").unwrap_or("cheatsheet");
         let c = state.db.lock().unwrap();
-        apply_budget(&mut model, &c, task);
+        apply_budget(&mut model, &c, slot);
     }
     if context.trim().is_empty() {
         return Err(Error::Other(
@@ -3472,22 +3545,17 @@ pub async fn synthesize_video_overview(
 ) -> Result<crate::video_overview::VideoOverviewResult> {
     tauri::async_runtime::spawn_blocking(move || -> Result<crate::video_overview::VideoOverviewResult> {
         let state = app.state::<AppState>();
-        // OpenAI key + voice — same requirements as the audio overview, same
+        // TTS config + voice — same requirements as the audio overview, same
         // error shape so the frontend can fall back to on-device speech.
-        let (key, voice, ffmpeg_url) = {
+        let (tts, voice, ffmpeg_url) = {
             let c = state.db.lock().unwrap();
-            let key = read_keys(&c)?
-                .openai
-                .filter(|k| !k.trim().is_empty())
-                .ok_or_else(|| {
-                    Error::Other(
-                        "Add an OpenAI API key in Settings to generate video narration (it uses the same cloud TTS as the audio overview)."
-                            .into(),
-                    )
-                })?;
+            let tts = tts_config(
+                &c,
+                "video narration uses the same cloud TTS as the audio overview",
+            )?;
             let voice = repo::get_setting(&c, "tts_voice_a")?.unwrap_or_else(|| "alloy".into());
             let ffmpeg_url = repo::get_setting(&c, "sidecar_ffmpeg_url")?.filter(|s| !s.trim().is_empty());
-            (key, voice, ffmpeg_url)
+            (tts, voice, ffmpeg_url)
         };
         let data_dir = state
             .data_dir
@@ -3527,7 +3595,7 @@ pub async fn synthesize_video_overview(
             &material_id,
             &inputs,
             &voice,
-            &key,
+            &tts,
             force.unwrap_or(false),
             ffmpeg_url.as_deref(),
             &mut progress,
@@ -3567,20 +3635,17 @@ pub async fn synthesize_overview(
             return Err(Error::Other("No script segments to synthesize.".into()));
         }
         // OpenAI key + the two voices (sensible OpenAI-voice defaults).
-        let (key, voice_a, voice_b) = {
+        // TTS config + voices. Same key requirements as before (OpenAI key, or
+        // a dedicated tts_api_key/tts_endpoint for compatible aggregators).
+        let (tts, voice_a, voice_b) = {
             let c = state.db.lock().unwrap();
-            let key = read_keys(&c)?
-                .openai
-                .filter(|k| !k.trim().is_empty())
-                .ok_or_else(|| {
-                    Error::Other(
-                        "Add an OpenAI API key in Settings to generate real audio (offline mode uses on-device voices)."
-                            .into(),
-                    )
-                })?;
+            let tts = tts_config(
+                &c,
+                "real audio overviews need it (offline mode uses on-device voices)",
+            )?;
             let va = repo::get_setting(&c, "tts_voice_a")?.unwrap_or_else(|| "alloy".into());
             let vb = repo::get_setting(&c, "tts_voice_b")?.unwrap_or_else(|| "onyx".into());
-            (key, va, vb)
+            (tts, va, vb)
         };
         let client = http_client(180);
         // First distinct speaker → voice_a, the other → voice_b. mp3 frames
@@ -3602,14 +3667,14 @@ pub async fn synthesize_overview(
                 _ => voice_b.clone(),
             };
             let body = serde_json::json!({
-                "model": "tts-1",
+                "model": tts.model,
                 "voice": voice,
                 "input": text,
                 "response_format": "mp3",
             });
             let resp = client
-                .post("https://api.openai.com/v1/audio/speech")
-                .header("Authorization", format!("Bearer {}", key.trim()))
+                .post(&tts.endpoint)
+                .header("Authorization", format!("Bearer {}", tts.key.trim()))
                 .json(&body)
                 .send()?;
             if !resp.status().is_success() {
@@ -5041,15 +5106,16 @@ pub(crate) fn run_transcription_job(app: &AppHandle, source_id: &str) {
     // chunk + embed the transcript
     emit_progress(app, source_id, "chunking", "splitting transcript", 55);
     let chunks = ingest::chunk_text(&transcript, 900, 150);
-    let (embed_provider, keys, ollama_url) = {
+    let (embed_provider, keys, ollama_url, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c).unwrap_or_default(),
             crate::homelab::resolved_setting(&c, "ollama_url"),
+            embed_model_override(&c),
         )
     };
-    let embedder = embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref());
+    let embedder = embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
     emit_progress(app, source_id, "embedding", &format!("{} chunks", chunks.len()), 75);
     let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
         Ok(v) => v,
@@ -5127,10 +5193,7 @@ fn spawn_lecture_summary(
         let state = app.state::<AppState>();
         let (spec, keys, offline) = {
             let c = state.db.lock().unwrap();
-            let spec = match repo::get_setting(&c, "model_chat") {
-                Ok(Some(s)) => s,
-                _ => DEFAULT_CHAT_MODEL.into(),
-            };
+            let spec = model_spec_for(&c, "chat");
             let keys = match read_keys(&c) {
                 Ok(k) => k,
                 Err(e) => { eprintln!("[summary] keys unavailable: {e}"); return; }
@@ -5262,8 +5325,7 @@ pub async fn literature_search(
             ));
         }
         let llm_opt = {
-            let s = repo::get_setting(&c, "model_chat").ok().flatten()
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string());
+            let s = model_spec_for(&c, "chat");
             let k = read_keys(&c).unwrap_or_default();
             llm::from_spec_or_any(&s, &k)
         };
@@ -5294,14 +5356,10 @@ pub async fn literature_explain(
                 "Offline mode is on - LLM calls are disabled. Turn it off in Settings.".into(),
             ));
         }
-        let (spec, keys) = {
-            let s = repo::get_setting(&c, "model_chat").ok().flatten()
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string());
-            let k = read_keys(&c).unwrap_or_default();
-            (s, k)
+        let model = {
+            let keys = read_keys(&c).unwrap_or_default();
+            load_model(&c, &keys, "chat")?
         };
-        let model = llm::from_spec_or_any(&spec, &keys)
-            .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
         drop(c);
         let out = crate::literature::explain_text(model.as_ref(), &text, &mode)?;
         { let c2 = state.db.lock().unwrap(); crate::tokens::record(&c2, &format!("literature:{mode}"), &model.name(), &text, &out, None); }
@@ -5732,12 +5790,13 @@ pub(crate) fn finish_text_ingest(
         &format!("{} chunks", chunks.len()),
         60,
     );
-    let (provider, keys, ollama_url) = {
+    let (provider, keys, ollama_url, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
+            embed_model_override(&c),
         )
     };
     let embedder = embed::from_settings(
@@ -5745,6 +5804,7 @@ pub(crate) fn finish_text_ingest(
         &keys,
         ollama_url.as_deref(),
         state.data_dir.as_deref(),
+        embed_model.as_deref(),
     );
     let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
         Ok(v) => v,
@@ -6059,15 +6119,14 @@ pub async fn agents_execute_run(
 ) -> Result<crate::agents::AgentRun> {
     tauri::async_runtime::spawn_blocking(move || -> Result<crate::agents::AgentRun> {
         let state = app.state::<AppState>();
-        // Model resolution: agent override → configured chat model → default.
+        // Model resolution: agent override → slot chain (chat → primary → default).
         let (agent, spec, keys) = {
             let c = state.db.lock().unwrap();
             let agent = crate::agents::get_agent(&c, crate::agents::DEFAULT_USER, &agent_id)?;
-            let spec = agent
-                .model
-                .clone()
-                .or_else(|| repo::get_setting(&c, "model_chat").ok().flatten())
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            let spec = match agent.model.clone() {
+                Some(s) if !s.trim().is_empty() => s,
+                _ => model_spec_for(&c, "chat"),
+            };
             guard_offline_llm(&c, &spec)?;
             (agent, spec, read_keys(&c)?)
         };
@@ -6706,8 +6765,7 @@ pub async fn deep_research(
         let state = app.state::<AppState>();
         let (chat_spec, keys, searxng) = {
             let c = state.db.lock().unwrap();
-            let chat_spec = repo::get_setting(&c, "model_chat")?
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            let chat_spec = model_spec_for(&c, "chat");
             guard_offline_llm(&c, &chat_spec)?;
             (chat_spec, read_keys(&c)?, searxng_base(&c)?)
         };
@@ -6868,8 +6926,7 @@ pub async fn generate_draft(
         let (refs, spec, keys, style) = {
             let c = state.db.lock().unwrap();
             let refs = crate::drafts::load_refs(&c, &excerpt_ids)?;
-            let spec = repo::get_setting(&c, "model_cheatsheet")?
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
+            let spec = model_spec_for(&c, "cheatsheet");
             guard_offline_llm(&c, &spec)?;
             (refs, spec, read_keys(&c)?, style_instruction(&c))
         };
@@ -7001,13 +7058,14 @@ pub async fn retrieval_eval(
     state: State<'_, AppState>,
     k: Option<i64>,
 ) -> Result<Vec<crate::eval::EvalReport>> {
-    let (provider, keys, ollama_url, data_dir) = {
+    let (provider, keys, ollama_url, data_dir, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
             state.data_dir.clone(),
+            embed_model_override(&c),
         )
     };
     let want = k.unwrap_or(crate::eval::DEFAULT_K as i64).clamp(1, 20) as usize;
@@ -7023,6 +7081,7 @@ pub async fn retrieval_eval(
             &keys,
             ollama_url.as_deref(),
             data_dir.as_deref(),
+            embed_model.as_deref(),
         );
         Ok::<_, crate::error::Error>((
             crate::eval::embed_corpus(embedder.as_ref())?,
@@ -7067,19 +7126,20 @@ pub async fn retrieval_eval_real(
 
     // Blocking hop: build the embedder and embed only the sampled query
     // strings (corpus vectors already exist from ingest), OFF the event loop.
-    let (provider, keys, ollama_url, data_dir) = {
+    let (provider, keys, ollama_url, data_dir, embed_model) = {
         let c = state.db.lock().unwrap();
         (
             effective_embed_provider(&c),
             read_keys(&c)?,
             crate::homelab::resolved_setting(&c, "ollama_url"),
             state.data_dir.clone(),
+            embed_model_override(&c),
         )
     };
     let texts: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
     let vecs = tauri::async_runtime::spawn_blocking(move || {
         let embedder =
-            embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref());
+            embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
         embedder.embed(&texts)
     })
     .await
@@ -7287,15 +7347,11 @@ pub async fn docx_review_edits(
 ) -> Result<Vec<crate::office::docx::DocxEdit>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::office::docx::DocxEdit>> {
         let state = app.state::<AppState>();
-        let (spec, keys) = {
+        let model = {
             let c = state.db.lock().unwrap();
-            let spec = repo::get_setting(&c, "model_chat")?
-                .unwrap_or_else(|| DEFAULT_CHAT_MODEL.into());
-            guard_offline_llm(&c, &spec)?;
-            (spec, read_keys(&c)?)
+            let keys = read_keys(&c)?;
+            load_model(&c, &keys, "chat")?
         };
-        let model =
-            llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
 
         let paras: Vec<String> = crate::office::docx::paragraph_texts(Path::new(&path))?
             .into_iter()
@@ -7353,4 +7409,45 @@ pub async fn docx_review_edits(
     })
     .await
     .map_err(|e| Error::Other(format!("review failed: {e}")))?
+}
+
+#[cfg(test)]
+mod model_routing_tests {
+    use super::*;
+
+    #[test]
+    fn unset_text_slots_inherit_the_primary_cheatsheet_model() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        // nothing set anywhere → hardcoded default
+        assert_eq!(model_spec_for(&c, "quiz"), DEFAULT_CHAT_MODEL);
+        // primary set → every unset text slot follows it
+        repo::set_setting(&c, "model_cheatsheet", "gemini:gemini-2.5-flash").unwrap();
+        assert_eq!(model_spec_for(&c, "quiz"), "gemini:gemini-2.5-flash");
+        assert_eq!(model_spec_for(&c, "audio"), "gemini:gemini-2.5-flash");
+        assert_eq!(model_spec_for(&c, "chat"), "gemini:gemini-2.5-flash");
+        // explicit slot still wins
+        repo::set_setting(&c, "model_quiz", "openai:gpt-4o-mini").unwrap();
+        assert_eq!(model_spec_for(&c, "quiz"), "openai:gpt-4o-mini");
+    }
+
+    #[test]
+    fn vision_never_inherits_a_text_only_primary() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        repo::set_setting(&c, "model_cheatsheet", "openrouter:deepseek/deepseek-v4-flash")
+            .unwrap();
+        assert_eq!(model_spec_for(&c, "vision"), DEFAULT_VISION_MODEL);
+        repo::set_setting(&c, "model_vision", "gemini:gemini-2.5-flash").unwrap();
+        assert_eq!(model_spec_for(&c, "vision"), "gemini:gemini-2.5-flash");
+    }
+
+    #[test]
+    fn empty_setting_values_count_as_unset() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        repo::set_setting(&c, "model_quiz", "  ").unwrap();
+        repo::set_setting(&c, "model_cheatsheet", "ollama:llama3").unwrap();
+        assert_eq!(model_spec_for(&c, "quiz"), "ollama:llama3");
+    }
 }

@@ -1021,8 +1021,7 @@ pub fn build_matrix(
             let (_paper, card) = collect_paper_card(&c, id)?;
             cards.push(card);
         }
-        let spec = crate::repo::get_setting(&c, "model_cheatsheet")?
-            .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+        let spec = crate::commands::model_spec_for(&c, "cheatsheet");
         crate::commands::guard_offline_llm(&c, &spec)?;
         let keys = crate::commands::read_keys(&c)?;
         (cards, spec, keys)

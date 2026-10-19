@@ -278,6 +278,36 @@
     assign = { ...assign, [id]: { ...assign[id], ...patch } };
   }
 
+  // ---- TTS + embedding model-name overrides (the slots a task row can't hold) ----
+  // Speech: cloud TTS model (tts-1/tts-1-hd/…) + optional OpenAI-compatible
+  // /audio/speech endpoint & key override (aggregators, homelab gateways).
+  // Embedding: model-name override for the gemini/ollama arms (defaults are
+  // hardcoded); changing to different dimensions requires re-ingest.
+  let speechModel  = $state("tts-1");
+  let ttsEndpoint  = $state("");
+  let ttsKey       = $state("");
+  let embedOv      = $state("");
+  function saveSpeech(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    speechModel = v;
+    api.setSetting("model_speech", v || "tts-1").catch(() => {});
+  }
+  function saveTtsEndpoint(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    ttsEndpoint = v;
+    api.setSetting("tts_endpoint", v).catch(() => {});
+  }
+  function saveTtsKey(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    ttsKey = v;
+    api.setSetting("tts_api_key", v).catch(() => {});
+  }
+  function saveEmbedOv(e: Event) {
+    const v = (e.target as HTMLInputElement).value.trim();
+    embedOv = v;
+    api.setSetting("embed_model", v).catch(() => {});
+  }
+
   // ---- keys state ----
   let keys = $state({
     openrouter: "",
@@ -1345,6 +1375,10 @@
       }
       // Backend defaults to the on-device ONNX embedder when unset — mirror that.
       assign = { ...assign, embedding: { ...assign.embedding, provider: s.embed_provider || "onnx" } };
+      if (s.model_speech) speechModel = s.model_speech;
+      if (s.tts_endpoint) ttsEndpoint = s.tts_endpoint;
+      if (s.tts_api_key)  ttsKey = s.tts_api_key;
+      if (s.embed_model)  embedOv = s.embed_model;
 
       // Local models + web search + remote whisper
       if (s.ollama_url)                    endpoint = s.ollama_url;
@@ -1809,7 +1843,7 @@ Notes: {about}</pre>
         <header class="set-head">
           <div class="eyebrow">Models</div>
           <h1 class="set-title">每类任务各配一个模型</h1>
-          <p class="set-sub">把每类任务派给最合适的服务商。Token 预算为每次调用封顶。</p>
+          <p class="set-sub">把每类任务派给最合适的服务商。未设置的槽位继承 Cheatsheet 的主力模型（vision 除外——它必须保持多模态）。Token 预算为每次调用封顶。</p>
         </header>
 
         <div class="set-card set-table">
@@ -1858,6 +1892,36 @@ Notes: {about}</pre>
             </div>
           {/each}
         </div>
+
+        <section class="set-group" style="margin-top:14px">
+          <div class="set-group-h"><h3 class="set-group-t">语音与检索</h3></div>
+          <div class="set-card">
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">Speech · 云 TTS 模型</div>
+                <div class="mt-task-d mono">Audio overview / Video overview 的配音。默认 tts-1</div>
+              </div>
+              <input class="input mono" value={speechModel} onchange={saveSpeech} placeholder="tts-1" />
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">TTS 端点 + 密钥（可选）</div>
+                <div class="mt-task-d mono">OpenAI 兼容 /audio/speech 端点；留空走 api.openai.com + OpenAI key。密钥只存本机数据库</div>
+              </div>
+              <div class="xtra-stack">
+                <input class="input mono" value={ttsEndpoint} onchange={saveTtsEndpoint} placeholder="https://api.openai.com/v1/audio/speech" />
+                <input class="input mono" type="password" value={ttsKey} onchange={saveTtsKey} placeholder="TTS API key（可选）" />
+              </div>
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">Embedding 模型名覆盖（可选）</div>
+                <div class="mt-task-d mono">对 Gemini / Ollama 生效（默认 text-embedding-004 / nomic-embed-text）。维度变了需重新入库</div>
+              </div>
+              <input class="input mono" value={embedOv} onchange={saveEmbedOv} placeholder="留空用默认" />
+            </div>
+          </div>
+        </section>
 
         <div class="set-note mono">
           <Icon name="diamond" size={11} color="var(--accent)" />

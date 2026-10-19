@@ -174,8 +174,7 @@ pub fn status(conn: &Connection, subject_id: &str) -> Result<SummaryTreeStatus> 
         |r| r.get(0),
     )?;
 
-    let spec = repo::get_setting(conn, "model_cheatsheet")?
-        .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+    let spec = crate::commands::model_spec_for(conn, "cheatsheet");
     st.model_configured = crate::commands::guard_offline_llm(conn, &spec).is_ok();
     Ok(st)
 }
@@ -337,8 +336,7 @@ pub fn build(app: &AppHandle, subject_id: &str, force: bool) -> Result<SummaryTr
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let spec = repo::get_setting(&c, "model_cheatsheet")?
-            .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into());
+        let spec = crate::commands::model_spec_for(&c, "cheatsheet");
         crate::commands::guard_offline_llm(&c, &spec)?;
         let keys = crate::commands::read_keys(&c)?;
         let mut model = crate::llm::from_spec_or_any(&spec, &keys).ok_or_else(|| {

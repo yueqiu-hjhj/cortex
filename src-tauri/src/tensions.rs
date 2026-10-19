@@ -305,14 +305,7 @@ pub fn execute(app: &AppHandle, run_id: &str) -> Result<()> {
 }
 
 fn model_spec(conn: &Connection) -> Result<String> {
-    Ok(conn
-        .query_row(
-            "SELECT value FROM settings WHERE key='model_cheatsheet'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .unwrap_or_else(|| "openrouter:deepseek/deepseek-v4-flash".into()))
+    Ok(crate::commands::model_spec_for(conn, "cheatsheet"))
 }
 
 /// Markdown report: one section per tension, both quotes, source titles.

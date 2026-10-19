@@ -117,9 +117,7 @@ pub fn precipitate(app: &AppHandle, limit: usize) -> Result<(usize, usize)> {
     let (cands, mut model) = {
         let c = state.db.lock().unwrap();
         let cands = candidates(&c, limit * 3)?;
-        let spec: String = c
-            .query_row("SELECT value FROM settings WHERE key='model_cheatsheet'", [], |r| r.get(0))
-            .unwrap_or_else(|_| "openrouter:deepseek/deepseek-v4-flash".to_string());
+        let spec = crate::commands::model_spec_for(&c, "cheatsheet");
         let keys = crate::commands::read_keys(&c)?;
         let mut model = crate::llm::from_spec_or_any(&spec, &keys).ok_or_else(|| {
             Error::Other("No model configured - add an API key in Settings -> API keys".into())
