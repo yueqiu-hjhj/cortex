@@ -83,6 +83,7 @@ fn load_keys(conn: &Connection) -> llm::Keys {
         custom_api_key: get_setting(conn, "custom_api_key"),
         custom_endpoint: get_setting(conn, "custom_endpoint"),
         ollama_url: get_setting(conn, "ollama_url"),
+        offline: get_setting(conn, "offline_mode").as_deref() == Some("true"),
         extra: std::collections::HashMap::new(),
     }
 }

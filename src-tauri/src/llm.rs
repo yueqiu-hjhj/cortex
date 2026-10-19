@@ -624,6 +624,9 @@ pub struct Keys {
     pub custom_endpoint: Option<String>,
     /// Ollama base URL (e.g. http://localhost:11434) — local, keyless.
     pub ollama_url: Option<String>,
+    /// True when the app is in offline mode: runtime fallback chains then
+    /// never gain cloud providers (the offline promise beats availability).
+    pub offline: bool,
     /// Keys for every provider in `crate::providers`, keyed by provider id.
     /// The bespoke arms above stay authoritative (a legacy field wins), so
     /// moving a provider into the registry never invalidates a saved key.
@@ -723,29 +726,143 @@ pub fn from_spec(spec: &str, keys: &Keys) -> Option<Box<dyn Llm>> {
     }
 }
 
+/// Providers kept on standby for runtime fallback, in try order. Ollama is
+/// absent on purpose: "local" needs a concrete model name, so it only joins
+/// via an explicit user choice (the model picker), not a guess.
+const AUTO_FALLBACKS: &[&str] = &[
+    "openrouter:deepseek/deepseek-v4-flash",
+    "gemini:gemini-2.5-flash",
+    "openai:gpt-4o-mini",
+    "claude:claude-3-5-sonnet-20241022",
+    "custom:default",
+];
+
+/// Runtime multi-provider fallback (2.9). `from_spec_or_any` handles a MISSING
+/// key at construction time; this handles a DOWN provider at call time — 429s,
+/// 5xx, network drops — by walking the chain until one model answers, instead
+/// of surfacing the failure and interrupting the study flow. `name()` reports
+/// whichever model last served, so token records stay attributable.
+pub struct FallbackLlm {
+    chain: Vec<Box<dyn Llm>>,
+    served: std::sync::atomic::AtomicUsize,
+}
+
+impl FallbackLlm {
+    pub fn new(chain: Vec<Box<dyn Llm>>) -> Self {
+        Self { chain, served: std::sync::atomic::AtomicUsize::new(0) }
+    }
+
+    /// How many models are on standby (exposed for tests).
+    pub fn chain_len(&self) -> usize {
+        self.chain.len()
+    }
+
+    fn delegate<T>(&self, op: &str, f: impl Fn(&dyn Llm) -> Result<T>) -> Result<T> {
+        let mut last: Option<Error> = None;
+        for (i, m) in self.chain.iter().enumerate() {
+            match f(m.as_ref()) {
+                Ok(v) => {
+                    self.served
+                        .store(i, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(v);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Other(format!("{op}: empty model chain"))))
+    }
+}
+
+impl Llm for FallbackLlm {
+    fn complete(&self, system: &str, user: &str) -> Result<String> {
+        self.delegate("complete", |m| m.complete(system, user))
+    }
+    fn name(&self) -> String {
+        let i = self
+            .served
+            .load(std::sync::atomic::Ordering::Relaxed);
+        self.chain[i.min(self.chain.len() - 1)].name()
+    }
+    fn set_max_tokens(&mut self, max: u32) {
+        for m in &mut self.chain {
+            m.set_max_tokens(max);
+        }
+    }
+    fn ocr(&self, images: &[(String, String)]) -> Result<String> {
+        self.delegate("ocr", |m| m.ocr(images))
+    }
+    fn vision(&self, images: &[(String, String)], system: &str, user: &str) -> Result<String> {
+        self.delegate("vision", |m| m.vision(images, system, user))
+    }
+    fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
+        self.delegate("extract_cards", |m| m.extract_cards(images))
+    }
+    fn gen_image(&self, prompt: &str) -> Result<String> {
+        self.delegate("gen_image", |m| m.gen_image(prompt))
+    }
+}
+
 /// Like `from_spec`, but if the configured spec's provider has no key, fall back
 /// to whichever provider DOES have a key. This lets generation work as soon as
 /// ANY API key is set, even if a per-task model still points at an unkeyed
 /// provider (the common "I added my OpenRouter key but cheatsheet still says no
 /// model" case — cheatsheet defaulted to gemini).
+///
+/// On top of that, the returned model carries a runtime fallback chain of the
+/// OTHER keyed providers' fast defaults (`FallbackLlm`): if the primary answers
+/// with a 429/5xx/network error mid-session, the next provider takes the call
+/// instead of the request dying. Offline mode (keys.offline) never gains cloud
+/// fallbacks — the offline promise beats availability.
 pub fn from_spec_or_any(spec: &str, keys: &Keys) -> Option<Box<dyn Llm>> {
-    if let Some(m) = from_spec(spec, keys) {
-        return Some(m);
-    }
-    let fallback = if nonempty(&keys.openrouter).is_some() {
-        "openrouter:deepseek/deepseek-v4-flash"
-    } else if nonempty(&keys.gemini).is_some() {
-        "gemini:gemini-2.5-flash"
-    } else if nonempty(&keys.openai).is_some() {
-        "openai:gpt-4o-mini"
-    } else if nonempty(&keys.claude).is_some() {
-        "claude:claude-3-5-sonnet-20241022"
-    } else if nonempty(&keys.custom_endpoint).is_some() {
-        "custom:default"
+    let mut chain = build_chain(spec, keys)?;
+    Some(if chain.len() == 1 {
+        chain.pop().unwrap()
     } else {
-        return None;
+        Box::new(FallbackLlm::new(chain))
+    })
+}
+
+/// Resolution + standby assembly: the primary (spec, or whichever keyed
+/// provider answers when the spec's provider has no key) plus the other keyed
+/// providers' fast defaults as runtime standbys. Offline keys never gain cloud
+/// standbys.
+fn build_chain(spec: &str, keys: &Keys) -> Option<Vec<Box<dyn Llm>>> {
+    let primary = if let Some(m) = from_spec(spec, keys) {
+        m
+    } else {
+        let fallback = if nonempty(&keys.openrouter).is_some() {
+            "openrouter:deepseek/deepseek-v4-flash"
+        } else if nonempty(&keys.gemini).is_some() {
+            "gemini:gemini-2.5-flash"
+        } else if nonempty(&keys.openai).is_some() {
+            "openai:gpt-4o-mini"
+        } else if nonempty(&keys.claude).is_some() {
+            "claude:claude-3-5-sonnet-20241022"
+        } else if nonempty(&keys.custom_endpoint).is_some() {
+            "custom:default"
+        } else {
+            return None;
+        };
+        from_spec(fallback, keys)?
     };
-    from_spec(fallback, keys)
+    let mut chain = vec![primary];
+    if !keys.offline {
+        let pprov = spec.split(':').next().unwrap_or("");
+        let pmodel = spec.split_once(':').map(|(_, m)| m).unwrap_or("");
+        for s in AUTO_FALLBACKS {
+            let prov = s.split(':').next().unwrap_or("");
+            let model = s.split_once(':').map(|(_, m)| m).unwrap_or("");
+            if prov == pprov && model == pmodel {
+                continue; // the primary itself (or a twin) — no standby needed
+            }
+            if let Some(m) = from_spec(s, keys) {
+                if chain.iter().all(|c| c.name() != m.name()) {
+                    chain.push(m);
+                }
+            }
+        }
+    }
+    Some(chain)
 }
 
 /// Extract the first JSON value (object or array) from an LLM reply that may be
@@ -992,5 +1109,72 @@ mod tests {
         let s = StubLlm;
         let out = s.complete("sys", "hello world").unwrap();
         assert!(out.contains("Offline draft"));
+    }
+
+    // ── 2.9 runtime fallback ──────────────────────────────────────────────
+
+    struct FakeLlm {
+        tag: &'static str,
+        fail: bool,
+    }
+    impl Llm for FakeLlm {
+        fn complete(&self, _s: &str, _u: &str) -> Result<String> {
+            if self.fail {
+                Err(Error::Other(format!("{} is down", self.tag)))
+            } else {
+                Ok(self.tag.to_string())
+            }
+        }
+        fn name(&self) -> String {
+            self.tag.to_string()
+        }
+    }
+
+    #[test]
+    fn fallback_walks_the_chain_on_runtime_failure() {
+        let f = FallbackLlm::new(vec![
+            Box::new(FakeLlm { tag: "primary", fail: true }),
+            Box::new(FakeLlm { tag: "second", fail: false }),
+            Box::new(FakeLlm { tag: "third", fail: false }),
+        ]);
+        assert_eq!(f.complete("s", "u").unwrap(), "second");
+        // attribution follows whichever model actually served
+        assert_eq!(f.name(), "second");
+    }
+
+    #[test]
+    fn fallback_reports_the_last_error_when_every_model_fails() {
+        let f = FallbackLlm::new(vec![
+            Box::new(FakeLlm { tag: "a", fail: true }),
+            Box::new(FakeLlm { tag: "b", fail: true }),
+        ]);
+        let err = f.complete("s", "u").unwrap_err().to_string();
+        assert!(err.contains("b is down"), "{err}");
+        // nothing ever served → name() still points at the primary
+        assert_eq!(f.name(), "a");
+    }
+
+    #[test]
+    fn chain_keeps_other_keyed_providers_on_standby_but_not_offline() {
+        let online = Keys {
+            openrouter: Some("sk-or".into()),
+            gemini: Some("g".into()),
+            ..Default::default()
+        };
+        let chain = build_chain("openrouter:deepseek/deepseek-v4-flash", &online).unwrap();
+        assert_eq!(chain.len(), 2, "primary + gemini standby");
+        assert_eq!(chain[0].name(), "openrouter:deepseek/deepseek-v4-flash");
+        assert_eq!(chain[1].name(), "gemini:gemini-2.5-flash");
+
+        // gemini as primary → openrouter stays on standby (fallback works
+        // both directions; the twin model gemini-2.5-flash is skipped)
+        let solo = build_chain("gemini:gemini-2.5-flash", &online).unwrap();
+        assert_eq!(solo.len(), 2);
+        assert_eq!(solo[1].name(), "openrouter:deepseek/deepseek-v4-flash");
+
+        // offline: cloud standby stripped even though both keys exist
+        let offline = Keys { offline: true, ..online };
+        let chain = build_chain("openrouter:deepseek/deepseek-v4-flash", &offline).unwrap();
+        assert_eq!(chain.len(), 1, "offline never gains cloud fallbacks");
     }
 }

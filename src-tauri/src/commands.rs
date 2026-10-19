@@ -228,6 +228,7 @@ pub(crate) fn read_keys(c: &Connection) -> Result<llm::Keys> {
         claude: key("claude_api_key")?,
         custom_api_key: key("custom_api_key")?,
         custom_endpoint: key("custom_endpoint")?,
+        offline: offline_mode(c),
         // Resolve through the homelab fallback chain so Ollama chat also works
         // over Tailscale/public, not just on the LAN.
         ollama_url: crate::homelab::resolved_setting(c, "ollama_url"),
