@@ -117,7 +117,10 @@
 
 ### 批次三（约 2–3 周）——「Agent 平台 + 综述工作流」
 
-**✅ 多 Agent 共享上下文已完成（`ea30a1b`,P0 #4)**：0047 thread_id + thread_messages(带 agent 归属)+ history_for_run(execute_run 读全线程) + agents_switch_agent + Agents UI 切换器/继续此线程/消息归属徽标。剩 PRISMA 8 维与 CI gates 未做。
+**✅ 多 Agent 共享上下文已完成（`ea30a1b`,P0 #4)**：0047 thread_id + thread_messages(带 agent 归属)+ history_for_run(execute_run 读全线程) + agents_switch_agent + Agents UI 切换器/继续此线程/消息归属徽标。
+**✅ PRISMA 8 维已完成（`74e16b3`，接手并行会话在飞件）**：0048 固定 8 维 + evidence verbatim + excerpt_id 回链摘录卡 + source 审查契约(人工修正不被重跑覆盖) + Markdown/CSV 导出 + Research UI 表格。4 测试。
+**✅ CI gates 已完成（`062b647`）**：clippy -D warnings + npm verify + GH Actions + README 边界表。
+**批次三全部完成，13/13 全部落地。**
 
 #### 3.1 多 Agent 共享上下文（P0 #4，1.5–2 周）
 - `agent_runs` 增加 `thread_id`：同一 thread 内切换 agent 时，把前序消息作为共享上下文注入（引用式，不复制）。
