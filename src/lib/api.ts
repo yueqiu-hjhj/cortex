@@ -712,6 +712,49 @@ export const getAllSettings = () => invoke<Record<string, string>>("get_all_sett
 export const setSettings = (values: Record<string, string>) =>
   invoke<void>("set_settings", { values });
 
+// ---- cron / scheduled automation (3.4) ----
+export interface CronJob {
+  id: string;
+  name: string;
+  prompt: string;
+  subject_id: string | null;
+  kind: string; // "interval" | "daily"
+  interval_minutes: number | null;
+  daily_time: string | null;
+  tz_offset_minutes: number;
+  enabled: boolean;
+  last_run_at: number | null;
+  next_run_at: number;
+}
+export interface CronRun {
+  id: string;
+  job_id: string;
+  started_at: number;
+  finished_at: number | null;
+  status: string; // running | ok | error
+  source_id: string | null;
+  output: string | null;
+  error: string | null;
+}
+export interface CronJobIn {
+  name: string;
+  prompt: string;
+  subject_id: string | null;
+  kind: string;
+  interval_minutes: number | null;
+  daily_time: string | null;
+  tz_offset_minutes?: number;
+}
+export const cronList = () => invoke<CronJob[]>("cron_list");
+export const cronAdd = (job: CronJobIn) => invoke<CronJob>("cron_add", { job });
+export const cronUpdate = (id: string, job: CronJobIn) =>
+  invoke<CronJob>("cron_update", { id, job });
+export const cronSetEnabled = (id: string, enabled: boolean) =>
+  invoke<CronJob>("cron_set_enabled", { id, enabled });
+export const cronDelete = (id: string) => invoke<void>("cron_delete", { id });
+export const cronRuns = (jobId: string) => invoke<CronRun[]>("cron_runs", { jobId });
+export const cronRunNow = (id: string) => invoke<CronRun>("cron_run_now", { id });
+
 // ---- chat history (persisted per subject) ----
 export interface ChatMsg {
   role: string;

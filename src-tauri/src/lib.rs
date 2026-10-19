@@ -72,6 +72,7 @@ pub mod tokens;
 pub mod tensions;
 pub mod skill_cards;
 pub mod summary_tree;
+pub mod cron;
 pub mod rerank;
 pub mod eval;
 pub mod llm;
@@ -192,6 +193,10 @@ pub fn run() {
                 }));
             }
             livesync::start(&app.handle().clone());
+
+            // Cron scheduler (3.4): a 30 s tick loop claims due jobs, runs their
+            // prompts on the chat-slot model, stores the output and notifies.
+            crate::cron::start(app.handle().clone());
 
             // Background sync + homelab connect. The frontend (store.svelte.ts) only
             // syncs while a window is open and dies when it closes; this dedicated OS
@@ -741,6 +746,14 @@ pub fn run() {
             // summary tree (D6) — hierarchical digests + budgeted context
             summary_tree::summary_tree_status,
             summary_tree::summary_tree_build,
+            // cron / scheduled automation (3.4)
+            cron::cron_list,
+            cron::cron_add,
+            cron::cron_update,
+            cron::cron_set_enabled,
+            cron::cron_delete,
+            cron::cron_runs,
+            cron::cron_run_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cortex")

@@ -49,6 +49,7 @@
     { id: "keybinds",   label: "快捷键",      icon: "cmd" },
     { id: "homelab",    label: "集成",  icon: "globe" },
     { id: "calendar",   label: "Google 日历", icon: "globe" },
+    { id: "cron",       label: "自动化",      icon: "refresh" },
     { id: "experimental", label: "实验功能", icon: "bolt" },
     { id: "audio",      label: "音频",         icon: "music" },
     { id: "data",       label: "数据与隐私",icon: "doc" },
@@ -319,6 +320,85 @@
     doclingBin = v;
     api.setSetting("docling_bin", v).catch(() => {});
   }
+
+  // ---- cron (scheduled automation) ----
+  let cronJobs = $state<api.CronJob[] | null>(null);
+  let cronRuns = $state<Record<string, api.CronRun[]>>({});
+  let cronRunsOpen = $state<string | null>(null);
+  let cronBusy = $state(false);
+  let cronForm = $state({
+    name: "",
+    prompt: "",
+    subjectId: "",
+    kind: "daily",
+    intervalMinutes: 60,
+    dailyTime: "08:00",
+  });
+
+  async function loadCron() {
+    try { cronJobs = await api.cronList(); } catch { cronJobs = []; }
+  }
+  async function cronCreate() {
+    if (!cronForm.name.trim() || !cronForm.prompt.trim() || cronBusy) return;
+    cronBusy = true;
+    try {
+      await api.cronAdd({
+        name: cronForm.name.trim(),
+        prompt: cronForm.prompt.trim(),
+        subject_id: cronForm.subjectId || null,
+        kind: cronForm.kind,
+        interval_minutes:
+          cronForm.kind === "interval" ? Math.max(1, Math.round(cronForm.intervalMinutes || 60)) : null,
+        daily_time: cronForm.kind === "daily" ? cronForm.dailyTime : null,
+        // JS getTimezoneOffset is minutes WEST of UTC; backend wants east.
+        tz_offset_minutes: -new Date().getTimezoneOffset(),
+      });
+      cronForm = { ...cronForm, name: "", prompt: "" };
+      cronJobs = await api.cronList();
+      app.pushToast({ kind: "success", title: "定时任务已创建" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "创建失败", body: String(e) });
+    }
+    cronBusy = false;
+  }
+  async function cronToggle(j: api.CronJob) {
+    try {
+      await api.cronSetEnabled(j.id, !j.enabled);
+      cronJobs = await api.cronList();
+    } catch { /* keep last state */ }
+  }
+  async function cronRemove(j: api.CronJob) {
+    if (!confirm(`删除定时任务「${j.name}」及其运行记录？`)) return;
+    try {
+      await api.cronDelete(j.id);
+      cronJobs = await api.cronList();
+    } catch { /* keep last state */ }
+  }
+  async function cronTrigger(j: api.CronJob) {
+    if (cronBusy) return;
+    cronBusy = true;
+    try {
+      await api.cronRunNow(j.id);
+      cronJobs = await api.cronList();
+      if (cronRunsOpen === j.id) await loadRuns(j.id);
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "运行失败", body: String(e) });
+    }
+    cronBusy = false;
+  }
+  async function loadRuns(jobId: string) {
+    try { cronRuns = { ...cronRuns, [jobId]: await api.cronRuns(jobId) }; } catch { /* lazy */ }
+  }
+  function cronToggleRuns(jobId: string) {
+    cronRunsOpen = cronRunsOpen === jobId ? null : jobId;
+    if (cronRunsOpen) loadRuns(jobId);
+  }
+  function cronScheduleText(j: api.CronJob): string {
+    if (j.kind === "daily") return `每天 ${j.daily_time ?? "08:00"}`;
+    const m = j.interval_minutes ?? 60;
+    return m % 60 === 0 ? `每 ${m / 60} 小时` : `每 ${m} 分钟`;
+  }
+  const cronFmt = (ms: number | null) => (ms ? new Date(ms).toLocaleString() : "—");
 
   // ---- keys state ----
   let keys = $state({
@@ -973,6 +1053,7 @@
     if (tab === "calendar" && gStatus === null) loadGoogle();
     if (tab === "homelab" && depReport === null) loadDeps();
     if (tab === "data") loadArchived();
+    if (tab === "cron" && cronJobs === null) loadCron();
   });
 
   // ---- external dependency status ----
@@ -3504,6 +3585,121 @@ Notes: {about}</pre>
                 <button class="btn btn--danger" onclick={deleteEverything}>Delete…</button>
               </div>
             </div>
+          </div>
+        </section>
+      </div>
+
+    <!-- ===== CRON / AUTOMATION ===== -->
+    {:else if tab === "cron"}
+      <div class="set-pane">
+        <header class="set-head">
+          <div class="eyebrow">Automation</div>
+          <h1 class="set-title">定时任务</h1>
+          <p class="set-sub">应用运行期间按计划自动执行提示词（Khoj Automations 风格）。结果存进运行记录；关联科目的同时归档为该科目的资料源。</p>
+        </header>
+
+        <section class="set-group">
+          <div class="set-group-h"><h3 class="set-group-t">任务</h3></div>
+          <div class="set-card">
+            {#if !cronJobs || cronJobs.length === 0}
+              <div class="mt-task-d" style="padding:10px 0">
+                还没有任务。在下面建一个——比如每天早上让它汇总一次各科待办和临近考试。
+              </div>
+            {/if}
+            {#each cronJobs ?? [] as j (j.id)}
+              <div class="xtra-row" style="align-items:flex-start">
+                <div class="xtra-label">
+                  <div class="mt-task-t">
+                    {j.name}
+                    <span class="slot-hint mono">{cronScheduleText(j)}</span>
+                    {#if !j.enabled}<span class="slot-hint">已暂停</span>{/if}
+                  </div>
+                  <div class="mt-task-d mono">上次：{cronFmt(j.last_run_at)} · 下次：{cronFmt(j.next_run_at)}</div>
+                  <div class="mt-task-d">{j.prompt}</div>
+                </div>
+                <div class="xtra-stack" style="flex-direction:row; gap:6px; align-items:center">
+                  <button class="btn btn--sm btn--ghost" onclick={() => cronToggle(j)}>
+                    {j.enabled ? "暂停" : "启用"}
+                  </button>
+                  <button class="btn btn--sm btn--ghost" onclick={() => cronTrigger(j)} disabled={cronBusy}>运行</button>
+                  <button class="btn btn--sm btn--ghost" onclick={() => cronToggleRuns(j.id)}>记录</button>
+                  <button class="btn btn--sm btn--ghost" onclick={() => cronRemove(j)}>删除</button>
+                </div>
+              </div>
+              {#if cronRunsOpen === j.id}
+                <div style="padding:0 0 12px 14px">
+                  {#each cronRuns[j.id] ?? [] as r (r.id)}
+                    <div class="mt-task-d mono">
+                      [{r.status}] {cronFmt(r.started_at)}{r.error ? ` — ${r.error}` : ""}
+                    </div>
+                    {#if r.output}
+                      <pre class="cron-output">{r.output.slice(0, 600)}{r.output.length > 600 ? "…" : ""}</pre>
+                    {/if}
+                  {:else}
+                    <div class="mt-task-d">还没有运行记录</div>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
+          </div>
+        </section>
+
+        <section class="set-group" style="margin-top:14px">
+          <div class="set-group-h"><h3 class="set-group-t">新建任务</h3></div>
+          <div class="set-card">
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">名称</div>
+              </div>
+              <input class="input" value={cronForm.name} onchange={(e) => (cronForm.name = (e.target as HTMLInputElement).value)} placeholder="比如：每日晨报" />
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">提示词</div>
+                <div class="mt-task-d mono">执行时发给聊天槽位模型，直接输出任务结果</div>
+              </div>
+              <textarea
+                class="input"
+                rows="3"
+                value={cronForm.prompt}
+                onchange={(e) => (cronForm.prompt = (e.target as HTMLTextAreaElement).value)}
+                placeholder="汇总我所有科目的待办和临近考试，按紧急程度排序输出"
+              ></textarea>
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">计划</div>
+              </div>
+              <div class="xtra-stack" style="flex-direction:row; gap:8px">
+                <select class="input" value={cronForm.kind} onchange={(e) => (cronForm.kind = (e.target as HTMLSelectElement).value)}>
+                  <option value="daily">每天</option>
+                  <option value="interval">间隔</option>
+                </select>
+                {#if cronForm.kind === "daily"}
+                  <input class="input mono" type="time" value={cronForm.dailyTime} onchange={(e) => (cronForm.dailyTime = (e.target as HTMLInputElement).value)} />
+                {:else}
+                  <input class="input mono" type="number" min="1" style="width:90px" value={cronForm.intervalMinutes} onchange={(e) => (cronForm.intervalMinutes = Number((e.target as HTMLInputElement).value) || 60)} />
+                  <span class="mt-task-d">分钟</span>
+                {/if}
+              </div>
+            </div>
+            <div class="xtra-row">
+              <div class="xtra-label">
+                <div class="mt-task-t">关联科目（可选）</div>
+                <div class="mt-task-d mono">结果同时归档为该科目下的 txt 资料源</div>
+              </div>
+              <select class="input" value={cronForm.subjectId} onchange={(e) => (cronForm.subjectId = (e.target as HTMLSelectElement).value)}>
+                <option value="">不关联</option>
+                {#each app.subjects as s (s.id)}
+                  <option value={s.id}>{s.name}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+          <div class="set-foot-actions">
+            <button class="btn btn--primary" onclick={cronCreate} disabled={cronBusy}>
+              <Icon name="plus" size={13} /> 创建任务
+            </button>
           </div>
         </section>
       </div>

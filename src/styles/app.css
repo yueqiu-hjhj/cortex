@@ -1342,3 +1342,19 @@ body.reorder-active, body.reorder-active * { cursor: grabbing !important; user-s
   padding: 0 5px;
   color: var(--fg-faint);
 }
+
+/* cron run output preview (Settings → 自动化) */
+.cron-output {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  background: var(--bg-soft, rgba(128, 128, 128, 0.08));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
