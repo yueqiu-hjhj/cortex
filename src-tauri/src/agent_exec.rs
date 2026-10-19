@@ -300,7 +300,10 @@ pub fn execute_run(
         let user = transcript(&history);
 
         let reply = match model.complete(&system, &user) {
-            Ok(r) => r,
+            Ok(r) => {
+                crate::tokens::record(c, "agent", &model.name(), &format!("{system}\n{user}"), &r, None);
+                r
+            }
             Err(e) => {
                 run_error = Some(format!("模型调用失败：{e}"));
                 break;

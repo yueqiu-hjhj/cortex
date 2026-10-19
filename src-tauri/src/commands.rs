@@ -1975,6 +1975,8 @@ pub async fn chat_answer(
     };
 
     let text = model.complete(system, &user)?;
+    // Token accounting (0049, estimate): chat is the daily driver.
+    { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "chat", &model.name(), &format!("{system}\n{user}"), &text, Some(&subject_id)); }
 
     // Citation existence verification (the mechanical half of trustworthy RAG):
     // a ⟦…⟧ token naming a source that is not in the retrieved set is a
@@ -2602,6 +2604,7 @@ const CHEATSHEET_MAP_SYSTEM: &str = "You are an exam-focused study-notes extract
 /// Returns (sections, sources_used).
 fn synthesize_bucket(
     model: &dyn llm::Llm,
+    state: &crate::db::AppState,
     system: &str,
     scope_label: &str,
     sources: &[(String, String)],
@@ -2637,6 +2640,7 @@ fn synthesize_bucket(
     let user =
         format!("Subject: {scope_label}\n\nSOURCE MATERIAL:\n{material}\n\nProduce the cheatsheet JSON now.");
     let raw = model.complete(system, &user)?;
+    { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "cheatsheet", &model.name(), &format!("{system}\n{user}"), &raw, None); }
     let sections = parse_cheatsheet(&raw);
     if sections.is_empty() {
         // The model returned something unparseable. Do NOT fabricate a placeholder
@@ -2798,7 +2802,7 @@ pub async fn generate_cheatsheet(
     // truth instead of pretending a model wrote it.
     let model_label;
     let (mut sections, sources_used) = match &model_opt {
-        Some(m) => match synthesize_bucket(m.as_ref(), system, &scope, &bucket) {
+        Some(m) => match synthesize_bucket(m.as_ref(), &state, system, &scope, &bucket) {
             Ok(v) => {
                 model_label = m.name().to_string();
                 v
@@ -3327,6 +3331,7 @@ pub async fn generate_material(
     let user = format!("Subject: {subject_name} › {topic_name}\n\nSOURCE MATERIAL:\n{context}\n\nGenerate now.");
 
     let raw = model.complete(&system, &user)?;
+    { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "material", &model.name(), &format!("{system}\n{user}"), &raw, Some(&subject_id)); }
     let payload = llm::extract_json(&raw)
         .map_err(|_| Error::Other("model returned unstructured output; try again".into()))?;
 
@@ -5253,7 +5258,9 @@ pub async fn literature_explain(
         let model = llm::from_spec_or_any(&spec, &keys)
             .ok_or_else(|| Error::Other(NO_MODEL.into()))?;
         drop(c);
-        crate::literature::explain_text(model.as_ref(), &text, &mode)
+        let out = crate::literature::explain_text(model.as_ref(), &text, &mode)?;
+        { let c2 = state.db.lock().unwrap(); crate::tokens::record(&c2, &format!("literature:{mode}"), &model.name(), &text, &out, None); }
+        Ok(out)
     })
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
@@ -6484,6 +6491,14 @@ pub async fn export_calendar_ics(
 }
 
 // ---- portable archive `.cortex-pkg.tar.gz` (P0 #2) ---------------------
+
+/// Token usage summary for the Analytics dashboard (0049). Estimates, not
+/// provider usage — the UI labels them 估算.
+#[tauri::command]
+pub fn token_usage_summary(state: State<AppState>, days: Option<i64>) -> Result<crate::tokens::TokenSummary> {
+    let c = state.db.lock().unwrap();
+    crate::tokens::summary(&c, days.unwrap_or(30))
+}
 
 /// Backfill char_start/char_end for chunks written before 0046. Idempotent;
 /// returns the number of chunks that got real offsets.

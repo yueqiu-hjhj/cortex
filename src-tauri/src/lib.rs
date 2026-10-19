@@ -65,6 +65,7 @@ pub mod connectors;
 pub mod drafts;
 pub mod extraction;
 pub mod prisma;
+pub mod tokens;
 pub mod summary_tree;
 pub mod rerank;
 pub mod eval;
@@ -694,6 +695,7 @@ pub fn run() {
             extraction::extract_result_csv_file,
             extraction::extract_cell_set,
             prisma::prisma_run_create,
+            commands::token_usage_summary,
             prisma::prisma_run_list,
             prisma::prisma_run_delete,
             prisma::prisma_run_execute,

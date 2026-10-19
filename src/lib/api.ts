@@ -958,6 +958,16 @@ export const exportKnowledgeXmind = (subjectId: string, dest: string) =>
 /** Backfill char offsets for pre-0046 chunks (idempotent; returns count). */
 export const backfillChunkOffsets = () => invoke<number>("backfill_chunk_offsets");
 
+// ---- token accounting (0049, estimates) ----
+export interface TokenDayBucket { day: string; prompt: number; completion: number; calls: number }
+export interface TokenBucket { kind: string; total: number; calls: number }
+export interface TokenSummary {
+  days: number; total_prompt: number; total_completion: number; calls: number;
+  by_day: TokenDayBucket[]; by_kind: TokenBucket[]; by_model: TokenBucket[];
+}
+export const tokenUsageSummary = (days?: number) =>
+  invoke<TokenSummary>("token_usage_summary", { days: days ?? null });
+
 // ---- recovery directories (.deleted-<id>) ----
 export interface DeletedSubject {
   dir_name: string;

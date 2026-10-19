@@ -59,6 +59,21 @@
     Math.max(1, ...(planVs?.days ?? []).map((d) => Math.max(d.planned_min, d.done_min)))
   );
   const hasPlan = $derived((planVs?.planned_min ?? 0) > 0);
+
+  // ── token 消耗（估算,0049) ──
+  let tok = $state<api.TokenSummary | null>(null);
+  $effect(() => {
+    void range;
+    api.tokenUsageSummary(range).then((t) => (tok = t)).catch(() => (tok = null));
+  });
+  function fmtTok(n: number): string {
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  }
+  const tokMax = $derived(Math.max(1, ...(tok?.by_day ?? []).map((d) => d.prompt + d.completion)));
+  const kindLabel = (k: string) =>
+    ({ chat: "对话", cheatsheet: "速查表", material: "学习材料", agent: "智能体", prisma: "PRISMA 综述" } as Record<string, string>)[k] ?? k;
+
+
   function planDayNum(day: string): string {
     return String(Number(day.split("-")[2]));
   }
@@ -488,7 +503,43 @@
         </section>
       {/if}
 
-      <!-- ── topic mastery radar (subject pill switcher) ── -->
+      <!-- ── token 消耗（估算） ── -->
+      {#if tok && tok.calls > 0}
+        <section class="an-card">
+          <div class="an-card-h">
+            <h3 class="an-card-t mono">Token 消耗</h3>
+            <span class="an-card-sub mono">
+              近 {tok.days} 天 {fmtTok(tok.total_prompt + tok.total_completion)} tokens ·
+              {tok.calls} 次调用 · <span class="faint">估算值</span>
+            </span>
+          </div>
+          <div class="pva">
+            {#each tok.by_day as d (d.day)}
+              <div class="pva-col" title="{d.day} · 输入 {fmtTok(d.prompt)} · 输出 {fmtTok(d.completion)} · {d.calls} 次">
+                <div class="pva-bars">
+                  <div class="pva-bar planned" style:height="{Math.max(2, (d.prompt / tokMax) * 100)}%"></div>
+                  <div class="pva-bar done" style:height="{Math.max(2, (d.completion / tokMax) * 100)}%"></div>
+                </div>
+                <span class="pva-d mono">{dayNum(d.day)}</span>
+              </div>
+            {/each}
+          </div>
+          <div class="pva-legend">
+            <span><i class="sw planned"></i> 输入（提示词）</span>
+            <span><i class="sw done"></i> 输出（回答）</span>
+          </div>
+          <div class="tok-break">
+            {#each tok.by_kind as k (k.kind)}
+              <span class="tok-chip mono">{kindLabel(k.kind)} · {fmtTok(k.total)}</span>
+            {/each}
+            {#each tok.by_model as m (m.kind)}
+              <span class="tok-chip tok-model mono">{m.kind} · {fmtTok(m.total)}</span>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+
       {#if app.subjects.length}
         <section class="an-card">
           <div class="an-card-h">
@@ -1362,4 +1413,7 @@
   }
   .an-podium-more { margin-top: 6px; font-size: var(--t-xs); }
 
+  .tok-break { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tok-chip { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--fg-muted); }
+  .tok-chip.tok-model { color: var(--fg-faint); }
 </style>

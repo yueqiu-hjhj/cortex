@@ -383,6 +383,7 @@ fn extract_one_paper(
     let n_fields = fields.len() as u32;
     model.set_max_tokens((1024 + 520 * n_fields).max(2048)); // values + evidence quotes
     let raw = model.complete(&system, &user)?;
+    crate::tokens::record(conn, "prisma", &model.name(), &format!("{system}\n{user}"), &raw, None);
     let parsed = match crate::llm::extract_json(&raw) {
         Ok(v) => v,
         Err(_) => {
