@@ -1,5 +1,6 @@
 [package]
 name = "cortex"
+default-run = "cortex"
 version = "1.0.35"
 description = "Cortex — desktop study OS"
 authors = ["Aidan McConnon"]
