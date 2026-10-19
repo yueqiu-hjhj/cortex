@@ -108,7 +108,8 @@ pub fn summary(conn: &Connection, days: i64) -> Result<TokenSummary> {
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     // Local-day buckets (ms epoch → date in UTC+8 kept simple: shift then divide).
-    let mut by_day: Vec<DayBucket> = Vec::new();
+    // Deferred init: assigned (or ?-returned) exactly once inside the block below.
+    let by_day: Vec<DayBucket>;
     {
         let mut st = conn.prepare(
             "SELECT date((ts + 28800000) / 1000, 'unixepoch') AS d,

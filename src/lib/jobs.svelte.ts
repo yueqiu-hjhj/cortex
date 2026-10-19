@@ -60,7 +60,6 @@ const KIND_LABEL: Record<JobKind, string> = {
   extract: "paper extraction",
   prisma: "PRISMA extraction",
   tension: "tension analysis",
-  tension: "tension analysis",
   sumtree: "summary tree",
   connector: "connector sync",
   source: "source",
