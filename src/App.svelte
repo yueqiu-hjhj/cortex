@@ -22,6 +22,7 @@
   import SubjectPanel from "./components/SubjectPanel.svelte";
   import NotificationCenter from "./components/NotificationCenter.svelte";
   import NotificationDetail from "./components/NotificationDetail.svelte";
+  import ExamBanner from "./components/ExamBanner.svelte";
   import PomodoroPanel from "./components/PomodoroPanel.svelte";
   import LiveActivity from "./components/LiveActivity.svelte";
   import RecordingActivity from "./components/RecordingActivity.svelte";
@@ -445,6 +446,8 @@
           </button>
         </div>
       {/if}
+      <!-- Exam countdown banner (2.11): ≤7 days orange / ≤3 days red + daily push -->
+      <ExamBanner />
       <div class="workspace">
         {#if app.view === "today"}
           <Today />
