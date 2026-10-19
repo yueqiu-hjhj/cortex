@@ -241,6 +241,26 @@ cortex-mcp --db /path/to/cortex.db
 # or: CORTEX_DB=/path/to/cortex.db cortex-mcp
 ```
 
+### Install the `cortex-mcp` CLI
+
+The standalone `cortex-mcp` npm package is a thin launcher: it resolves the
+real Rust server binary (from `PATH`, `$CORTEX_MCP_BIN`, or a one-time GitHub
+Releases download cached under `~/.cortex-mcp-bin`) and exec's it over stdio.
+Any MCP client that can spawn a command can use it — no global install needed:
+
+```bash
+# zero-install: run the latest published launcher
+npx -y cortex-mcp@latest --db /path/to/cortex.db
+
+# or install it globally
+npm i -g cortex-mcp
+cortex-mcp --db /path/to/cortex.db
+```
+
+The launcher is published from [`packages/cortex-mcp`](packages/cortex-mcp)
+on every `v*` tag; the binary it downloads comes from the matching Cortex
+desktop release. Override the download source with
+`CORTEX_MCP_RELEASE_REPO=owner/repo` if you fork Cortex.
 **Tools (13, all read-only):** `list_notebooks` · `search_notebook` ·
 `get_source` · `read_document` (char-paginated) · `search_notes` ·
 `get_knowledge_tree` · `list_wiki` · `get_wiki` · `wiki_reverse_links` ·

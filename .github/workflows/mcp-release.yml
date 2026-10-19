@@ -1,0 +1,70 @@
+# MCP release workflow — attach the cortex-mcp binaries the npm package downloads.
+#
+# The desktop release workflow (release.yml) builds app bundles; the npm package
+# packages/cortex-mcp needs BARE server binaries named exactly like the
+# launcher expects:
+#   cortex-mcp-x86_64-pc-windows-msvc.exe
+#   cortex-mcp-x86_64-apple-darwin / cortex-mcp-aarch64-apple-darwin
+#   cortex-mcp-x86_64-unknown-linux-gnu / cortex-mcp-aarch64-unknown-linux-gnu
+# This runs on the same v* tags, in parallel with the app release, and attaches
+# its assets to the SAME release (prepare in release.yml drafts it first; this
+# workflow waits for that release to exist).
+name: mcp-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach MCP binaries to"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  mcp:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: cortex-mcp-x86_64-pc-windows-msvc.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: cortex-mcp-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: cortex-mcp-aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: cortex-mcp-x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: cortex-mcp-aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build cortex-mcp
+        run: cargo build --release --bin cortex-mcp --target ${{ matrix.target }}
+        working-directory: src-tauri
+      - name: Wait for the app release to exist, then attach
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then break; fi
+            echo "release $TAG not visible yet (attempt $i) — waiting 20s"; sleep 20
+          done
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "::error::release $TAG never appeared"; exit 1; }
+          BIN="src-tauri/target/${{ matrix.target }}/release/${{ matrix.asset }}"
+          [ -f "$BIN" ] || { echo "::error::missing $BIN"; exit 1; }
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$BIN"
+          echo "attached ${{ matrix.asset }} to $TAG"
