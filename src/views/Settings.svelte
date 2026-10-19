@@ -344,13 +344,20 @@
     kind: "daily",
     intervalMinutes: 60,
     dailyTime: "08:00",
+    action: "prompt", // "prompt" | "sync"
+    connectorId: "",
   });
+  let cronConnectors = $state<api.ConnectorInfo[] | null>(null);
 
   async function loadCron() {
     try { cronJobs = await api.cronList(); } catch { cronJobs = []; }
+    try { cronConnectors = await api.connectorList(); } catch { cronConnectors = []; }
   }
   async function cronCreate() {
-    if (!cronForm.name.trim() || !cronForm.prompt.trim() || cronBusy) return;
+    const isSync = cronForm.action === "sync";
+    if (!cronForm.name.trim() || cronBusy) return;
+    if (!isSync && !cronForm.prompt.trim()) return;
+    if (isSync && (!cronForm.connectorId || !cronForm.subjectId)) return;
     cronBusy = true;
     try {
       await api.cronAdd({
@@ -363,8 +370,10 @@
         daily_time: cronForm.kind === "daily" ? cronForm.dailyTime : null,
         // JS getTimezoneOffset is minutes WEST of UTC; backend wants east.
         tz_offset_minutes: -new Date().getTimezoneOffset(),
+        action: isSync ? "sync" : "prompt",
+        action_ref: isSync ? cronForm.connectorId : null,
       });
-      cronForm = { ...cronForm, name: "", prompt: "" };
+      cronForm = { ...cronForm, name: "", prompt: "", connectorId: "" };
       cronJobs = await api.cronList();
       app.pushToast({ kind: "success", title: "定时任务已创建" });
     } catch (e) {
@@ -3687,10 +3696,11 @@ Notes: {about}</pre>
                   <div class="mt-task-t">
                     {j.name}
                     <span class="slot-hint mono">{cronScheduleText(j)}</span>
+                    {#if j.action === "sync"}<span class="slot-hint">🔗 连接器 {j.action_ref}</span>{/if}
                     {#if !j.enabled}<span class="slot-hint">已暂停</span>{/if}
                   </div>
                   <div class="mt-task-d mono">上次：{cronFmt(j.last_run_at)} · 下次：{cronFmt(j.next_run_at)}</div>
-                  <div class="mt-task-d">{j.prompt}</div>
+                  <div class="mt-task-d">{j.action === "sync" ? `定时拉取连接器 ${j.action_ref} 的新内容到关联科目` : j.prompt}</div>
                 </div>
                 <div class="xtra-stack" style="flex-direction:row; gap:6px; align-items:center">
                   <button class="btn btn--sm btn--ghost" onclick={() => cronToggle(j)}>
@@ -3760,17 +3770,42 @@ Notes: {about}</pre>
             </div>
             <div class="xtra-row">
               <div class="xtra-label">
-                <div class="mt-task-t">提示词</div>
-                <div class="mt-task-d mono">执行时发给聊天槽位模型，直接输出任务结果</div>
+                <div class="mt-task-t">任务类型</div>
+                <div class="mt-task-d">提示词 = 跑一次 AI；同步 = 定时拉取研究连接器的新内容</div>
               </div>
-              <textarea
-                class="input"
-                rows="3"
-                value={cronForm.prompt}
-                onchange={(e) => (cronForm.prompt = (e.target as HTMLTextAreaElement).value)}
-                placeholder="汇总我所有科目的待办和临近考试，按紧急程度排序输出"
-              ></textarea>
+              <select class="input" value={cronForm.action} onchange={(e) => (cronForm.action = (e.target as HTMLSelectElement).value)}>
+                <option value="prompt">AI 提示词</option>
+                <option value="sync">连接器同步</option>
+              </select>
             </div>
+            {#if cronForm.action === "sync"}
+              <div class="xtra-row">
+                <div class="xtra-label">
+                  <div class="mt-task-t">连接器</div>
+                  <div class="mt-task-d mono">已配置的研究连接器（arXiv / PubMed / Zotero…）；没有的话先在「研究与文献」里配置</div>
+                </div>
+                <select class="input" value={cronForm.connectorId} onchange={(e) => (cronForm.connectorId = (e.target as HTMLSelectElement).value)}>
+                  <option value="">选择连接器</option>
+                  {#each cronConnectors ?? [] as c (c.id)}
+                    <option value={c.id}>{c.label}（{c.id}）</option>
+                  {/each}
+                </select>
+              </div>
+            {:else}
+              <div class="xtra-row">
+                <div class="xtra-label">
+                  <div class="mt-task-t">提示词</div>
+                  <div class="mt-task-d mono">执行时发给聊天槽位模型，直接输出任务结果</div>
+                </div>
+                <textarea
+                  class="input"
+                  rows="3"
+                  value={cronForm.prompt}
+                  onchange={(e) => (cronForm.prompt = (e.target as HTMLTextAreaElement).value)}
+                  placeholder="汇总我所有科目的待办和临近考试，按紧急程度排序输出"
+                ></textarea>
+              </div>
+            {/if}
             <div class="xtra-row">
               <div class="xtra-label">
                 <div class="mt-task-t">计划</div>
@@ -3790,8 +3825,8 @@ Notes: {about}</pre>
             </div>
             <div class="xtra-row">
               <div class="xtra-label">
-                <div class="mt-task-t">关联科目（可选）</div>
-                <div class="mt-task-d mono">结果同时归档为该科目下的 txt 资料源</div>
+                <div class="mt-task-t">关联科目{cronForm.action === "sync" ? "（必选）" : "（可选）"}</div>
+                <div class="mt-task-d mono">{cronForm.action === "sync" ? "新内容会拉取到该科目下" : "结果同时归档为该科目下的 txt 资料源"}</div>
               </div>
               <select class="input" value={cronForm.subjectId} onchange={(e) => (cronForm.subjectId = (e.target as HTMLSelectElement).value)}>
                 <option value="">不关联</option>

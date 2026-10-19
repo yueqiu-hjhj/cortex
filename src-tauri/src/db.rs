@@ -59,6 +59,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0052_zotero_links.sql"),
     include_str!("../migrations/0053_extract_evidence.sql"),
     include_str!("../migrations/0054_cron.sql"),
+    include_str!("../migrations/0055_cron_actions.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.

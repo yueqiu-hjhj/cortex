@@ -725,6 +725,8 @@ export interface CronJob {
   enabled: boolean;
   last_run_at: number | null;
   next_run_at: number;
+  action: string; // "prompt" | "sync"
+  action_ref: string | null; // connector_id for "sync"
 }
 export interface CronRun {
   id: string;
@@ -744,6 +746,8 @@ export interface CronJobIn {
   interval_minutes: number | null;
   daily_time: string | null;
   tz_offset_minutes?: number;
+  action?: string; // "prompt" | "sync"
+  action_ref?: string | null; // connector_id for "sync"
 }
 export const cronList = () => invoke<CronJob[]>("cron_list");
 export const cronAdd = (job: CronJobIn) => invoke<CronJob>("cron_add", { job });

@@ -38,6 +38,11 @@ pub struct CronJob {
     pub enabled: bool,
     pub last_run_at: Option<i64>,
     pub next_run_at: i64,
+    /// What to do when due: "prompt" (LLM text job) | "sync" (connector pull).
+    /// Defaulted on read so pre-0055 rows behave exactly as before.
+    pub action: String,
+    /// For "sync": the connector_id to pull. Unused for "prompt".
+    pub action_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +60,8 @@ pub struct CronRun {
 #[derive(Debug, Deserialize)]
 pub(crate) struct JobIn {
     name: String,
+    /// Required for "prompt" jobs; ignored (may be empty) for "sync".
+    #[serde(default)]
     prompt: String,
     subject_id: Option<String>,
     kind: String,
@@ -62,6 +69,12 @@ pub(crate) struct JobIn {
     daily_time: Option<String>,
     #[serde(default = "default_tz")]
     tz_offset_minutes: i64,
+    /// "prompt" | "sync" — absent means "prompt" (legacy frontend / API users).
+    #[serde(default)]
+    action: Option<String>,
+    /// connector_id for "sync" jobs.
+    #[serde(default)]
+    action_ref: Option<String>,
 }
 fn default_tz() -> i64 {
     480 // UTC+8 — right for this user, and the frontend always sends the real one
@@ -126,11 +139,16 @@ fn row_to_job(r: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         enabled: r.get::<_, i64>(8)? != 0,
         last_run_at: r.get(9)?,
         next_run_at: r.get(10)?,
+        action: r
+            .get::<_, Option<String>>(11)?
+            .filter(|a| !a.trim().is_empty())
+            .unwrap_or_else(|| "prompt".into()),
+        action_ref: r.get(12)?,
     })
 }
 
 const JOB_COLS: &str = "id, name, prompt, subject_id, kind, interval_minutes, daily_time, \
-                        tz_offset_minutes, enabled, last_run_at, next_run_at";
+                        tz_offset_minutes, enabled, last_run_at, next_run_at, action, action_ref";
 
 // ---- CRUD (used by the tauri commands below) ----------------------------
 
@@ -149,8 +167,12 @@ pub(crate) fn get_job(c: &rusqlite::Connection, id: &str) -> Result<CronJob> {
 
 pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob> {
     let name = input.name.trim();
-    if name.is_empty() || input.prompt.trim().is_empty() {
-        return Err(Error::Other("定时任务需要名称和提示词".into()));
+    if name.is_empty() {
+        return Err(Error::Other("定时任务需要名称".into()));
+    }
+    let (action, action_ref) = normalize_action(input)?;
+    if action == "prompt" && input.prompt.trim().is_empty() {
+        return Err(Error::Other("提示词任务需要填写提示词".into()));
     }
     let id = new_id();
     let next = compute_next_run(
@@ -162,8 +184,8 @@ pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob
     );
     c.execute(
         "INSERT INTO cron_jobs (id, name, prompt, subject_id, kind, interval_minutes, \
-         daily_time, tz_offset_minutes, enabled, next_run_at, created_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10)",
+         daily_time, tz_offset_minutes, enabled, next_run_at, created_at, action, action_ref) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,?11,?12)",
         params![
             id,
             name,
@@ -174,16 +196,43 @@ pub(crate) fn add_job(c: &rusqlite::Connection, input: &JobIn) -> Result<CronJob
             input.daily_time,
             input.tz_offset_minutes,
             next,
-            now_ms()
+            now_ms(),
+            action,
+            action_ref
         ],
     )?;
     get_job(c, &id)
 }
 
+/// Validate + canonicalize the action pair. "sync" needs a connector ref AND a
+/// target subject (a pull has nowhere to land otherwise); anything unrecognized
+/// degrades to "prompt" rather than a job that can never run.
+fn normalize_action(input: &JobIn) -> Result<(String, Option<String>)> {
+    match input.action.as_deref().map(str::trim) {
+        Some("sync") => {
+            let r = input
+                .action_ref
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| Error::Other("同步任务需要选择连接器".into()))?;
+            if input.subject_id.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err(Error::Other("同步任务需要关联科目（新内容要落到某个科目下）".into()));
+            }
+            Ok(("sync".into(), Some(r.to_string())))
+        }
+        _ => Ok(("prompt".into(), None)),
+    }
+}
+
 pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> Result<CronJob> {
     let name = input.name.trim();
-    if name.is_empty() || input.prompt.trim().is_empty() {
-        return Err(Error::Other("定时任务需要名称和提示词".into()));
+    if name.is_empty() {
+        return Err(Error::Other("定时任务需要名称".into()));
+    }
+    let (action, action_ref) = normalize_action(input)?;
+    if action == "prompt" && input.prompt.trim().is_empty() {
+        return Err(Error::Other("提示词任务需要填写提示词".into()));
     }
     // Editing recomputes the schedule from now (and re-captures the tz offset).
     let next = compute_next_run(
@@ -195,7 +244,7 @@ pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> R
     );
     let n = c.execute(
         "UPDATE cron_jobs SET name=?2, prompt=?3, subject_id=?4, kind=?5, interval_minutes=?6, \
-         daily_time=?7, tz_offset_minutes=?8, next_run_at=?9 WHERE id=?1",
+         daily_time=?7, tz_offset_minutes=?8, next_run_at=?9, action=?10, action_ref=?11 WHERE id=?1",
         params![
             id,
             name,
@@ -205,7 +254,9 @@ pub(crate) fn update_job(c: &rusqlite::Connection, id: &str, input: &JobIn) -> R
             input.interval_minutes,
             input.daily_time,
             input.tz_offset_minutes,
-            next
+            next,
+            action,
+            action_ref
         ],
     )?;
     if n == 0 {
@@ -303,7 +354,10 @@ fn execute(app: &AppHandle, job: &CronJob) -> Result<CronRun> {
         )?;
     }
 
-    let outcome = generate(app, job);
+    let outcome = match job.action.as_str() {
+        "sync" => sync_action(app, job),
+        _ => generate(app, job),
+    };
     let finished = now_ms();
     let run = match outcome {
         Ok((text, source_id)) => {
@@ -391,6 +445,45 @@ fn generate(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>)> 
         source_id = Some(id);
     }
     Ok((text, source_id))
+}
+
+/// The other action: pull a research connector into the job's subject. The
+/// sync itself creates the real sources (with connector tags); the run record
+/// only keeps the human-readable summary. Not archived as a source — a "拉了
+/// 3 篇论文" text row would be noise in the knowledge flow.
+fn sync_action(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>)> {
+    let connector = job
+        .action_ref
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::Other("同步任务缺少连接器配置".into()))?;
+    let sid = job
+        .subject_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::Other("同步任务缺少关联科目".into()))?
+        .to_string();
+
+    // connectors::sync is async (spawn_blocking network phase) — this thread is
+    // either the cron loop or a spawn_blocking command, both safe to block on.
+    let summary = tauri::async_runtime::block_on(crate::connectors::sync(
+        app.clone(),
+        connector,
+        sid,
+        None,
+    ))?;
+
+    let mut text = format!(
+        "连接器 {}：抓取 {} 条，新入库 {} 条，跳过（重复/无法映射）{} 条。",
+        connector, summary.fetched, summary.imported, summary.skipped
+    );
+    if !summary.errors.is_empty() {
+        text.push_str("\n错误：\n");
+        for e in &summary.errors {
+            text.push_str(&format!("- {e}\n"));
+        }
+    }
+    Ok((text, None))
 }
 
 /// Local wall-clock stamp "MM-DD HH:MM" via the stored tz offset — good enough
@@ -603,6 +696,8 @@ mod tests {
                 interval_minutes: None,
                 daily_time: Some("07:30".into()),
                 tz_offset_minutes: 480,
+                action: None,
+                action_ref: None,
             },
         )
         .unwrap();
@@ -624,6 +719,8 @@ mod tests {
                 interval_minutes: Some(45),
                 daily_time: None,
                 tz_offset_minutes: 480,
+                action: None,
+                action_ref: None,
             },
         )
         .unwrap();
@@ -640,5 +737,61 @@ mod tests {
         assert!(list_runs(&conn, &job.id, 20).unwrap().is_empty());
         delete_job(&conn, &job.id).unwrap();
         assert!(get_job(&conn, &job.id).is_err());
+    }
+
+    fn sync_input(name: &str, subject: Option<&str>, r: Option<&str>) -> JobIn {
+        JobIn {
+            name: name.into(),
+            prompt: String::new(), // sync jobs carry no prompt
+            subject_id: subject.map(str::to_string),
+            kind: "daily".into(),
+            interval_minutes: None,
+            daily_time: Some("07:30".into()),
+            tz_offset_minutes: 480,
+            action: Some("sync".into()),
+            action_ref: r.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn sync_jobs_validate_and_persist() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+
+        // missing connector ref / missing subject are rejected with a message
+        let err = add_job(&c, &sync_input("拉论文", Some("s1"), None)).unwrap_err();
+        assert!(err.to_string().contains("连接器"));
+        let err = add_job(&c, &sync_input("拉论文", None, Some("arxiv-cs"))).unwrap_err();
+        assert!(err.to_string().contains("科目"));
+
+        // valid sync job round-trips (and needs no prompt)
+        let job = add_job(&c, &sync_input("每日 arXiv", Some("s1"), Some("arxiv-cs"))).unwrap();
+        assert_eq!(job.action, "sync");
+        assert_eq!(job.action_ref.as_deref(), Some("arxiv-cs"));
+        let reread = get_job(&c, &job.id).unwrap();
+        assert_eq!(reread.action, "sync");
+
+        // update can flip it back to a prompt job (action cleared, prompt required again)
+        let mut inp = sync_input("改名", Some("s1"), Some("arxiv-cs"));
+        inp.action = None;
+        inp.prompt = "变成晨报".into();
+        let flipped = update_job(&c, &job.id, &inp).unwrap();
+        assert_eq!(flipped.action, "prompt");
+        assert_eq!(flipped.action_ref, None);
+        assert_eq!(flipped.prompt, "变成晨报");
+    }
+
+    #[test]
+    fn unknown_action_degrades_to_prompt_and_must_carry_prompt() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let mut inp = sync_input("x", Some("s1"), Some("arxiv-cs"));
+        inp.action = Some("teleport".into());
+        // garbage action → treated as prompt → empty prompt rejected
+        assert!(add_job(&c, &inp).is_err());
+        inp.prompt = "正常提示词".into();
+        let job = add_job(&c, &inp).unwrap();
+        assert_eq!(job.action, "prompt");
+        assert_eq!(job.action_ref, None);
     }
 }
