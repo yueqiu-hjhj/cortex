@@ -115,6 +115,12 @@ impl AppState {
     }
 }
 
+/// Number of embedded migrations == the expected `user_version` after a
+/// clean migrate. Single source of truth for the startup self-check.
+pub fn migration_count() -> usize {
+    MIGRATIONS.len()
+}
+
 /// Apply any migrations whose index is beyond the current `user_version`.
 fn run_migrations(conn: &Connection) -> Result<()> {
     let mut version: i64 =

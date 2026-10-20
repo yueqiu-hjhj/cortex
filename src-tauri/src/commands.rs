@@ -6057,10 +6057,10 @@ pub fn list_secrets(state: State<AppState>) -> Result<Vec<String>> {
 pub fn startup_self_check(state: State<AppState>) -> Result<crate::selfcheck::Report> {
     let conn = state.db.lock().unwrap();
     let dir = state.data_dir.as_deref().unwrap_or(std::path::Path::new("."));
-    // known_migrations: count the *.sql files in src-tauri/migrations; we
-    // hardcode the count for now (the test suite asserts 31) but the right
-    // long-term answer is to scan the migrations dir on the filesystem.
-    crate::selfcheck::run(&conn, dir, 35)
+    // known_migrations comes straight from the embedded MIGRATIONS array
+    // length (db::migration_count), so adding a migration file never
+    // desyncs the self-check again.
+    crate::selfcheck::run(&conn, dir, crate::db::migration_count())
 }
 
 /// Export source text and notes with provenance and wiki links into a fresh vault subfolder.
