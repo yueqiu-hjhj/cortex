@@ -79,21 +79,26 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
     crate::ingest::which(bin).map(PathBuf::from)
 }
 
-/// Ensure a usable `yt-dlp` exists, returning its path. Lookup order:
+/// Resolve yt-dlp for real playback. Lookup order:
 /// 1. Bundled Tauri sidecar (legacy bundle.externalBin path).
-/// 2. Runtime-fetched copy in `<data>/bin/yt-dlp` (sidecars::ensure_ytdlp,
-///    downloads on first miss; cross-platform).
+/// 2. Runtime-fetched copy in `<data>/bin/yt-dlp` (sidecars::ensure downloads
+///    on first miss; cross-platform).
 /// 3. A copy already on `$PATH`.
-/// Idempotent.
-fn ensure_ytdlp(conn: &rusqlite::Connection, dir: &Path) -> Result<PathBuf> {
+/// Idempotent. The possible download runs WITHOUT the db lock held (short lock
+/// reads the url override only) and OFF the main thread — see youtube_play.
+fn ensure_ytdlp_unlocked(app: &AppHandle, dir: &Path) -> Result<PathBuf> {
     if let Some(p) = crate::ingest::tool_in("yt-dlp", Some(dir)) {
         return Ok(PathBuf::from(p));
     }
+    let url_override = {
+        let state = app.state::<crate::db::AppState>();
+        let c = state.db.lock().unwrap();
+        crate::repo::get_setting(&c, "sidecar_ytdlp_url").ok().flatten()
+    };
     let mut spec = crate::sidecars::BinSpec::for_target("yt-dlp");
-    if let Ok(Some(url)) = crate::repo::get_setting(conn, "sidecar_ytdlp_url") {
-        let url = url.trim();
-        if !url.is_empty() {
-            spec = spec.with_url(url);
+    if let Some(u) = url_override.as_deref() {
+        if !u.trim().is_empty() {
+            spec = spec.with_url(u);
         }
     }
     crate::sidecars::ensure(dir, &spec)
@@ -200,15 +205,24 @@ pub fn media_tools_status(app: AppHandle) -> Result<MediaTools> {
 
 /// Stream a URL's audio (YouTube video/livestream or any mpv-playable URL),
 /// ad-free, starting playback at `volume` (0–100). Downloads yt-dlp on first use.
+///
+/// ASYNC + spawn_blocking on purpose: sync commands execute INLINE on the
+/// WebView2 UI thread, so the possible yt-dlp download here (up to the 180s
+/// client timeout on a bad network) used to freeze the whole window — the
+/// "opened the app and it says 未响应" bug. The heavy work runs on a blocking
+/// pool thread and the download happens WITHOUT the db lock (a short lock only
+/// reads the url override setting).
 #[tauri::command]
-pub fn youtube_play(app: AppHandle, url: String, volume: u8) -> Result<()> {
+pub async fn youtube_play(app: AppHandle, url: String, volume: u8) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || youtube_play_blocking(app, url, volume))
+        .await
+        .map_err(|e| Error::Other(format!("youtube_play join: {e}")))?
+}
+
+fn youtube_play_blocking(app: AppHandle, url: String, volume: u8) -> Result<()> {
     let dir = data_dir(&app)?;
     let socket = socket_path(&dir);
-    let ytdlp = {
-        let state = app.state::<crate::db::AppState>();
-        let c = state.db.lock().unwrap();
-        ensure_ytdlp(&c, &dir)?
-    };
+    let ytdlp = ensure_ytdlp_unlocked(&app, &dir)?;
     ensure_mpv(&socket, &ytdlp, volume)?;
     // Stations are YouTube watch URLs; mpv's ytdl hook normally re-runs yt-dlp on
     // every load to resolve the direct googlevideo stream (several seconds). We
@@ -281,21 +295,19 @@ pub fn youtube_set_volume(app: AppHandle, volume: u8) -> Result<()> {
 /// instant. Returns immediately; ONE detached thread walks the list, resolving
 /// only stale/missing non-playlist entries (cheap no-op when all are fresh).
 /// Best-effort: any failure (no yt-dlp, no network) just leaves the cache as-is.
+///
+/// The frontend calls this at STARTUP, so it must never trigger the yt-dlp
+/// download — a fresh install used to download 18 MB here ON THE MAIN THREAD
+/// (sync command) while holding the db lock: the whole window showed 未响应
+/// for minutes. If yt-dlp isn't resolvable yet, skip silently; the first
+/// user-initiated play fetches it off-thread instead.
 #[tauri::command]
 pub fn youtube_prewarm(app: AppHandle, urls: Vec<String>) -> Result<()> {
     let dir = data_dir(&app)?;
-    // Resolve yt-dlp's path on the calling thread (cheap: avoids a download race
-    // inside the worker); if it isn't available yet, skip prewarming entirely.
-    let ytdlp = {
-        let state = app.state::<crate::db::AppState>();
-        let c = match state.db.lock() {
-            Ok(g) => g,
-            Err(_) => return Ok(()),
-        };
-        match ensure_ytdlp(&c, &dir) {
-            Ok(p) => p,
-            Err(_) => return Ok(()),
-        }
+    // Effect-free lookup only (bundled sidecar → bin/ → PATH). NEVER download.
+    let Some(ytdlp) = crate::ingest::tool_in("yt-dlp", Some(dir.as_path())).map(PathBuf::from)
+    else {
+        return Ok(());
     };
     std::thread::spawn(move || {
         for url in urls {
