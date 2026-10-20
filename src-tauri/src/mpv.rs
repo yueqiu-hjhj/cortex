@@ -8,9 +8,12 @@
 //! IPC socket (load a URL, pause/resume, set volume). The process outlives
 //! individual commands so playback is continuous across the app.
 //!
-//! `yt-dlp` is auto-downloaded (standalone Linux binary) into the app data dir
-//! on first use, so the user doesn't have to install it manually. `mpv` and
-//! `ffmpeg` are expected on PATH (detected + surfaced in Settings).
+//! `yt-dlp` is auto-downloaded into the app data dir on first use (all
+//! platforms), and so is `mpv` on Windows (shinchiro build — GitHub API
+//! resolves the latest `mpv-x86_64-*.7z` release asset, sidecars::ensure
+//! extracts `mpv.exe`). On Linux/macOS mpv and ffmpeg are expected on PATH
+//! (detected + surfaced in Settings). IPC is a Unix socket on Linux/macOS
+//! and mpv's named pipe on Windows.
 
 use crate::error::{Error, Result};
 use crate::models::MediaTools;
@@ -62,21 +65,100 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf> {
 pub fn cleanup_stale(app: &AppHandle) {
     let Ok(dir) = data_dir(app) else { return };
     let socket = socket_path(&dir);
-    if socket.exists() {
+    if socket_ready(&socket) {
         let _ = ipc(&socket, &json!({ "command": ["quit"] }));
-        let _ = std::fs::remove_file(&socket);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// The IPC client endpoint: a Unix socket file on Linux/macOS; on Windows
+/// mpv's --input-ipc-server creates a named pipe at `\\.\pipe\<name>` and the
+/// std fs API can open that path directly as a duplex file.
+fn socket_path(dir: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = dir;
+        PathBuf::from(r"\\.\pipe\cortex-mpv")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        dir.join("mpv.sock")
     }
 }
 
-fn socket_path(dir: &Path) -> PathBuf {
-    dir.join("mpv.sock")
+/// The value handed to mpv's --input-ipc-server. On Windows this is the bare
+/// pipe name (mpv prefixes \\.\pipe\ itself); elsewhere the socket file path.
+fn socket_arg(dir: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = dir;
+        "cortex-mpv".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        dir.join("mpv.sock").display().to_string()
+    }
 }
 
-/// Resolve `bin` against PATH, returning its absolute path if found.
-fn find_on_path(bin: &str) -> Option<PathBuf> {
-    // Delegate to ingest::which so mpv gets the same Homebrew / minimal-PATH fallback
-    // dirs (a Finder-launched macOS app omits /opt/homebrew/bin from PATH).
-    crate::ingest::which(bin).map(PathBuf::from)
+/// Is the IPC endpoint live? Unix: the socket file exists. Windows: the named
+/// pipe accepts a client connection (a real open — also proves mpv serves it).
+fn socket_ready(socket: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(socket)
+            .is_ok()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        socket.exists()
+    }
+}
+
+/// Resolve the mpv binary. Lookup order:
+/// 1. `<data>/bin/mpv(.exe)` — runtime-fetched earlier, or a bundled sidecar,
+///    or PATH (ingest::tool_in's chain).
+/// 2. Windows only: download the shinchiro build once — GitHub API resolves
+///    the latest `mpv-x86_64-*.7z` release asset and sidecars::ensure extracts
+///    `mpv.exe` into `<data>/bin/`. Runs WITHOUT the db lock held (short lock
+///    reads the url override only) and OFF the main thread (see youtube_play).
+/// 3. Linux/macOS: expect the distro/brew package; clear error if missing.
+fn resolve_mpv(app: &AppHandle, dir: &Path) -> Result<PathBuf> {
+    if let Some(p) = crate::ingest::tool_in("mpv", Some(dir)) {
+        return Ok(PathBuf::from(p));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err(Error::Other(
+            "couldn't find mpv — install it (e.g. `brew install mpv` / `sudo pacman -S mpv`) and retry."
+                .into(),
+        ))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let url_override = {
+            let state = app.state::<crate::db::AppState>();
+            let c = state.db.lock().unwrap();
+            crate::repo::get_setting(&c, "sidecar_mpv_url").ok().flatten()
+        };
+        let url: String = match url_override.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(u) => u.to_string(),
+            None => crate::sidecars::latest_mpv_url().map_err(|e| Error::Other(format!(
+                "{e}\n（无法自动获取 mpv —— 可在设置里加 sidecar_mpv_url 指向 shinchiro mpv 构建的 7z 直链镜像。）"
+            )))?,
+        };
+        let spec = crate::sidecars::BinSpec {
+            name: "mpv",
+            url: Box::leak(url.into_boxed_str()),
+            kind: crate::sidecars::ArchiveKind::SevenZ,
+            inner_name: "mpv",
+        };
+        crate::sidecars::ensure(dir, &spec)
+    }
 }
 
 /// Resolve yt-dlp for real playback. Lookup order:
@@ -105,8 +187,17 @@ fn ensure_ytdlp_unlocked(app: &AppHandle, dir: &Path) -> Result<PathBuf> {
 }
 
 /// Start mpv (idle, no video) if it isn't already running, listening on the IPC
-/// socket and configured to find our yt-dlp. Waits briefly for the socket.
-fn ensure_mpv(socket: &Path, ytdlp: &Path, volume: u8) -> Result<()> {
+/// endpoint and configured to find our yt-dlp. Waits briefly for the endpoint.
+/// `client_socket` is the endpoint we drive IPC through; `server_arg` is the
+/// value passed to --input-ipc-server (bare pipe name on Windows, file path
+/// elsewhere).
+fn ensure_mpv(
+    client_socket: &Path,
+    server_arg: &str,
+    mpv_bin: &Path,
+    ytdlp: &Path,
+    volume: u8,
+) -> Result<()> {
     let holder = mpv_holder();
     let mut guard = holder.lock().unwrap();
     if let Some(child) = guard.as_mut() {
@@ -116,14 +207,14 @@ fn ensure_mpv(socket: &Path, ytdlp: &Path, volume: u8) -> Result<()> {
         }
         *guard = None;
     }
-    // A leftover socket with a live listener is an orphan from a crashed
+    // A leftover endpoint with a live listener is an orphan from a crashed
     // session — quit it so two mpvs never play at once, then clear the socket.
-    if socket.exists() {
-        let _ = ipc(socket, &json!({ "command": ["quit"] }));
-        let _ = std::fs::remove_file(socket);
+    if socket_ready(client_socket) {
+        let _ = ipc(client_socket, &json!({ "command": ["quit"] }));
+        #[cfg(not(target_os = "windows"))]
+        let _ = std::fs::remove_file(client_socket);
     }
-    let mpv_bin = find_on_path("mpv").unwrap_or_else(|| PathBuf::from("mpv"));
-    let mut cmd = crate::ingest::new_cmd(&mpv_bin);
+    let mut cmd = crate::ingest::new_cmd(mpv_bin);
     cmd.arg("--no-video")
         .arg("--idle=yes")
         .arg("--no-terminal")
@@ -132,7 +223,7 @@ fn ensure_mpv(socket: &Path, ytdlp: &Path, volume: u8) -> Result<()> {
         .arg("--cache=yes")
         .arg("--demuxer-readahead-secs=10")
         .arg(format!("--volume={volume}"))
-        .arg(format!("--input-ipc-server={}", socket.display()))
+        .arg(format!("--input-ipc-server={server_arg}"))
         .arg(format!(
             "--script-opts=ytdl_hook-ytdl_path={}",
             ytdlp.display()
@@ -144,20 +235,21 @@ fn ensure_mpv(socket: &Path, ytdlp: &Path, volume: u8) -> Result<()> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let child = cmd.spawn().map_err(|e| {
-        Error::Other(format!(
-            "couldn't start mpv — install it (e.g. `sudo pacman -S mpv`): {e}"
-        ))
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| Error::Other(format!("couldn't start mpv ({}): {e}", mpv_bin.display())))?;
     *guard = Some(child);
     drop(guard);
     for _ in 0..60 {
-        if socket.exists() {
+        if socket_ready(client_socket) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(())
+    Err(Error::Other(format!(
+        "mpv started but its IPC endpoint never appeared ({})",
+        client_socket.display()
+    )))
 }
 
 /// Send one JSON command line to mpv's IPC socket.
@@ -173,17 +265,33 @@ fn ipc(socket: &Path, cmd: &Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+/// Windows named-pipe client: mpv creates `\\.\pipe\<name>` and the std fs
+/// API opens that path as a duplex file — no extra Win32 bindings needed.
+#[cfg(windows)]
+fn ipc(socket: &Path, cmd: &Value) -> Result<()> {
+    use std::io::Write;
+    let mut stream = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(socket)
+        .map_err(|e| Error::Other(format!("mpv not reachable: {e}")))?;
+    let mut line = serde_json::to_vec(cmd)?;
+    line.push(b'\n');
+    stream.write_all(&line)?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ipc(_socket: &Path, _cmd: &Value) -> Result<()> {
     Err(Error::Unsupported(
-        "URL audio streaming requires a Unix socket (Linux/macOS).".into(),
+        "URL audio streaming requires Unix-socket or named-pipe IPC.".into(),
     ))
 }
 
 /// Best-effort IPC (used for pause/stop/volume): if mpv isn't running, there's
 /// nothing to control, so a connect failure is silently ignored.
 fn ipc_soft(socket: &Path, cmd: &Value) {
-    if socket.exists() {
+    if socket_ready(socket) {
         let _ = ipc(socket, cmd);
     }
 }
@@ -196,8 +304,8 @@ pub fn media_tools_status(app: AppHandle) -> Result<MediaTools> {
     let dir = data_dir(&app)?;
     let downloaded = dir.join("bin").join("yt-dlp");
     Ok(MediaTools {
-        mpv: find_on_path("mpv").is_some(),
-        ffmpeg: find_on_path("ffmpeg").is_some(),
+        mpv: crate::ingest::tool_in("mpv", Some(dir.as_path())).is_some(),
+        ffmpeg: crate::ingest::tool_in("ffmpeg", Some(dir.as_path())).is_some(),
         ytdlp: crate::ingest::tool_in("yt-dlp", Some(dir.as_path())).is_some(),
         ytdlp_path: downloaded.display().to_string(),
     })
@@ -223,7 +331,8 @@ fn youtube_play_blocking(app: AppHandle, url: String, volume: u8) -> Result<()> 
     let dir = data_dir(&app)?;
     let socket = socket_path(&dir);
     let ytdlp = ensure_ytdlp_unlocked(&app, &dir)?;
-    ensure_mpv(&socket, &ytdlp, volume)?;
+    let mpv_bin = resolve_mpv(&app, &dir)?;
+    ensure_mpv(&socket, &socket_arg(&dir), &mpv_bin, &ytdlp, volume)?;
     // Stations are YouTube watch URLs; mpv's ytdl hook normally re-runs yt-dlp on
     // every load to resolve the direct googlevideo stream (several seconds). We
     // cache that resolved URL per station so repeat plays start near-instantly.

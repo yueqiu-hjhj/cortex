@@ -43,6 +43,8 @@ pub enum ArchiveKind {
     File,
     TarGz,
     Zip,
+    /// 7z archive — mpv's Windows builds (shinchiro) ship only as .7z.
+    SevenZ,
 }
 
 impl BinSpec {
@@ -322,7 +324,113 @@ fn write_and_extract(spec: &BinSpec, target: &Path, bytes: &[u8]) -> Result<()> 
         }
         ArchiveKind::TarGz => extract_tar_gz(spec, target, bytes),
         ArchiveKind::Zip => extract_zip(spec, target, bytes),
+        ArchiveKind::SevenZ => extract_sevenz(spec, target, bytes),
     }
+}
+
+/// Extract `inner_name(.exe)` from a 7z archive. sevenz-rust has no cheap
+/// single-member extraction, so decompress the whole archive into a temp dir
+/// and move the wanted file out. mpv's 7z unpacks to ~100 MB — transient,
+/// deleted right after.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn extract_sevenz(spec: &BinSpec, target: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = std::env::temp_dir()
+        .join(format!("cortex-{}-{}", spec.name, std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp)
+        .map_err(|e| Error::Other(format!("create {}: {e}", tmp.display())))?;
+    let result = (|| {
+        let archive = tmp.join(format!("{}.7z", spec.name));
+        fs::write(&archive, bytes)
+            .map_err(|e| Error::Other(format!("write {}: {e}", archive.display())))?;
+        sevenz_rust::decompress_file(&archive, &tmp)
+            .map_err(|e| Error::Other(format!("extract {} 7z: {e}", spec.name)))?;
+        let want = if cfg!(target_os = "windows") {
+            format!("{}.exe", spec.inner_name)
+        } else {
+            spec.inner_name.to_string()
+        };
+        let mut found: Option<PathBuf> = None;
+        find_file(&tmp, &want, &mut found);
+        let src = found.ok_or_else(|| {
+            Error::Other(format!("`{want}` not found in {} 7z archive", spec.name))
+        })?;
+        if target.exists() {
+            let _ = fs::remove_file(target);
+        }
+        // rename across volumes fails — fall back to copy.
+        fs::rename(&src, target)
+            .or_else(|_| fs::copy(&src, target).map(|_| ()))
+            .map_err(|e| Error::Other(format!("move {want}: {e}")))?;
+        chmod_x(target);
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&tmp);
+    result
+}
+
+/// Depth-first search for a file by exact name. Small trees only (mpv's 7z).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn find_file(dir: &Path, want: &str, out: &mut Option<PathBuf>) {
+    if out.is_some() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            find_file(&p, want, out);
+        } else if p.file_name().and_then(|n| n.to_str()) == Some(want) {
+            *out = Some(p);
+        }
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+/// Resolve the download URL of the latest shinchiro mpv Windows build via the
+/// GitHub releases API. Asset naming: `mpv-x86_64-YYYYMMDD-...7z` (baseline
+/// x64), `mpv-x86_64-v3-...` (needs AVX2 — skipped), `mpv-aarch64-...`.
+#[cfg(target_os = "windows")]
+pub fn latest_mpv_url() -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| Error::Other(format!("reqwest for mpv api: {e}")))?;
+    let resp = client
+        .get("https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest")
+        .header("User-Agent", "cortex-sidecar")
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| Error::Other(format!("query mpv releases: {e}")))?;
+    let v: serde_json::Value = resp
+        .json()
+        .map_err(|e| Error::Other(format!("parse mpv releases: {e}")))?;
+    pick_mpv_asset(&v).ok_or_else(|| {
+        Error::Other("no mpv-x86_64 .7z asset in the latest shinchiro release".into())
+    })
+}
+
+/// Pure asset picker over the releases-API JSON (unit-testable).
+#[cfg(target_os = "windows")]
+fn pick_mpv_asset(v: &serde_json::Value) -> Option<String> {
+    let want_prefix = if cfg!(target_arch = "aarch64") {
+        "mpv-aarch64-"
+    } else {
+        "mpv-x86_64-"
+    };
+    v["assets"].as_array()?.iter().find_map(|a| {
+        let name = a["name"].as_str()?;
+        let url = a["browser_download_url"].as_str()?;
+        // Skip the v3 (AVX2) builds: the baseline x64 runs everywhere.
+        if name.starts_with(want_prefix) && name.ends_with(".7z") && !name.contains("-v3") {
+            Some(url.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -487,6 +595,18 @@ mod tests {
         // The decoy must not have been extracted anywhere in the target dir.
         assert!(!dir.join("ffplay.exe").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn mpv_asset_picker_skips_v3_and_picks_baseline() {
+        let v = serde_json::json!({ "assets": [
+            { "name": "mpv-aarch64-20251019-git-abc.7z", "browser_download_url": "https://x/aarch64.7z" },
+            { "name": "mpv-x86_64-v3-20251019-git-abc.7z", "browser_download_url": "https://x/v3.7z" },
+            { "name": "mpv-x86_64-20251019-git-abc.7z", "browser_download_url": "https://x/baseline.7z" },
+            { "name": "mpv.com", "browser_download_url": "https://x/mpv.com" }
+        ]});
+        assert_eq!(pick_mpv_asset(&v).unwrap(), "https://x/baseline.7z");
     }
 
     #[test]

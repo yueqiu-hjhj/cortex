@@ -1289,11 +1289,28 @@ pub fn html_to_pdf(html: &str, dest: &Path) -> Result<()> {
 }
 
 pub fn which(cmd: &str) -> Option<String> {
+    // Windows PATHEXT: a bare `cmd` never matches `cmd.exe` via is_file, so
+    // probe the .exe spelling explicitly (PATH + fallback dirs alike).
+    #[cfg(windows)]
+    let exe_name = format!("{cmd}.exe");
+    let probe = |dir: &std::path::Path| -> Option<String> {
+        let bare = dir.join(cmd);
+        if bare.is_file() {
+            return Some(bare.to_string_lossy().into_owned());
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(&exe_name);
+            if exe.is_file() {
+                return Some(exe.to_string_lossy().into_owned());
+            }
+        }
+        None
+    };
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            let full = dir.join(cmd);
-            if full.is_file() {
-                return Some(full.to_string_lossy().into_owned());
+            if let Some(full) = probe(&dir) {
+                return Some(full);
             }
         }
     }
@@ -1305,15 +1322,12 @@ pub fn which(cmd: &str) -> Option<String> {
     }
     // Homebrew: Apple Silicon (/opt/homebrew) first, then Intel (/usr/local). macOS GUI
     // apps launched from Finder get a minimal PATH that omits both, so probe directly.
-    cands.push(std::path::Path::new("/opt/homebrew/bin").join(cmd));
-    cands.push(std::path::Path::new("/opt/homebrew/sbin").join(cmd));
-    cands.push(std::path::Path::new("/usr/local/bin").join(cmd));
-    cands.push(std::path::Path::new("/usr/local/sbin").join(cmd));
-    cands.push(std::path::Path::new("/usr/bin").join(cmd));
-    cands
-        .into_iter()
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+    cands.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    cands.push(std::path::PathBuf::from("/opt/homebrew/sbin"));
+    cands.push(std::path::PathBuf::from("/usr/local/bin"));
+    cands.push(std::path::PathBuf::from("/usr/local/sbin"));
+    cands.push(std::path::PathBuf::from("/usr/bin"));
+    cands.iter().find_map(|p| probe(p.as_path()))
 }
 
 /// Resolve a binary bundled as a Tauri sidecar — shipped next to the app

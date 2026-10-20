@@ -62,6 +62,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Pure-Rust tar+gz: needed by sidecars.rs to extract age archives on Linux/macOS.
 tar = "0.4"
 flate2 = "1"
+# Pure-Rust 7z extraction: mpv's Windows builds (shinchiro) ship ONLY as .7z,
+# so sidecars.rs can auto-download the player on first use like yt-dlp/ffmpeg.
+sevenz-rust = "0.6"
 
 # Pure-Rust PDF text extraction — the on-device fallback when poppler's `pdftotext`
 # CLI isn't present (iOS/Android, or a desktop without poppler). Handles text-layer
