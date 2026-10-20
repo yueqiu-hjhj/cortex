@@ -344,6 +344,8 @@
               <div class="notes-empty-title">还没有笔记</div>
               <div class="notes-empty-body">
                 {app.activeSubjectId ? "Capture ideas in Markdown for this subject." : "Capture ideas in Markdown."}
+                <br /><br />
+                💡 双链笔记：正文里写 <code>[[另一个笔记标题]]</code>，保存后上方会出现「出链 / 反向链接」栏，点击即跳转；还没写的链接也可以一键新建。
               </div>
               <button class="btn btn--primary btn--sm" type="button" onclick={newNote}>
                 <Icon name="plus" size={12} /> New note

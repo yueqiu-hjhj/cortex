@@ -29,6 +29,7 @@
   import { keybinds } from "./lib/keybinds.svelte";
   import { isMobile } from "./lib/platform";
   import * as api from "./lib/api";
+  import { jobs } from "./lib/jobs.svelte";
   import MindMapView from "./components/MindMapView.svelte";
   import MobileShell from "./shell/MobileShell.svelte";
 
@@ -117,6 +118,45 @@
       void loadExam();
     }, 1500);
     return () => clearTimeout(prefetch);
+  });
+
+  // Global OS drag-drop: drop documents on ANY view to queue them for ingest.
+  // The Add Source view registers its own handler (with its subject/topic
+  // pickers) — skip there to avoid double-queuing. Tauri's native webview
+  // drag-drop swallows HTML5 ondrop, so the webview API is the only channel.
+  $effect(() => {
+    let un: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        un = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          if (app.view === "add-source") return; // covered by AddSource's handler
+          const docExts = ["pdf", "epub", "docx", "pptx", "doc", "ppt", "txt", "md"];
+          const imgExts = ["png", "jpg", "jpeg", "webp"];
+          const dropped = event.payload.paths.filter((p) => {
+            const e = (p.split(".").pop() ?? "").toLowerCase();
+            return docExts.includes(e) || imgExts.includes(e);
+          });
+          if (dropped.length === 0) return;
+          const subjectId = app.activeSubjectId;
+          if (!subjectId) {
+            app.pushToast({ kind: "error", title: "还没有科目", body: "先新建一个科目，之后在任何页面拖入文件即可入库。" });
+            return;
+          }
+          for (const path of dropped) {
+            const name = path.split(/[\\/]/).pop() ?? path;
+            const ext = (path.split(".").pop() ?? "").toLowerCase();
+            const input: Parameters<typeof api.addSource>[0] = imgExts.includes(ext)
+              ? { subject_id: subjectId, topic_id: null, path, kind: "image", name, tags: [] }
+              : { subject_id: subjectId, topic_id: null, path, name, tags: [] };
+            jobs.start({ kind: "source", label: name, subjectId, topicId: null, run: () => api.addSource(input), onDone: () => app.refresh() });
+          }
+          app.pushToast({ kind: "info", title: `已开始导入 ${dropped.length} 个文件`, body: "进度见当前科目的任务卡片。" });
+        });
+      } catch { /* not running under Tauri */ }
+    })();
+    return () => un?.();
   });
 
   // Startup self-check. Runs once, shortly after init, and only surfaces a
@@ -376,6 +416,41 @@
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // Global OS drag-and-drop (desktop): Tauri's native webview drag-drop is ON
+  // by default and swallows HTML5 ondrop, so the ONLY way to receive Explorer
+  // drops is the webview API — registered ONCE here for the whole app. Any
+  // drop of an ingestible file (PDF/md/txt/docx/…/images) is routed to the
+  // pendingDrops queue and lands on the「添加资料」view, which drains the
+  // queue. Before this, dropping a PDF on any other view silently did
+  // nothing — the #1 "PDF 拖不进去" complaint.
+  $effect(() => {
+    if (isMobile) return; // phones have no OS drag source
+    let un: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        un = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const docExts = ["pdf", "epub", "docx", "pptx", "doc", "ppt", "txt", "md"];
+          const imgExts = ["png", "jpg", "jpeg", "webp"];
+          const dropped = event.payload.paths.filter((p) => {
+            const e = (p.split(".").pop() ?? "").toLowerCase();
+            return docExts.includes(e) || imgExts.includes(e);
+          });
+          if (dropped.length === 0) return;
+          app.pendingDrops.push(...dropped);
+          app.setView("add-source");
+          app.pushToast({
+            kind: "info",
+            title: `收到拖入的 ${dropped.length} 个文件`,
+            body: "已切换到「添加资料」，选好科目后自动开始导入。",
+          });
+        });
+      } catch { /* not running under Tauri (dev/web preview) */ }
+    })();
+    return () => un?.();
   });
 </script>
 

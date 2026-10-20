@@ -384,41 +384,28 @@
     };
   });
 
-  // OS drag-and-drop: Tauri's native webview drag-drop is ON by default, so it
-  // swallows HTML5 ondrop — we must listen via the webview API instead. Dropping
-  // files (from Finder/Explorer) anywhere on the Add Source view queues them, the
-  // same path beginUpload() uses. (Wrapped in try/catch so a browser/dev preview
-  // without the Tauri API doesn't break the view.)
+  // OS drag-and-drop is handled ONCE at App.svelte (webview-level listener);
+  // drops of ingestible files from ANY view land in app.pendingDrops and are
+  // drained here. (Draining is subject-guarded: files stay queued until a
+  // subject exists, then import through the same queueIngest path as upload.)
   $effect(() => {
-    let un: (() => void) | undefined;
-    (async () => {
-      try {
-        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-        un = await getCurrentWebview().onDragDropEvent((event) => {
-          if (event.payload.type !== "drop") return;
-          if (!guardSubject()) return;
-          const docExts = ["pdf", "epub", "docx", "pptx", "doc", "ppt", "txt", "md"];
-          const imgExts = ["png", "jpg", "jpeg", "webp"];
-          const dropped = event.payload.paths.filter((p) => {
-            const e = (p.split(".").pop() ?? "").toLowerCase();
-            return docExts.includes(e) || imgExts.includes(e);
-          });
-          if (dropped.length === 0) return;
-          for (const path of dropped) {
-            const name = path.split(/[\\/]/).pop() ?? path;
-            const ext = (path.split(".").pop() ?? "").toLowerCase();
-            const input: Parameters<typeof api.addSource>[0] = imgExts.includes(ext)
-              ? { subject_id: selectedSubjectId, topic_id: topicId, path, kind: "image", name, tags: [] }
-              : { subject_id: selectedSubjectId, topic_id: topicId, path, name, tags: [] };
-            queueIngest(input, name);
-          }
-          app.pushToast({ kind: "info", title: `Ingesting ${dropped.length} file${dropped.length === 1 ? "" : "s"}`, body: "Dropped files added to the queue." });
-          app.openSubject(selectedSubjectId);
-          app.setTab("sources");
-        });
-      } catch { /* not running under Tauri (dev/web preview) */ }
-    })();
-    return () => un?.();
+    const drops = app.pendingDrops;
+    if (drops.length === 0) return;
+    if (!guardSubject()) return; // keep queued until a subject is selected
+    const docExts = ["pdf", "epub", "docx", "pptx", "doc", "ppt", "txt", "md"];
+    const imgExts = ["png", "jpg", "jpeg", "webp"];
+    for (const path of drops) {
+      const name = path.split(/[\\/]/).pop() ?? path;
+      const ext = (path.split(".").pop() ?? "").toLowerCase();
+      const input: Parameters<typeof api.addSource>[0] = imgExts.includes(ext)
+        ? { subject_id: selectedSubjectId, topic_id: topicId, path, kind: "image", name, tags: [] }
+        : { subject_id: selectedSubjectId, topic_id: topicId, path, name, tags: [] };
+      queueIngest(input, name);
+    }
+    app.pendingDrops = [];
+    app.pushToast({ kind: "info", title: `Ingesting ${drops.length} file${drops.length === 1 ? "" : "s"}`, body: "Dropped files added to the queue." });
+    app.openSubject(selectedSubjectId);
+    app.setTab("sources");
   });
 </script>
 

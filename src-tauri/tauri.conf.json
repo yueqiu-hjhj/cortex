@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "Cortex",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9222",
         "x": 80,
         "y": 60,
         "width": 1400,

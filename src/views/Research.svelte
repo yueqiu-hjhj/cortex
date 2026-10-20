@@ -1318,6 +1318,11 @@
         <div class="empty">
           <p>还没有论文。</p>
           <p class="hint">从「文献」搜索后保存，或点右上角导入 BibTeX。</p>
+          <p class="hint">
+            科研写作动线：①「文献」多源检索 → 收藏论文；② 在阅读页划选存<strong>摘录</strong>；
+            ③ 回到这里勾选摘录点 <strong>成稿</strong> 生成带引用编号的综述；
+            ④ <strong>成稿库</strong> 里逐句改写、审阅升级、导出 Word/LaTeX。
+          </p>
         </div>
       {:else}
         {#each papers as p (p.id)}

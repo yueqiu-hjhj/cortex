@@ -367,6 +367,10 @@ class AppStore {
     this.settingsTab = tab ?? null;
     this.setView("settings");
   }
+  // Files dropped on ANY view. App.svelte registers the single webview-level
+  // drag-drop listener and routes every drop here; AddSource drains the queue
+  // (subject-guarded) so PDFs/md/images can be dropped without navigating first.
+  pendingDrops = $state<string[]>([]);
   // Subject detail panel (modal) — opened by clicking the subject header.
   subjectPanelOpen = $state(false);
   openSubjectPanel() { this.subjectPanelOpen = true; }

@@ -35,10 +35,18 @@
   async function searchPapers() {
     if (!searchQuery.trim() || searchBusy) return;
     searchBusy = true; error = null;
-    try { searchResult = await api.literatureSearch(searchQuery.trim(), app.activeSubjectId, 20); }
+    try { searchResult = await api.literatureSearch(searchQuery.trim(), app.activeSubjectId, 30); }
     catch (e) { error = String(e); }
     finally { searchBusy = false; }
   }
+  // Source diagnostics: sources that were tried but contributed nothing (they
+  // fail silently by design — timeout / rate limit / network) so "结果怎么这么
+  // 少" always has a visible answer on screen.
+  const failedSources = $derived.by(() => {
+    if (!searchResult) return [];
+    const ok = new Set(searchResult.sources_succeeded);
+    return searchResult.sources_attempted.filter((s) => !ok.has(s));
+  });
 
   // 收藏：把一条检索命中写进 papers 表（Research 页的阅读清单）。
   // 按 DOI 去重由后端保证，所以重复点也不会产生两条记录。
@@ -340,6 +348,9 @@
     <button class="btn primary" disabled={searchBusy || !searchQuery.trim()} onclick={() => void searchPapers()}>{searchBusy ? "检索中…" : "多源检索"}</button>
     {#if searchResult}
       <p class="mono">{searchResult.hits.length} 篇 · {searchResult.took_ms} ms · 返回结果的来源：{searchResult.sources_succeeded.join(", ") || "无"}</p>
+      {#if failedSources.length}
+        <p class="mono" style:color="var(--warn, #c8a24a)">⚠ 未返回结果的来源（超时/限流/网络）：{failedSources.join(", ")} —— 重试或换关键词通常能补齐。</p>
+      {/if}
       {#each searchResult.hits as hit}
         <div class="search-hit">
           <button class="btn" onclick={() => readHit(hit)}>{hit.title}</button>

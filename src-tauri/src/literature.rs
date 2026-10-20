@@ -29,7 +29,7 @@ const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 const OPENALEX_BASE: &str = "https://api.openalex.org/works";
 const S2_BASE: &str = "https://api.semanticscholar.org/graph/v1/paper/search";
 const POLITE_MAILTO: &str = "cortex@local";
-const SOURCE_TIMEOUT_SECS: u64 = 6;
+const SOURCE_TIMEOUT_SECS: u64 = 10;
 const RRF_K: f64 = 60.0;
 
 #[derive(Debug, Clone)]
@@ -195,7 +195,7 @@ fn first_author_year(s: &serde_json::Value) -> (Vec<String>, Option<i64>) {
 pub fn search_arxiv(query: &str) -> Vec<RawHit> {
     let client = http();
     let resp = match client.get(ARXIV_BASE)
-        .query(&[("search_query", format!("all:\"{}\"", query)), ("max_results", "15".to_string())])
+        .query(&[("search_query", format!("all:\"{}\"", query)), ("max_results", "25".to_string())])
         .send()
     {
         Ok(r) if r.status().is_success() => r,
@@ -258,7 +258,7 @@ fn strip_tags(s: String) -> String {
 pub fn search_crossref(query: &str) -> Vec<RawHit> {
     let client = http();
     let resp = match client.get(CROSSREF_BASE)
-        .query(&[("query.bibliographic", query), ("rows", "15"), ("mailto", POLITE_MAILTO)])
+        .query(&[("query.bibliographic", query), ("rows", "25"), ("mailto", POLITE_MAILTO)])
         .send()
     {
         Ok(r) if r.status().is_success() => r,
@@ -293,7 +293,7 @@ pub fn search_crossref(query: &str) -> Vec<RawHit> {
 pub fn search_openalex(query: &str) -> Vec<RawHit> {
     let client = http();
     let resp = match client.get(OPENALEX_BASE)
-        .query(&[("search", query), ("per-page", "15"), ("mailto", POLITE_MAILTO)])
+        .query(&[("search", query), ("per-page", "25"), ("mailto", POLITE_MAILTO)])
         .send()
     {
         Ok(r) if r.status().is_success() => r,
@@ -336,7 +336,7 @@ pub fn search_semantic_scholar(query: &str) -> Vec<RawHit> {
     let client = http();
     let fields = "title,authors,year,venue,abstract,externalIds,url,citationCount";
     let resp = match client.get(S2_BASE)
-        .query(&[("query", query), ("limit", "15"), ("fields", fields)])
+        .query(&[("query", query), ("limit", "25"), ("fields", fields)])
         .send()
     {
         Ok(r) if r.status().is_success() => r,
