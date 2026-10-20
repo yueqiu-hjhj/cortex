@@ -100,6 +100,7 @@
   $effect(() => {
     const sid = app.activeSubjectId ?? null;
     void load(sid);
+    void loadVault();
   });
 
   // Escape key exits fullscreen.
@@ -111,6 +112,40 @@
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  // ── vault layer: the .md file is the source of truth ─────────────────────
+  // Every save mirrors the note to a Markdown file on disk, and a startup pass
+  // pulls back anything edited in Obsidian / by an AI agent. This bar makes
+  // that contract visible: where the vault is, how much is actually on disk,
+  // and a manual rescan for edits made while the app was open.
+  let vault = $state<api.VaultStatus | null>(null);
+  let vaultBusy = $state(false);
+
+  async function loadVault() {
+    try {
+      vault = await api.vaultStatus();
+    } catch {
+      vault = null;
+    }
+  }
+
+  async function rescanVault() {
+    if (vaultBusy) return;
+    vaultBusy = true;
+    try {
+      vault = await api.vaultReindex();
+      await load(app.activeSubjectId ?? null);
+      app.pushToast({
+        kind: "success",
+        title: "知识库已同步",
+        body: `${vault.files} 个 Markdown 文件 · ${vault.on_disk}/${vault.notes} 篇笔记已落盘`,
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "扫描失败", body: String(e) });
+    } finally {
+      vaultBusy = false;
+    }
+  }
 
   async function load(sid: string | null) {
     loading = true;
@@ -313,6 +348,24 @@
       </aside>
     {:else}
       <aside class="notes-list">
+        <!-- Where the Markdown actually lives. The note open in the editor is
+             the same file Obsidian opens; the button pulls in edits made there. -->
+        {#if vault}
+          <div class="vault-bar" title="{vault.root}（点击「重扫」把外部改动拉回来）">
+            <span class="vault-dot" class:is-custom={vault.custom}></span>
+            <span class="vault-path">{vault.root}</span>
+            <span class="vault-count">{vault.on_disk}/{vault.notes}</span>
+            <button
+              type="button"
+              class="vault-rescan"
+              onclick={rescanVault}
+              disabled={vaultBusy}
+              title="重新扫描磁盘：把在 Obsidian 或其他编辑器里改过的内容拉回来"
+            >
+              {vaultBusy ? "扫描中" : "重扫"}
+            </button>
+          </div>
+        {/if}
         <div class="notes-list-head">
           <span class="notes-list-title">笔记</span>
           <div class="notes-list-head-actions">
@@ -656,12 +709,50 @@
     overflow: hidden;
   }
 
+  /* Vault bar: path + how many notes are on disk + manual rescan. */
+  .vault-bar {
+    flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px 6px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .vault-dot {
+    flex: none;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    opacity: .75;
+  }
+  .vault-dot.is-custom { background: #c98a2e; }
+  .vault-path {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+  .vault-count {
+    flex: none;
+    opacity: .7;
+    font-variant-numeric: tabular-nums;
+  }
+  .vault-rescan {
+    flex: none;
+    padding: 2px 7px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .vault-rescan:hover:not(:disabled) { color: var(--fg-bright); border-color: var(--border-strong); }
+  .vault-rescan:disabled { opacity: .5; cursor: default; }
+
   .notes-list-head {
     flex: none;
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 10px 8px 10px 12px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);    background: var(--surface-2);
   }
 
   .notes-list-title {

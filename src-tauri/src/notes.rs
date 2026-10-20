@@ -30,7 +30,9 @@ pub fn create_note(
     )?;
     // [[double links]] index — rebuilt on every save (0045).
     crate::note_links::rebuild(&c, &id, &body)?;
-    repo::get_note(&c, &id)
+    let note = repo::get_note(&c, &id)?;
+    mirror_to_vault(&state, &c, &note);
+    Ok(note)
 }
 
 #[tauri::command]
@@ -55,7 +57,22 @@ pub fn update_note(
     let c = state.db.lock().unwrap();
     repo::update_note(&c, &id, &title, &body)?;
     crate::note_links::rebuild(&c, &id, &body)?;
-    repo::get_note(&c, &id)
+    let note = repo::get_note(&c, &id)?;
+    mirror_to_vault(&state, &c, &note);
+    Ok(note)
+}
+
+/// Push a saved note out to its Markdown file (vault layer, P1). Deliberately
+/// best-effort: the DB row is already committed, so a transient filesystem
+/// error (file locked by an editor, vault on a detached drive) is logged rather
+/// than reported as a failed save. The next save or startup pass repairs it.
+fn mirror_to_vault(state: &AppState, c: &rusqlite::Connection, note: &Note) {
+    let Some(root) = crate::vault::root_for(c, state.data_dir.as_deref()) else {
+        return;
+    };
+    if let Err(e) = crate::vault::write_note(c, &root, note) {
+        eprintln!("[vault] could not write note {}: {e}", note.id);
+    }
 }
 
 /// Notes that link to `title` via [[double links]] (backlinks panel).
@@ -75,7 +92,92 @@ pub fn note_resolve_link(state: State<AppState>, target: String) -> Result<Optio
 #[tauri::command]
 pub fn delete_note(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
-    repo::delete_note(&c, &id)
+    use rusqlite::OptionalExtension;
+    let rel: Option<String> = c
+        .query_row(
+            "SELECT vault_path FROM notes WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    repo::delete_note(&c, &id)?;
+    // Only remove the file after the row is gone, so a failed delete never
+    // leaves a note whose DB row points at a missing file.
+    if let (Some(root), Some(rel)) = (
+        crate::vault::root_for(&c, state.data_dir.as_deref()),
+        rel.filter(|p| !p.trim().is_empty()),
+    ) {
+        crate::vault::remove_note(&root, &rel);
+    }
+    Ok(())
+}
+
+/// Where the vault lives, and how much of the library is already on disk.
+/// Surfaced in Settings so the user can see (and copy) the path, and confirm
+/// that notes from another editor were picked up.
+#[derive(serde::Serialize)]
+pub struct VaultStatus {
+    pub root: String,
+    pub files: usize,
+    pub notes: usize,
+    pub on_disk: usize,
+    /// True when the path came from the `vault_path` setting rather than the
+    /// app-private default.
+    pub custom: bool,
+}
+
+#[tauri::command]
+pub fn vault_status(state: State<AppState>) -> Result<VaultStatus> {
+    let c = state.db.lock().unwrap();
+    let root = crate::vault::root_for(&c, state.data_dir.as_deref()).unwrap_or_default();
+    let custom = repo::get_setting(&c, crate::vault::SETTING_VAULT_PATH)?
+        .map(|p| !p.trim().is_empty())
+        .unwrap_or(false);
+    let notes: i64 = c.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))?;
+    let on_disk: i64 = c.query_row(
+        "SELECT COUNT(*) FROM notes WHERE vault_path IS NOT NULL AND vault_path<>''",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(VaultStatus {
+        files: crate::vault::count_files(&root),
+        root: root.to_string_lossy().into_owned(),
+        notes: notes as usize,
+        on_disk: on_disk as usize,
+        custom,
+    })
+}
+
+/// Point the vault at a directory (an existing Obsidian vault, a new folder,
+/// or empty to fall back to the app default). Immediately reindexes so the
+/// library reflects whatever is already in there, then exports any note that
+/// has no file yet.
+#[tauri::command]
+pub fn vault_set_path(state: State<AppState>, path: String) -> Result<VaultStatus> {
+    {
+        let c = state.db.lock().unwrap();
+        if path.trim().is_empty() {
+            c.execute(
+                "DELETE FROM settings WHERE key=?1",
+                rusqlite::params![crate::vault::SETTING_VAULT_PATH],
+            )?;
+        } else {
+            repo::set_setting(&c, crate::vault::SETTING_VAULT_PATH, path.trim())?;
+        }
+    }
+    vault_reindex(state)
+}
+
+/// Rescan the vault now (the manual equivalent of the startup pass).
+#[tauri::command]
+pub fn vault_reindex(state: State<AppState>) -> Result<VaultStatus> {
+    let c = state.db.lock().unwrap();
+    let root = crate::vault::root_for(&c, state.data_dir.as_deref()).unwrap_or_default();
+    crate::vault::reindex(&c, &root)?;
+    crate::vault::export_missing(&c, &root)?;
+    drop(c);
+    vault_status(state)
 }
 
 /// Convert a note into a first-class source: create a `kind="note"` source,

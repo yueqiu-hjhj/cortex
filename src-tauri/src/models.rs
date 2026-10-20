@@ -568,6 +568,9 @@ pub struct Note {
     pub source_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Path of the Markdown file backing this note, relative to the vault root
+    /// (`notes/标题.md`). `None` until the note has been written to disk.
+    pub vault_path: Option<String>,
 }
 
 // ---- calendar events / tasks ------------------------------------------

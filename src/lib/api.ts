@@ -1351,6 +1351,8 @@ export interface Note {
   source_id: string | null;
   created_at: number;
   updated_at: number;
+  /** Markdown file backing this note, relative to the vault root. */
+  vault_path: string | null;
 }
 export const createNote = (
   title: string,
@@ -1377,6 +1379,21 @@ export const noteResolveLink = (target: string) =>
 export const deleteNote = (id: string) => invoke<void>("delete_note", { id });
 export const noteToSource = (id: string) =>
   invoke<IngestResult>("note_to_source", { id });
+
+// ---- vault layer: notes as Markdown files on disk ----
+export interface VaultStatus {
+  root: string;
+  files: number;
+  notes: number;
+  on_disk: number;
+  custom: boolean;
+}
+export const vaultStatus = () => invoke<VaultStatus>("vault_status");
+/** Point the vault at a directory (e.g. an existing Obsidian vault); "" resets. */
+export const vaultSetPath = (path: string) =>
+  invoke<VaultStatus>("vault_set_path", { path });
+/** Rescan the vault now — picks up files edited outside the app. */
+export const vaultReindex = () => invoke<VaultStatus>("vault_reindex");
 
 // ---- calendar (events + tasks) ----
 export interface CalEvent {

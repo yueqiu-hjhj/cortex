@@ -61,6 +61,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0054_cron.sql"),
     include_str!("../migrations/0055_cron_actions.sql"),
     include_str!("../migrations/0056_cron_auto_flashcards.sql"),
+    // 0057 was written for the PDF reader but never registered here, so the
+    // column it adds was silently missing from every build. APPENDED rather
+    // than inserted in place: user_version is positional, so slot 57 is what
+    // existing databases will migrate next.
+    include_str!("../migrations/0057_excerpt_rects.sql"),
+    include_str!("../migrations/0058_vault_notes.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.
@@ -97,7 +103,7 @@ impl AppState {
         run_migrations(&conn)?;
         Ok(Self {
             db: Mutex::new(conn),
-            data_dir: None,
+            data_dir: db_path.parent().map(|p| p.to_path_buf()),
         })
     }
 

@@ -56,6 +56,7 @@ pub mod fallback;
 pub mod recovery;
 pub mod xmind;
 pub mod wiki;
+pub mod vault;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
@@ -228,6 +229,31 @@ pub fn run() {
                     if let Some(state) = handle.try_state::<AppState>() {
                         if let Ok(c) = state.db.lock() {
                             let _ = sync::repoint_source_files(&c, &sources_dir);
+                        }
+                    }
+                    // Vault layer (P1): the Markdown file is the source of truth,
+                    // so reconcile the index with disk here — not inside setup() —
+                    // because a vault pointed at an existing Obsidian folder can
+                    // hold thousands of files and must never delay first paint.
+                    // Order matters: adopt files first, then export the notes that
+                    // still have no file, so nothing is imported twice.
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        if let Ok(c) = state.db.lock() {
+                            if let Some(root) = crate::vault::root_for(&c, state.data_dir.as_deref())
+                            {
+                                match crate::vault::reindex(&c, &root) {
+                                    Ok(s) => eprintln!(
+                                        "[vault] {} file(s): {} adopted, {} updated, {} orphaned",
+                                        s.files, s.adopted, s.updated, s.orphaned
+                                    ),
+                                    Err(e) => eprintln!("[vault] reindex failed: {e}"),
+                                }
+                                match crate::vault::export_missing(&c, &root) {
+                                    Ok(0) => {}
+                                    Ok(n) => eprintln!("[vault] exported {n} note(s) to disk"),
+                                    Err(e) => eprintln!("[vault] export failed: {e}"),
+                                }
+                            }
                         }
                     }
                     // Resume transcriptions interrupted by a quit/crash: any audio
@@ -616,6 +642,9 @@ pub fn run() {
             notes::update_note,
             notes::delete_note,
             notes::note_to_source,
+            notes::vault_status,
+            notes::vault_set_path,
+            notes::vault_reindex,
             // calendar
             calendar::create_event,
             calendar::list_events,

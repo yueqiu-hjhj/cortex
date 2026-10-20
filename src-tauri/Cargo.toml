@@ -26,7 +26,9 @@ tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 # Scheduled local notifications (deadline alerts) need concrete fire dates for
 # tauri-plugin-notification's Schedule::At — which speaks time::OffsetDateTime.
-time = "0.3"
+# `formatting` is for the vault layer: the Markdown frontmatter needs RFC 3339
+# timestamps (OffsetDateTime::format), which is gated behind that feature.
+time = { version = "0.3", features = ["formatting"] }
 base64 = "0.22"
 percent-encoding = "2"
 # Sync credential encryption: XChaCha20-Poly1305 AEAD (chacha20poly1305) with a key

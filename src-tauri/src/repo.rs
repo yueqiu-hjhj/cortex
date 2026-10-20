@@ -1982,7 +1982,7 @@ pub fn delete_all_content(conn: &Connection) -> Result<()> {
 
 // ---- notes -------------------------------------------------------------
 
-fn map_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
+pub(crate) fn map_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
     Ok(Note {
         id: r.get(0)?,
         subject_id: r.get(1)?,
@@ -1992,11 +1992,12 @@ fn map_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
         source_id: r.get(5)?,
         created_at: r.get(6)?,
         updated_at: r.get(7)?,
+        vault_path: r.get(8)?,
     })
 }
 
 const NOTE_COLS: &str =
-    "id, subject_id, topic_id, title, body, source_id, created_at, updated_at";
+    "id, subject_id, topic_id, title, body, source_id, created_at, updated_at, vault_path";
 
 pub fn insert_note(
     conn: &Connection,
