@@ -327,7 +327,7 @@ pub fn purge(data_dir: &Path, dir_name: &str) -> Result<()> {
     }
     // Deletion via trash is the polite move on user directories; fall back to a
     // plain remove when no trash command exists.
-    let ok = std::process::Command::new("gio")
+    let ok = crate::ingest::new_cmd("gio")
         .args(["trash", dir.to_str().unwrap_or("")])
         .status()
         .map(|s| s.success())

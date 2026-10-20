@@ -92,7 +92,6 @@ fn now_ms() -> i64 {
 
 /// Open a URL in the user's default browser. Best-effort across platforms.
 fn open_browser(url: &str) {
-    use std::process::Command;
     #[cfg(target_os = "linux")]
     let cmds: &[&str] = &["xdg-open"];
     #[cfg(target_os = "macos")]
@@ -103,14 +102,14 @@ fn open_browser(url: &str) {
     let cmds: &[&str] = &["xdg-open", "open"];
 
     for c in cmds {
-        if Command::new(c).arg(url).spawn().is_ok() {
+        if crate::ingest::new_cmd(c).arg(url).spawn().is_ok() {
             return;
         }
     }
     // Last resort on Windows: `cmd /C start`.
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+        let _ = crate::ingest::new_cmd("cmd").args(["/C", "start", "", url]).spawn();
     }
 }
 

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::Duration;
 use tauri::Manager;
@@ -130,7 +130,7 @@ impl McpSession {
         if cfg.command.trim().is_empty() {
             return Err(Error::Other(format!("MCP server {} 缺少 command", cfg.name)));
         }
-        let mut child = Command::new(cfg.command.trim())
+        let mut child = crate::ingest::new_cmd(cfg.command.trim())
             .args(&cfg.args)
             .envs(&cfg.env)
             .stdin(Stdio::piped())

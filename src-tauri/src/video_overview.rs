@@ -98,7 +98,7 @@ fn tts_mp3(
 
 /// ffprobe a media file's duration in seconds.
 fn probe_duration(ffprobe: &Path, file: &Path) -> Result<f64> {
-    let out = std::process::Command::new(ffprobe)
+    let out = crate::ingest::new_cmd(ffprobe)
         .args([
             "-v", "error",
             "-show_entries", "format=duration",
@@ -121,7 +121,7 @@ fn encode_slide(
     mp3: &Path,
     out: &Path,
 ) -> Result<()> {
-    let status = std::process::Command::new(ffmpeg)
+    let status = crate::ingest::new_cmd(ffmpeg)
         .args(["-y", "-loglevel", "error", "-loop", "1", "-framerate", "10", "-i"])
         .arg(png)
         .args(["-i"])
@@ -146,7 +146,7 @@ fn encode_slide(
 
 /// Concatenate the per-slide MP4s (stream copy — no re-encode).
 fn concat(ffmpeg: &Path, list_file: &Path, out: &Path) -> Result<()> {
-    let status = std::process::Command::new(ffmpeg)
+    let status = crate::ingest::new_cmd(ffmpeg)
         .args(["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(list_file)
         .args(["-c", "copy"])
@@ -229,7 +229,7 @@ pub fn synthesize(
 
         if narration.is_empty() {
             let silent = work.join(format!("narr_{i}.mp3"));
-            let status = std::process::Command::new(&ffmpeg)
+            let status = crate::ingest::new_cmd(&ffmpeg)
                 .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "3"])
                 .arg(&silent)
                 .status()

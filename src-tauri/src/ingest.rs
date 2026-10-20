@@ -301,7 +301,6 @@ fn decode_entities(s: &str) -> String {
 /// output returns `Ok((empty, Some(warning)))` rather than an error. Only a real
 /// non-zero exit with stderr is a hard error.
 fn pdf_to_text(path: &str, cfg: &PdfEngineCfg) -> Result<(String, Option<String>)> {
-    use std::process::Command;
     let src = Path::new(path);
     if !src.exists() {
         return Err(Error::NotFound(format!("file not found: {path}")));
@@ -325,7 +324,7 @@ fn pdf_to_text(path: &str, cfg: &PdfEngineCfg) -> Result<(String, Option<String>
     // failure with a real message, surface it; an empty/soft result falls through to
     // the pure-Rust pass below (some PDFs pdftotext can't read but pdf-extract can).
     if which("pdftotext").is_some() {
-        match Command::new("pdftotext")
+        match new_cmd("pdftotext")
             .args(["-layout", "-enc", "UTF-8"])
             .arg(src)
             .arg("-")
@@ -370,7 +369,6 @@ fn pdf_to_text(path: &str, cfg: &PdfEngineCfg) -> Result<(String, Option<String>
 /// understands. First run downloads models and can take minutes — same blocking
 /// model as the LibreOffice/Whisper paths. Errors are soft: callers fall back.
 fn docling_to_text(path: &Path, bin: &str) -> Result<String> {
-    use std::process::Command;
     let out = std::env::temp_dir().join(format!(
         "cortex-docling-{}-{}",
         std::process::id(),
@@ -380,7 +378,7 @@ fn docling_to_text(path: &Path, bin: &str) -> Result<String> {
             .unwrap_or(0)
     ));
     std::fs::create_dir_all(&out)?;
-    let res = Command::new(bin)
+    let res = new_cmd(bin)
         .args(["--to", "md", "--output"])
         .arg(&out)
         .arg(path)
@@ -443,7 +441,6 @@ fn pdf_extract_text_layer(path: &Path) -> Option<String> {
 /// Unlike before, a missing binary or failed conversion is a hard `Err` (with
 /// actionable detail) rather than an `Ok(empty)` that silently makes an empty draft.
 fn libreoffice_to_text(path: &str) -> Result<(String, Option<String>)> {
-    use std::process::Command;
     let src = Path::new(path);
     if !src.exists() {
         return Err(Error::NotFound(format!("file not found: {path}")));
@@ -475,7 +472,7 @@ fn libreoffice_to_text(path: &str) -> Result<(String, Option<String>)> {
     std::fs::create_dir_all(&outdir)?;
 
     let bin = libreoffice_bin();
-    let output = Command::new(&bin)
+    let output = new_cmd(&bin)
         .arg(lo_profile_arg(&outdir))
         .args(["--headless", "--convert-to", "txt:Text", "--outdir"])
         .arg(&outdir)
@@ -509,7 +506,6 @@ fn libreoffice_to_text(path: &str) -> Result<(String, Option<String>)> {
 /// result to `dest`. Returns a hard `Err` (with stderr) if conversion fails so
 /// callers never persist a half-ingested source silently.
 pub fn libreoffice_to_pdf(path: &str, dest: &Path) -> Result<()> {
-    use std::process::Command;
     let src = Path::new(path);
     if !src.exists() {
         return Err(Error::NotFound(format!("file not found: {path}")));
@@ -518,7 +514,7 @@ pub fn libreoffice_to_pdf(path: &str, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(&outdir)?;
 
     let bin = libreoffice_bin();
-    let output = Command::new(&bin)
+    let output = new_cmd(&bin)
         .arg(lo_profile_arg(&outdir))
         .args(["--headless", "--convert-to", "pdf", "--outdir"])
         .arg(&outdir)
@@ -785,7 +781,6 @@ fn percent_decode(s: &str) -> String {
 /// on PATH; otherwise returns an actionable error. Prefers manual subs, falls
 /// back to auto-generated captions.
 fn youtube_to_text(url: &str) -> Result<(String, Option<String>)> {
-    use std::process::Command;
     // No yt-dlp (e.g. on mobile)? Fall back to a pure-HTTP caption fetch — no binary.
     let Some(bin) = tool("yt-dlp") else {
         return youtube_via_http(url);
@@ -793,7 +788,7 @@ fn youtube_to_text(url: &str) -> Result<(String, Option<String>)> {
     let dir = std::env::temp_dir().join(format!("cortex-yt-{}", crate::db::new_id()));
     std::fs::create_dir_all(&dir)?;
     let out_tmpl = dir.join("%(id)s.%(ext)s");
-    let out = Command::new(&bin)
+    let out = new_cmd(&bin)
         .args([
             "--skip-download",
             "--write-subs",
@@ -1180,7 +1175,6 @@ pub fn pdf_page_image(path: &str, page: usize) -> Result<Vec<u8>> {
 
 /// Shared pdftoppm runner: pages `from..=to` (None from = 1). Returns PNG bytes.
 fn rasterize(path: &str, from: Option<usize>, to: usize) -> Result<Vec<Vec<u8>>> {
-    use std::process::Command;
     let Some(pdftoppm) = which("pdftoppm") else {
         return Err(Error::Other(
             "pdftoppm (poppler) not found — needed to OCR scanned PDFs".into(),
@@ -1196,7 +1190,7 @@ fn rasterize(path: &str, from: Option<usize>, to: usize) -> Result<Vec<Vec<u8>>>
     }
     args.push("-l".into());
     args.push(to.to_string());
-    let out = Command::new(&pdftoppm)
+    let out = new_cmd(&pdftoppm)
         .args(&args)
         .arg(path)
         .arg(&prefix)
@@ -1249,7 +1243,6 @@ fn chromium_bin() -> Option<String> {
 /// so this is a pure render-to-file step. Errors are hard (never a silent
 /// empty/zero-byte PDF) so the UI can surface a real failure.
 pub fn html_to_pdf(html: &str, dest: &Path) -> Result<()> {
-    use std::process::Command;
     let tmp = std::env::temp_dir().join(format!("cortex-export-{}", crate::db::new_id()));
     std::fs::create_dir_all(&tmp)?;
     let html_path = tmp.join("doc.html");
@@ -1264,7 +1257,7 @@ pub fn html_to_pdf(html: &str, dest: &Path) -> Result<()> {
         pdf_arg.push(dest);
         let mut user_data = std::ffi::OsString::from("--user-data-dir=");
         user_data.push(&profile);
-        let out = Command::new(&bin)
+        let out = new_cmd(&bin)
             .arg("--headless")
             .arg("--no-sandbox")
             .arg("--disable-gpu")
@@ -1355,6 +1348,23 @@ pub fn tool_in(name: &str, data_dir: Option<&std::path::Path>) -> Option<String>
     bundled(name)
         .or_else(|| runtime_fetched(name, data_dir))
         .or_else(|| which(name))
+}
+
+/// Spawn a child process WITHOUT the black console window Windows otherwise
+/// pops for console-subsystem children (mpv, yt-dlp, pdftotext, docling, ...)
+/// when the parent is a GUI app. Drop-in replacement for `Command::new` —
+/// the returned Command chains exactly the same (arg/env/output/...).
+pub(crate) fn new_cmd(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: GUI parent + console child = visible console
+        // window unless suppressed. mpv even stays alive for the whole
+        // playback session, so the window would linger forever.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
 }
 
 /// Legacy single-arg lookup; equivalent to tool_in(name, None). Kept for

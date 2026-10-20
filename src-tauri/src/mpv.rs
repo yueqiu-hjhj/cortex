@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::models::MediaTools;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -123,7 +123,7 @@ fn ensure_mpv(socket: &Path, ytdlp: &Path, volume: u8) -> Result<()> {
         let _ = std::fs::remove_file(socket);
     }
     let mpv_bin = find_on_path("mpv").unwrap_or_else(|| PathBuf::from("mpv"));
-    let mut cmd = Command::new(&mpv_bin);
+    let mut cmd = crate::ingest::new_cmd(&mpv_bin);
     cmd.arg("--no-video")
         .arg("--idle=yes")
         .arg("--no-terminal")
@@ -413,7 +413,7 @@ fn resolve_direct(ytdlp: &Path, url: &str) -> Option<String> {
     if is_playlist_url(url) {
         return None;
     }
-    let out = Command::new(ytdlp)
+    let out = crate::ingest::new_cmd(ytdlp)
         .arg("-g")
         .arg("-f")
         .arg("bestaudio")

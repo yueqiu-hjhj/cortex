@@ -140,7 +140,7 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
             bin("age", &data_dir, &c)
         };
         run(
-            Command::new(&age_bin)
+            crate::ingest::new_cmd(&age_bin)
                 .arg("-r")
                 .arg(recipient)
                 .arg("-o")
@@ -155,7 +155,7 @@ pub async fn backup_now(app: AppHandle) -> Result<String> {
             bin("rclone", &data_dir, &c)
         };
         run(
-            Command::new(&rclone_bin).arg("copyto").arg(&tmp_enc).arg(&dest),
+            crate::ingest::new_cmd(&rclone_bin).arg("copyto").arg(&tmp_enc).arg(&dest),
             "rclone",
         )?;
 

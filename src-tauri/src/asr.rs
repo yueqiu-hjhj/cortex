@@ -112,7 +112,7 @@ mod inhibitor {
             let mut c = CHILD.lock().unwrap();
             if c.is_none() {
                 // -i: prevent idle system sleep while we run.
-                *c = std::process::Command::new("caffeinate").arg("-i").spawn().ok();
+                *c = crate::ingest::new_cmd("caffeinate").arg("-i").spawn().ok();
             }
         }
         #[cfg(target_os = "linux")]
@@ -120,7 +120,7 @@ mod inhibitor {
             let mut c = CHILD.lock().unwrap();
             if c.is_none() {
                 // Best-effort: no systemd → no inhibitor, transcription still runs.
-                *c = std::process::Command::new("systemd-inhibit")
+                *c = crate::ingest::new_cmd("systemd-inhibit")
                     .args([
                         "--what=sleep:idle",
                         "--who=Cortex",

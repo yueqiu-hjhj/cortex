@@ -4168,7 +4168,7 @@ pub async fn install_dependencies() -> Result<String> {
         let path = std::env::var("PATH")
             .map(|p| format!("{extra}:{p}"))
             .unwrap_or_else(|_| extra.to_string());
-        let out = std::process::Command::new("sh")
+        let out = crate::ingest::new_cmd("sh")
             .arg("-c")
             .arg(&brew_cmd)
             .env("PATH", path)
@@ -4264,7 +4264,6 @@ fn transcribe(
     remote: Option<&RemoteWhisper>,
     remote_model: &str,
 ) -> (String, Option<String>) {
-    use std::process::Command;
     let outdir = std::env::temp_dir().join(format!("cortex-asr-{}", crate::db::new_id()));
     let _ = std::fs::create_dir_all(&outdir);
 
@@ -4315,7 +4314,7 @@ fn transcribe(
     // final on-save transcription pays for the markedly more accurate small model.
     let (cli_model, fw_model) = if allow_install { ("small", "small.en") } else { ("base", "base.en") };
     if let Some(bin) = whisper_bin {
-        let out = Command::new(&bin)
+        let out = crate::ingest::new_cmd(&bin)
             .arg(file)
             .args(["--model", cli_model, "--language", "en", "--output_format", "txt", "--output_dir"])
             .arg(&outdir)
@@ -4335,7 +4334,7 @@ fn transcribe(
         let wav = outdir.join("rec.wav");
         let ffmpeg = ingest::which("ffmpeg");
         let converted = ffmpeg.is_some()
-            && Command::new(ffmpeg.as_deref().unwrap_or("ffmpeg"))
+            && crate::ingest::new_cmd(ffmpeg.as_deref().unwrap_or("ffmpeg"))
                 .args(["-y", "-i"])
                 .arg(file)
                 .args(["-ar", "16000", "-ac", "1"])
@@ -4344,7 +4343,7 @@ fn transcribe(
                 .map(|o| o.status.success())
                 .unwrap_or(false);
         let target = if converted { wav.clone() } else { file.to_path_buf() };
-        let out = Command::new(&bin).arg("-f").arg(&target).arg("-otxt").arg("-of").arg(outdir.join("out")).output();
+        let out = crate::ingest::new_cmd(&bin).arg("-f").arg(&target).arg("-otxt").arg("-of").arg(outdir.join("out")).output();
         if let Ok(o) = out {
             if o.status.success() {
                 if let Ok(t) = std::fs::read_to_string(outdir.join("out.txt")) {
@@ -4382,7 +4381,7 @@ fn transcribe(
                     );
                     file.to_path_buf()
                 }
-                Some(ff) => match Command::new(&ff)
+                Some(ff) => match crate::ingest::new_cmd(&ff)
                     .args(["-y", "-i"])
                     .arg(file)
                     .args(["-ar", "16000", "-ac", "1"])
@@ -4411,7 +4410,7 @@ fn transcribe(
             // condition_on_previous_text=False so one bad segment can't cascade into
             // the repetition loops that collapsed long lectures into a page of noise.
             let runner = format!("import sys\nfrom faster_whisper import WhisperModel\nm=WhisperModel('{fw_model}',device='cpu',compute_type='int8',download_root=sys.argv[2])\nsegs,_=m.transcribe(sys.argv[1],language='en',vad_filter=True,condition_on_previous_text=False)\nprint(' '.join(s.text.strip() for s in segs))");
-            let out = Command::new(&py).arg("-c").arg(&runner).arg(&decodable).arg(&models_dir).output();
+            let out = crate::ingest::new_cmd(&py).arg("-c").arg(&runner).arg(&decodable).arg(&models_dir).output();
             match out {
                 Ok(o) if o.status.success() => {
                     let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -4767,7 +4766,7 @@ fn transcribe_remote(rw: &RemoteWhisper, file: &Path, model: &str, full: bool) -
         if big {
             if let Some(ff) = ingest::which("ffmpeg") {
                 let out = std::env::temp_dir().join(format!("cortex-cloud-{}.ogg", crate::db::new_id()));
-                let ok = std::process::Command::new(ff)
+                let ok = crate::ingest::new_cmd(ff)
                     .args(["-y", "-i"])
                     .arg(file)
                     .args(["-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "32k"])
@@ -4874,7 +4873,6 @@ fn faster_whisper_python(
     data_dir: &Path,
     allow_install: bool,
 ) -> std::result::Result<std::path::PathBuf, String> {
-    use std::process::Command;
     let venv = data_dir.join("whisper-venv");
     let py = venv.join("bin").join("python");
     let ready = venv.join(".ready");
@@ -4897,7 +4895,7 @@ fn faster_whisper_python(
 
     // 1. Create the venv. The classic Debian/Ubuntu failure is a missing
     //    python3-venv package (ensurepip) — detect it from stderr and say so.
-    let made = Command::new(&py3).arg("-m").arg("venv").arg(&venv).output();
+    let made = crate::ingest::new_cmd(&py3).arg("-m").arg("venv").arg(&venv).output();
     match made {
         Ok(o) if o.status.success() && py.is_file() => {}
         Ok(o) => {
@@ -4913,7 +4911,7 @@ fn faster_whisper_python(
     }
 
     // 2. Install faster-whisper. Capture stderr so network/build failures surface.
-    let installed = Command::new(&py)
+    let installed = crate::ingest::new_cmd(&py)
         .args(["-m", "pip", "install", "-U", "pip", "faster-whisper"])
         .output();
     match installed {
@@ -4929,7 +4927,7 @@ fn faster_whisper_python(
 
     // 3. Only mark ready once the package actually imports — a half-finished
     //    install must NOT leave a `.ready` marker that wedges every later run.
-    let imports = Command::new(&py)
+    let imports = crate::ingest::new_cmd(&py)
         .args(["-c", "import faster_whisper"])
         .output();
     match imports {
