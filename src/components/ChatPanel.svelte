@@ -201,7 +201,8 @@
   function openEvidence(citation: api.Citation) {
     const src = topicSources.find((s) => s.id === citation.source_id);
     if (!src) return;
-    app.openSource(src, citation.loc);
+    // snippet → PDF 模式的页定位线索（chunk loc 对 PDF 来源为空）
+    app.openSource(src, citation.loc, citation.snippet);
     onClose?.();
   }
 
@@ -479,7 +480,6 @@
       sourceLabel: `AI 回答 · ${modelLabel()}`,
     });
   }
-
 
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {

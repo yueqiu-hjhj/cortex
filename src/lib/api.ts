@@ -2399,6 +2399,8 @@ export interface Excerpt {
   created_at: number;
   updated_at: number;
   paper_title: string | null;
+  /** PDF highlight rects: JSON [{x,y,w,h}] in page-fraction coordinates. */
+  rects: string | null;
 }
 
 export interface PaperInput {
@@ -2447,6 +2449,7 @@ export const excerptAdd = (
   page?: number,
   note?: string,
   tags?: string,
+  rects?: string,
 ) =>
   invoke<Excerpt>("excerpt_add", {
     paperId: paperId ?? null,
@@ -2455,10 +2458,15 @@ export const excerptAdd = (
     page: page ?? null,
     note: note ?? null,
     tags: tags ?? null,
+    rects: rects ?? null,
   });
+/** Highlights taken on one ingested source (PDF reader sidebar + overlays). */
+export const excerptsListSource = (sourceId: string) =>
+  invoke<Excerpt[]>("excerpts_list_source", { sourceId });
 export const excerptList = (paperId?: string) =>
   invoke<Excerpt[]>("excerpt_list", { paperId: paperId ?? null });
 export const excerptDelete = (id: string) => invoke<void>("excerpt_delete", { id });
+
 export const paperBibtex = (ids?: string[]) =>
   invoke<string>("paper_bibtex", { ids: ids ?? null });
 export const paperImportBibtex = (text: string) =>

@@ -602,6 +602,7 @@ pub fn run() {
             commands::web_search,
             commands::literature_search,
             commands::literature_ai_search,
+            commands::excerpts_list_source,
             commands::literature_explain,
             commands::literature_repair,
             commands::literature_fix_math,

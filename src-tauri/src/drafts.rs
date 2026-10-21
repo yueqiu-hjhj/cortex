@@ -393,6 +393,7 @@ mod tests {
             Some(3),
             Some("core claim"),
             None,
+            None,
         )
         .unwrap();
         let e2 = papers::add_excerpt(
@@ -401,6 +402,7 @@ mod tests {
             None,
             "Multi-head attention captures subspaces.",
             Some(4),
+            None,
             None,
             None,
         )

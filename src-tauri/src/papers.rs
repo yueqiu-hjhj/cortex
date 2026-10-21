@@ -69,6 +69,8 @@ pub struct Excerpt {
     pub updated_at: i64,
     /// Joined for display in the cross-paper excerpt list.
     pub paper_title: Option<String>,
+    /// PDF highlight rectangles: JSON [{x,y,w,h}] in page-fraction coords.
+    pub rects: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -289,6 +291,7 @@ pub fn add_excerpt(
     page: Option<i64>,
     note: Option<&str>,
     tags: Option<&str>,
+    rects: Option<&str>,
 ) -> Result<Excerpt> {
     if quote.trim().is_empty() {
         return Err(Error::Other("an excerpt needs a quote".into()));
@@ -304,9 +307,9 @@ pub fn add_excerpt(
     let id = new_id();
     let now = now_ms();
     conn.execute(
-        "INSERT INTO excerpts (id, paper_id, source_id, quote, page, note, tags, \
-         created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",
-        params![id, paper_id, source_id, quote.trim(), page, note, tags, now],
+        "INSERT INTO excerpts (id, paper_id, source_id, quote, page, note, tags, rects, \
+         created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+        params![id, paper_id, source_id, quote.trim(), page, note, tags, rects, now],
     )?;
     // Reading a paper and taking notes from it is the definition of "reading".
     if let Some(p) = paper_id {
@@ -330,11 +333,12 @@ fn row_to_excerpt(row: &rusqlite::Row<'_>) -> rusqlite::Result<Excerpt> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         paper_title: row.get(9)?,
+        rects: row.get(10)?,
     })
 }
 
 const EXCERPT_COLUMNS: &str = "e.id, e.paper_id, e.source_id, e.quote, e.page, e.note, \
-     e.tags, e.created_at, e.updated_at, p.title";
+     e.tags, e.created_at, e.updated_at, p.title, e.rects";
 
 pub fn get_excerpt(conn: &Connection, id: &str) -> Result<Excerpt> {
     let sql = format!(
@@ -365,6 +369,18 @@ pub fn list_excerpts(conn: &Connection, paper_id: Option<&str>) -> Result<Vec<Ex
     } else {
         st.query_map([], row_to_excerpt)?
     };
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Highlights + quotes taken on one ingested source (the PDF reader's sidebar).
+pub fn list_source_excerpts(conn: &Connection, source_id: &str) -> Result<Vec<Excerpt>> {
+    let sql = format!(
+        "SELECT {EXCERPT_COLUMNS} FROM excerpts e \
+         LEFT JOIN papers p ON p.id = e.paper_id \
+         WHERE e.source_id = ?1 ORDER BY e.page, e.created_at LIMIT 500"
+    );
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map(params![source_id], row_to_excerpt)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -967,7 +983,7 @@ mod tests {
         let p = import_paper(&c, &paper("Attention", Some("10.1/x"))).unwrap();
         assert_eq!(p.status, "to_read");
 
-        let e = add_excerpt(&c, Some(&p.id), None, "Scaled dot-product attention", Some(4), None, None).unwrap();
+        let e = add_excerpt(&c, Some(&p.id), None, "Scaled dot-product attention", Some(4), None, None, None).unwrap();
         assert_eq!(e.quote, "Scaled dot-product attention");
 
         let reloaded = get_paper(&c, &p.id).unwrap();
@@ -979,9 +995,9 @@ mod tests {
     fn excerpts_require_a_parent_and_a_quote() {
         let st = state();
         let c = st.db.lock().unwrap();
-        assert!(add_excerpt(&c, None, None, "orphan", None, None, None).is_err());
+        assert!(add_excerpt(&c, None, None, "orphan", None, None, None, None).is_err());
         let p = import_paper(&c, &paper("X", None)).unwrap();
-        assert!(add_excerpt(&c, Some(&p.id), None, "   ", None, None, None).is_err());
+        assert!(add_excerpt(&c, Some(&p.id), None, "   ", None, None, None, None).is_err());
     }
 
     #[test]

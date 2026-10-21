@@ -142,12 +142,22 @@
           wrap.appendChild(textDiv);
           box.appendChild(wrap);
           await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+          // pdf.js v6's TextLayer REQUIRES the viewport — without it the
+          // constructor leaves #viewport undefined and render() throws
+          // "Cannot read properties of undefined (reading 'scale')", leaving
+          // zero selectable spans (划词 silently dead).
           const tl = new pdfjs.TextLayer({
             textContentSource: page.streamTextContent(),
             container: textDiv,
+            viewport: vp,
           } as any);
-          await tl.render();
+          // A text-layer failure must not kill the canvas render for the rest
+          // of the document — the page stays readable, only 划词 is lost.
+          try { await tl.render(); } catch { /* page still visible */ }
         }
+        // All pages rendered — now the text layer can be searched for a
+        // citation jump target (consumes app.sourceJumpText/Loc).
+        if (!cancelled) jumpPdfCitation();
       } catch (e) {
         if (!cancelled) pdfError = String(e);
       } finally {
@@ -160,8 +170,10 @@
   // ---- selection → excerpt (②读 → ④引) ----------------------------------
   // The TextLayer spans are selectable; on mouseup we find which page the
   // selection lives in and offer 摘录 (with the page number auto-filled —
-  // excerpts keep their page so drafts can cite "p.12").
-  let pdfSel = $state<{ text: string; page: number; x: number; y: number } | null>(null);
+  // excerpts keep their page so drafts can cite "p.12"). Selection rects are
+  // captured as page-fraction coordinates so highlights re-render at any zoom.
+  type PdfRect = { x: number; y: number; w: number; h: number };
+  let pdfSel = $state<{ text: string; page: number; x: number; y: number; rects: PdfRect[] } | null>(null);
   let excerptFlash = $state<string | null>(null);
   function onPdfMouseUp(ev: MouseEvent) {
     const s = window.getSelection();
@@ -171,8 +183,20 @@
     const el = anchor instanceof Element ? anchor : anchor?.parentElement ?? null;
     const pageWrap = el?.closest("[data-page]") as HTMLElement | null;
     if (!pageWrap || !pdfBox?.contains(pageWrap)) { pdfSel = null; return; }
+    const pageRect = pageWrap.getBoundingClientRect();
+    const rects: PdfRect[] = [];
+    for (const r of Array.from(s.getRangeAt(0).getClientRects())) {
+      const w = r.width / pageRect.width;
+      const h = r.height / pageRect.height;
+      if (w <= 0.0005 || h <= 0.0005) continue;
+      rects.push({
+        x: (r.left - pageRect.left) / pageRect.width,
+        y: (r.top - pageRect.top) / pageRect.height,
+        w, h,
+      });
+    }
     const rect = s.getRangeAt(0).getBoundingClientRect();
-    pdfSel = { text, page: Number(pageWrap.dataset.page), x: rect.left + rect.width / 2, y: rect.top - 10 };
+    pdfSel = { text, page: Number(pageWrap.dataset.page), x: rect.left + rect.width / 2, y: rect.top - 10, rects };
   }
   function copyPdfSelection() {
     if (pdfSel) void navigator.clipboard.writeText(pdfSel.text);
@@ -181,14 +205,82 @@
   async function excerptPdfSelection() {
     if (!pdfSel || !app.activeSource) return;
     try {
-      await api.excerptAdd(pdfSel.text, undefined, app.activeSource.id, pdfSel.page);
+      await api.excerptAdd(pdfSel.text, undefined, app.activeSource.id, pdfSel.page, undefined, undefined,
+        pdfSel.rects.length ? JSON.stringify(pdfSel.rects) : undefined);
       excerptFlash = `已存为摘录（p.${pdfSel.page}）`;
       setTimeout(() => (excerptFlash = null), 2600);
       window.getSelection()?.removeAllRanges();
       pdfSel = null;
+      void loadAnnots();
     } catch (e) {
       excerptFlash = `摘录失败：${String(e)}`;
       setTimeout(() => (excerptFlash = null), 4000);
+    }
+  }
+
+  // ---- highlights overlay + annotation sidebar (③坐标回链) ---------------
+  // Saved excerpts with rects render as translucent highlight blocks on their
+  // page (page-fraction coords → zoom independent). Sidebar entries scroll the
+  // page into view and flash their highlight.
+  let pdfAnnots = $state<api.Excerpt[]>([]);
+  let annotsOpen = $state(false);
+  let flashId = $state<string | null>(null);
+  async function loadAnnots() {
+    if (!app.activeSource) { pdfAnnots = []; return; }
+    try { pdfAnnots = await api.excerptsListSource(app.activeSource.id); }
+    catch { pdfAnnots = []; }
+  }
+  $effect(() => { void app.activeSource?.id; void loadAnnots(); });
+
+  function overlayHighlights(box: HTMLElement, annots: api.Excerpt[]) {
+    for (const wrap of Array.from(box.querySelectorAll<HTMLElement>("[data-page]"))) {
+      for (const old of Array.from(wrap.querySelectorAll(".sv-hl"))) old.remove();
+      const page = Number(wrap.dataset.page);
+      for (const a of annots) {
+        if (!a.rects || a.page !== page) continue;
+        let rects: PdfRect[] = [];
+        try { rects = JSON.parse(a.rects); } catch { continue; }
+        for (const r of rects) {
+          const div = document.createElement("div");
+          div.className = "sv-hl" + (flashId === a.id ? " sv-hl--flash" : "");
+          div.dataset.ann = a.id;
+          div.style.left = `${r.x * 100}%`;
+          div.style.top = `${r.y * 100}%`;
+          div.style.width = `${r.w * 100}%`;
+          div.style.height = `${r.h * 100}%`;
+          wrap.appendChild(div);
+        }
+      }
+    }
+  }
+  // Rendering finishes asynchronously page by page; re-overlay once it settles
+  // and whenever the annotation list changes.
+  $effect(() => {
+    if (pdfRendering) return;
+    const box = pdfBox;
+    if (!box) return;
+    const annots = pdfAnnots;
+    overlayHighlights(box, annots);
+  });
+  function jumpToAnnot(a: api.Excerpt) {
+    if (!pdfBox || !a.page) return;
+    const wrap = pdfBox.querySelector<HTMLElement>(`[data-page="${a.page}"]`);
+    if (!wrap) return;
+    wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    flashId = a.id;
+    overlayHighlights(pdfBox, pdfAnnots);
+    setTimeout(() => {
+      flashId = null;
+      if (pdfBox) overlayHighlights(pdfBox, pdfAnnots);
+    }, 1800);
+  }
+  async function deleteAnnot(id: string) {
+    try {
+      await api.excerptDelete(id);
+      await loadAnnots();
+    } catch (e) {
+      excerptFlash = `删除失败：${String(e)}`;
+      setTimeout(() => (excerptFlash = null), 3000);
     }
   }
 
@@ -215,6 +307,75 @@
     } finally {
       figBusy = false;
       pdfSel = null;
+    }
+  }
+
+  // ---- citation → PDF page jump (④全文问答的回链) --------------------------
+  // PDF chunks carry no `loc`, so the chunk-list jump can't apply. Instead the
+  // citation's snippet (the chunk's own text) is searched across every page's
+  // rendered text layer; a match scrolls the page into view and flashes the
+  // matched spans. Best-effort across extraction engines: pdftotext/docling
+  // (chunk text) and pdf.js (text layer) disagree on spacing/hyphens, so both
+  // sides are normalized (lowercase, hyphens/whitespace stripped) and the
+  // needle is retried shorter before giving up silently.
+  function findPdfText(box: HTMLElement, needle: string): { wrap: HTMLElement; rects: PdfRect[] } | null {
+    const norm = (s: string) =>
+      s.toLowerCase().replace(/[\u00ad\u2010-\u2015-]/g, "").replace(/\s+/g, "");
+    for (let cut = 60; cut >= 24; cut -= 12) {
+      const target = norm(needle).slice(0, cut);
+      if (target.length < 10) break;
+      for (const wrap of Array.from(box.querySelectorAll<HTMLElement>("[data-page]"))) {
+        const parts: { el: HTMLElement; text: string }[] = [];
+        let acc = "";
+        for (const sp of Array.from(wrap.querySelectorAll<HTMLElement>(".textLayer span"))) {
+          const t = norm(sp.textContent ?? "");
+          if (!t) continue;
+          parts.push({ el: sp, text: t });
+          acc += t;
+        }
+        const idx = acc.indexOf(target);
+        if (idx < 0) continue;
+        const end = idx + target.length;
+        const pageRect = wrap.getBoundingClientRect();
+        const rects: PdfRect[] = [];
+        let pos = 0;
+        for (const p of parts) {
+          const s0 = pos;
+          pos += p.text.length;
+          if (pos <= idx || s0 >= end) continue;
+          const r = p.el.getBoundingClientRect();
+          const w = r.width / pageRect.width;
+          const h = r.height / pageRect.height;
+          if (w <= 0.0005 || h <= 0.0005) continue;
+          rects.push({
+            x: (r.left - pageRect.left) / pageRect.width,
+            y: (r.top - pageRect.top) / pageRect.height,
+            w, h,
+          });
+        }
+        return { wrap, rects };
+      }
+    }
+    return null;
+  }
+  function jumpPdfCitation() {
+    const box = pdfBox;
+    const needle = app.sourceJumpText ?? app.sourceJumpLoc ?? "";
+    if (!box || !needle) return;
+    app.sourceJumpText = null;
+    app.sourceJumpLoc = null;
+    const m = findPdfText(box, needle);
+    if (!m) return;
+    m.wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    for (const r of m.rects) {
+      const div = document.createElement("div");
+      div.className = "sv-hl sv-hl--flash";
+      div.style.left = `${r.x * 100}%`;
+      div.style.top = `${r.y * 100}%`;
+      div.style.width = `${r.w * 100}%`;
+      div.style.height = `${r.h * 100}%`;
+      m.wrap.appendChild(div);
+      setTimeout(() => div.remove(), 3200);
     }
   }
 
@@ -350,6 +511,16 @@
       <button class="btn btn--icon btn--sm btn--ghost" title="搜索">
         <Icon name="search" size={13} />
       </button>
+      {#if isPdfDoc}
+        <button
+          class="btn btn--icon btn--sm btn--ghost"
+          class:sv-annots-toggle-on={annotsOpen}
+          onclick={() => (annotsOpen = !annotsOpen)}
+          title="本篇的高亮与摘录（点击批注跳回原文位置）"
+        >
+          <Icon name="book" size={13} />{pdfAnnots.length ? ` ${pdfAnnots.length}` : ""}
+        </button>
+      {/if}
       {#if src}
         <button
           class="btn btn--icon btn--sm btn--ghost"
@@ -426,6 +597,32 @@
           <div class="float" style="position:fixed;left:50%;top:64px;transform:translateX(-50%)">
             <span class="fb mono">{excerptFlash}</span>
           </div>
+        {/if}
+        {#if annotsOpen}
+          <aside class="sv-annots" role="complementary" aria-label="本篇批注">
+            <div class="sv-annots-head">
+              <span class="mono" style="font-size:var(--t-xs)">本篇批注 · {pdfAnnots.length}</span>
+              <span style="flex:1"></span>
+              <button class="btn btn--icon btn--sm btn--ghost" onclick={() => (annotsOpen = false)} title="收起">
+                <Icon name="x" size={11} />
+              </button>
+            </div>
+            {#if !pdfAnnots.length}
+              <p class="sv-annot-empty mono">选中正文即可存摘录——摘录会以高亮形式留在原页上，点击这里可跳回原文。</p>
+            {:else}
+              {#each pdfAnnots as a (a.id)}
+                <div class="sv-annot" class:sv-annot--flash={flashId === a.id}>
+                  <button class="sv-annot-main" onclick={() => jumpToAnnot(a)} title="跳转到原文位置">
+                    {#if a.page}<span class="mono sv-annot-p">p.{a.page}</span>{/if}
+                    <span class="sv-annot-q">{a.quote}</span>
+                  </button>
+                  <button class="btn btn--icon btn--sm btn--ghost sv-annot-del" onclick={() => void deleteAnnot(a.id)} title="删除该批注">
+                    <Icon name="x" size={11} />
+                  </button>
+                </div>
+              {/each}
+            {/if}
+          </aside>
         {/if}
       {:else if isImage && assetUrl}
         <!-- Image preview, centered & fit -->
@@ -631,6 +828,92 @@
   }
   .sv-error {
     border-color: color-mix(in oklab, var(--warn) 40%, var(--border));
+  }
+
+  /* PDF highlights (created via DOM, hence :global) + annotation sidebar */
+  :global(.sv-hl) {
+    position: absolute;
+    background: rgba(255, 200, 0, 0.32);
+    border-radius: 2px;
+    pointer-events: none;
+    mix-blend-mode: multiply;
+    transition: background 0.25s, box-shadow 0.25s;
+  }
+  :global(.sv-hl--flash) {
+    background: rgba(255, 145, 0, 0.45);
+    box-shadow: 0 0 0 3px rgba(255, 145, 0, 0.35);
+  }
+  .sv-annots {
+    position: fixed;
+    right: 18px;
+    top: 76px;
+    width: min(330px, 36vw);
+    max-height: 72vh;
+    overflow-y: auto;
+    z-index: 66;
+    background: var(--panel, var(--bg-elevated, #fff));
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+  }
+  .sv-annots-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 6px 12px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: inherit;
+  }
+  .sv-annot {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.2s;
+  }
+  .sv-annot:last-child {
+    border-bottom: none;
+  }
+  .sv-annot--flash {
+    background: rgba(255, 170, 0, 0.16);
+  }
+  .sv-annot-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 8px 10px;
+    font-size: var(--t-xs);
+    color: inherit;
+  }
+  .sv-annot-p {
+    color: var(--fg-muted);
+    flex-shrink: 0;
+  }
+  .sv-annot-q {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.45;
+  }
+  .sv-annot-del {
+    align-self: center;
+  }
+  .sv-annot-empty {
+    padding: 10px 12px;
+    font-size: var(--t-xs);
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+  .sv-annots-toggle-on {
+    color: var(--accent, inherit);
   }
   .sv-delete:hover {
     color: var(--err, var(--warn));

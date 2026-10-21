@@ -6928,6 +6928,7 @@ pub fn excerpt_add(
     page: Option<i64>,
     note: Option<String>,
     tags: Option<String>,
+    rects: Option<String>,
 ) -> Result<crate::papers::Excerpt> {
     let c = state.db.lock().unwrap();
     crate::papers::add_excerpt(
@@ -6938,6 +6939,7 @@ pub fn excerpt_add(
         page,
         note.as_deref(),
         tags.as_deref(),
+        rects.as_deref(),
     )
 }
 
@@ -6947,9 +6949,17 @@ pub fn excerpt_list(state: State<AppState>, paper_id: Option<String>) -> Result<
     crate::papers::list_excerpts(&c, paper_id.as_deref())
 }
 
+/// Highlights for one ingested source — the PDF reader's annotation sidebar.
+#[tauri::command]
+pub fn excerpts_list_source(state: State<AppState>, source_id: String) -> Result<Vec<crate::papers::Excerpt>> {
+    let c = state.db.lock().unwrap();
+    crate::papers::list_source_excerpts(&c, &source_id)
+}
+
 #[tauri::command]
 pub fn excerpt_delete(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
+
     crate::papers::delete_excerpt(&c, &id)
 }
 

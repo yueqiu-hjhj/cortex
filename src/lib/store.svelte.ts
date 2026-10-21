@@ -1250,9 +1250,13 @@ class AppStore {
   // When opening a source from a citation, the cited location (e.g. "p.14" or a heading)
   // so SourceViewer can scroll to the matching chunk. Consumed (cleared) once handled.
   sourceJumpLoc = $state<string | null>(null);
-  openSource(src: Source, loc?: string | null) {
+  // Citation passage text — for PDF sources the chunk list isn't rendered, so the
+  // viewer locates the page by searching the pdf.js text layer for this snippet.
+  sourceJumpText = $state<string | null>(null);
+  openSource(src: Source, loc?: string | null, jumpText?: string | null) {
     this.activeSource = src;
     this.sourceJumpLoc = loc?.trim() || null;
+    this.sourceJumpText = jumpText?.trim() || null;
     this.view = "source";
     // The subject tree/list carries source metadata only (no heavy `content`
     // blob) to stay light, so fetch the full source in the background — the

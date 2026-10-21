@@ -276,6 +276,7 @@ pub(crate) fn link_evidence(
         None,
         Some(&format!("PRISMA · {field_label}")),
         Some("prisma"),
+        None,
     )?;
     Ok(Some(ex.id))
 }
@@ -849,6 +850,8 @@ mod tests {
             "BM25 beats dense retrieval on this benchmark.",
             Some(3),
             Some("用户划的重点"),
+            None,
+            // No highlight rects: this seeded excerpt predates the PDF overlay.
             None,
         )
         .unwrap();
