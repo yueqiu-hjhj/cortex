@@ -80,21 +80,25 @@
         ? await api.agentsThreadMessages(run.thread_id, 300)
         : await api.agentsListMessages(run.id, 200);
       runningRunId = run.id;
-      const finished = api.agentsExecuteRun(agent.id, run.input, run.id);
+      // Surface an execute-side failure even though the polling loop below
+      // never awaits the promise while the run row stays "pending".
+      let finErr: string | null = null;
+      const finished = api.agentsExecuteRun(agent.id, run.input, run.id).catch((e) => { finErr = String(e); });
       while (runningRunId === run.id) {
         await new Promise((r) => setTimeout(r, 1500));
         try { messages = activeThread ? await api.agentsThreadMessages(activeThread, 300) : await api.agentsListMessages(run.id, 200); } catch { /* mid-run */ }
         const rs = await api.agentsListRuns(50).catch(() => []);
         const now = rs.find((x) => x.id === run.id);
-        if (now && now.status !== "pending") {
-          selectedRun = now;
+        if (finErr || (now && now.status !== "pending")) {
+          if (now) selectedRun = now;
           break;
         }
       }
       await finished;
       messages = activeThread ? await api.agentsThreadMessages(activeThread, 300) : await api.agentsListMessages(run.id, 200);
       await load();
-      app.pushToast({ kind: "success", title: "运行完成", body: agent.name });
+      if (finErr) app.pushToast({ kind: "error", title: "运行失败", body: finErr });
+      else app.pushToast({ kind: "success", title: "运行完成", body: agent.name });
     } catch (e) {
       app.pushToast({ kind: "error", title: "运行失败", body: String(e) });
       await load().catch(() => {});
@@ -157,17 +161,20 @@
       selectedRun = run;
       messages = await api.agentsThreadMessages(activeThread, 300);
       runningRunId = run.id;
-      void api.agentsExecuteRun(agent.id, run.input, run.id);
+      let swErr: string | null = null;
+      const finished = api.agentsExecuteRun(agent.id, run.input, run.id).catch((e) => { swErr = String(e); });
       while (runningRunId === run.id) {
         await new Promise((r) => setTimeout(r, 1500));
         try { messages = await api.agentsThreadMessages(activeThread, 300); } catch { /* mid-run */ }
         const rs = await api.agentsListRuns(50).catch(() => []);
         const now = rs.find((x) => x.id === run.id);
-        if (now && now.status !== "pending") { selectedRun = now; break; }
+        if (swErr || (now && now.status !== "pending")) { if (now) selectedRun = now; break; }
       }
+      await finished;
       messages = await api.agentsThreadMessages(activeThread, 300);
       await load();
-      app.pushToast({ kind: "success", title: "运行完成", body: `${agent.name} · 上下文已保留` });
+      if (swErr) app.pushToast({ kind: "error", title: "运行失败", body: swErr });
+      else app.pushToast({ kind: "success", title: "运行完成", body: `${agent.name} · 上下文已保留` });
     } catch (e) {
       app.pushToast({ kind: "error", title: "切换运行失败", body: String(e) });
     } finally { runningRunId = null; busy = false; }
