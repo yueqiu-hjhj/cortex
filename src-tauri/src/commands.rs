@@ -2765,7 +2765,7 @@ pub async fn import_anki(
 /// MAP step: turn ONE source into an exhaustive, compact study digest so a bucket
 /// with many sources can be reduced into a single cheatsheet without overflowing
 /// the model window — and so every source is guaranteed to be represented.
-const CHEATSHEET_MAP_SYSTEM: &str = "You are an exam-focused study-notes extractor. From the SINGLE source \
+pub(crate) const CHEATSHEET_MAP_SYSTEM: &str = "You are an exam-focused study-notes extractor. From the SINGLE source \
     provided, extract an EXHAUSTIVE, well-structured Markdown digest capturing EVERY exam-relevant \
     element it contains: every term, definition, concept, theory, model, framework, classification, \
     process, cause/effect, formula, law, rule, named example, case study, date, person, place, and \
@@ -2799,7 +2799,7 @@ fn synthesize_bucket(
         let mut digests: Vec<String> = Vec::new();
         for (title, text) in sources {
             let prompt = format!("SOURCE: {title}\n\n{text}\n\nProduce the exhaustive study digest now.");
-            match model.complete(CHEATSHEET_MAP_SYSTEM, &prompt) {
+            match model.complete(&crate::prompts::text(crate::prompts::CHEATSHEET_MAP), &prompt) {
                 Ok(d) if !d.trim().is_empty() => {
                     digests.push(format!("### SOURCE: {title}\n\n{}", d.trim()));
                     used += 1;

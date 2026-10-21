@@ -71,6 +71,7 @@ pub mod connectors;
 pub mod draft_review;
 pub mod research_connectors;
 pub mod research_agent;
+pub mod prompts;
 pub mod slides;
 pub mod drafts;
 pub mod extraction;
@@ -185,6 +186,11 @@ pub fn run() {
                 let c = state.db.lock().unwrap();
                 if let Err(e) = crate::agents::seed_bundled_skills(&c) {
                     eprintln!("[agents] bundled skill seed failed: {e}");
+                }
+                // Prompt overrides (lab): load once so a model call several
+                // layers below any command can resolve a prompt without a Conn.
+                if let Err(e) = crate::prompts::refresh(&c) {
+                    eprintln!("[prompts] override load failed: {e}");
                 }
             }
 

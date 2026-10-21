@@ -764,7 +764,7 @@ pub struct AiSearchOutcome {
     pub took_ms: i64,
 }
 
-const PLAN_SYS: &str = "You plan scholarly database searches. Given a research question, \
+pub(crate) const PLAN_SYS: &str = "You plan scholarly database searches. Given a research question, \
 output 4 to 6 English search queries as a JSON array of strings. Cover: the core \
 key-phrase query; a synonym/terminology variant; a method or technique angle; a \
 problem/application angle. Queries target arXiv/Crossref/OpenAlex — no Boolean \
@@ -775,7 +775,7 @@ JSON array.";
 /// Always includes the raw question first; LLM failure degrades to just it.
 fn plan_queries(model: &dyn crate::llm::Llm, question: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![question.trim().to_string()];
-    if let Ok(raw) = model.complete(PLAN_SYS, &format!("Research question: {}", question)) {
+    if let Ok(raw) = model.complete(&crate::prompts::text(crate::prompts::LIT_PLAN), &format!("Research question: {}", question)) {
         if let (Some(s), Some(e)) = (raw.find('['), raw.rfind(']')) {
             if s <= e {
                 if let Ok(arr) = serde_json::from_str::<Vec<String>>(&raw[s..=e]) {
@@ -794,7 +794,7 @@ fn plan_queries(model: &dyn crate::llm::Llm, question: &str) -> Vec<String> {
     out
 }
 
-const RERANK_SYS: &str = "You rerank scholarly search results for relevance to a research \
+pub(crate) const RERANK_SYS: &str = "You rerank scholarly search results for relevance to a research \
 question. Input: numbered papers with year, title, venue, abstract snippet. \
 Output ONLY a JSON array of the paper numbers ordered from most to least \
 relevant, e.g. [3,1,7,2,...] — every number exactly once. Judge by alignment \
@@ -827,7 +827,7 @@ fn llm_rerank(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let raw = match model.complete(RERANK_SYS, &format!("Question: {}\n\n{}", question, listing)) {
+    let raw = match model.complete(&crate::prompts::text(crate::prompts::LIT_RERANK), &format!("Question: {}\n\n{}", question, listing)) {
         Ok(r) => r,
         Err(_) => return hits,
     };

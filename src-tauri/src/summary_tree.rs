@@ -48,11 +48,11 @@ pub struct SummaryTreeStatus {
     pub model_configured: bool,
 }
 
-const PART_SUM_SYS: &str = "你是学术资料摘要助手。把下面的资料片段压缩为不超过 120 词的要点摘要：保留关键术语、定义、数字、方法名与结论；不要评论，不要开场白，只输出摘要文本。语言与原文一致。";
-const SOURCE_SUM_SYS: &str = "你是学术资料摘要助手。基于给定内容输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。summary 是不超过 160 词的忠实要点摘要（保留关键术语、数字、方法名、结论）；keywords 是 5-10 个适合检索的关键词。语言与原文一致。只输出 JSON，不要其他文字。";
-const REDUCE_SUM_SYS: &str = "你是学术资料摘要助手。下面是同一份材料各片段的要点摘要，把它们合并为一份不超过 160 词的整体摘要，输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。keywords 为 5-10 个检索关键词。语言与原文一致。只输出 JSON。";
-const GROUP_SUM_SYS: &str = "你是学术资料摘要助手。下面是同一主题下若干材料的摘要（每条以「名称」开头）。综合为不超过 130 词的主题级摘要：覆盖共同主线、关键差异与重要结论，并给出 5-10 个检索关键词。输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。语言与输入一致。只输出 JSON。";
-const SUBJECT_SUM_SYS: &str = "你是学术资料摘要助手。下面是一个科目下各主题的摘要（可能含少量未分组材料的摘要）。综合为不超过 170 词的科目级总览：这个知识库讲什么、主线结构、最重要的结论。输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。keywords 为 5-10 个检索关键词。语言与输入一致。只输出 JSON。";
+pub(crate) const PART_SUM_SYS: &str = "你是学术资料摘要助手。把下面的资料片段压缩为不超过 120 词的要点摘要：保留关键术语、定义、数字、方法名与结论；不要评论，不要开场白，只输出摘要文本。语言与原文一致。";
+pub(crate) const SOURCE_SUM_SYS: &str = "你是学术资料摘要助手。基于给定内容输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。summary 是不超过 160 词的忠实要点摘要（保留关键术语、数字、方法名、结论）；keywords 是 5-10 个适合检索的关键词。语言与原文一致。只输出 JSON，不要其他文字。";
+pub(crate) const REDUCE_SUM_SYS: &str = "你是学术资料摘要助手。下面是同一份材料各片段的要点摘要，把它们合并为一份不超过 160 词的整体摘要，输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。keywords 为 5-10 个检索关键词。语言与原文一致。只输出 JSON。";
+pub(crate) const GROUP_SUM_SYS: &str = "你是学术资料摘要助手。下面是同一主题下若干材料的摘要（每条以「名称」开头）。综合为不超过 130 词的主题级摘要：覆盖共同主线、关键差异与重要结论，并给出 5-10 个检索关键词。输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。语言与输入一致。只输出 JSON。";
+pub(crate) const SUBJECT_SUM_SYS: &str = "你是学术资料摘要助手。下面是一个科目下各主题的摘要（可能含少量未分组材料的摘要）。综合为不超过 170 词的科目级总览：这个知识库讲什么、主线结构、最重要的结论。输出 JSON：{\"summary\":\"…\",\"keywords\":[\"…\"]}。keywords 为 5-10 个检索关键词。语言与输入一致。只输出 JSON。";
 
 const SOURCE_WINDOW: usize = 11000;
 
@@ -271,14 +271,14 @@ fn summarize_source(model: &mut Box<dyn crate::llm::Llm>, content: &str) -> Resu
     let chars_in = content.chars().count() as i64;
     if parts.len() == 1 {
         model.set_max_tokens(1400);
-        let raw = model.complete(SOURCE_SUM_SYS, parts[0].as_str())?;
+        let raw = model.complete(&crate::prompts::text(crate::prompts::SUMMARY_SOURCE), parts[0].as_str())?;
         let (summary, keywords) = parse_sum_json(&raw)?;
         return Ok((summary, keywords, chars_in));
     }
     let mut piece_summaries = Vec::with_capacity(parts.len());
     for part in &parts {
         model.set_max_tokens(800);
-        piece_summaries.push(model.complete(PART_SUM_SYS, part)?);
+        piece_summaries.push(model.complete(&crate::prompts::text(crate::prompts::SUMMARY_PART), part)?);
     }
     model.set_max_tokens(1400);
     let joined = piece_summaries
@@ -287,7 +287,7 @@ fn summarize_source(model: &mut Box<dyn crate::llm::Llm>, content: &str) -> Resu
         .map(|(i, s)| format!("片段{}：\n{}", i + 1, s.trim()))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let raw = model.complete(REDUCE_SUM_SYS, &joined)?;
+    let raw = model.complete(&crate::prompts::text(crate::prompts::SUMMARY_REDUCE), &joined)?;
     let (summary, keywords) = parse_sum_json(&raw)?;
     Ok((summary, keywords, chars_in))
 }
@@ -396,7 +396,7 @@ pub fn build(app: &AppHandle, subject_id: &str, force: bool) -> Result<SummaryTr
                 }
             }
         }
-        let (summary, keywords) = summarize_group(&mut model, GROUP_SUM_SYS, &items)?;
+        let (summary, keywords) = summarize_group(&mut model, &crate::prompts::text(crate::prompts::SUMMARY_GROUP), &items)?;
         let c = state.db.lock().unwrap();
         upsert_node(&c, subject_id, "topic", tid, &summary, &keywords, &model_name, 0)?;
     }
@@ -425,7 +425,7 @@ pub fn build(app: &AppHandle, subject_id: &str, force: bool) -> Result<SummaryTr
             Some(n) => n.updated_at < subj_at,
         };
     if need && !items.is_empty() {
-        let (summary, keywords) = summarize_group(&mut model, SUBJECT_SUM_SYS, &items)?;
+        let (summary, keywords) = summarize_group(&mut model, &crate::prompts::text(crate::prompts::SUMMARY_SUBJECT), &items)?;
         let c = state.db.lock().unwrap();
         upsert_node(&c, subject_id, "subject", subject_id, &summary, &keywords, &model_name, 0)?;
     }

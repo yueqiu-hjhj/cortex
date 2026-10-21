@@ -45,7 +45,7 @@ pub struct SkillCard {
     pub created_at: i64,
 }
 
-const SYSTEM: &str = "You are a study-methodology distiller. You are given a CONCEPT that \
+pub(crate) const SYSTEM: &str = "You are a study-methodology distiller. You are given a CONCEPT that \
 recurs across several books/courses, plus the book names it appears in. Produce a reusable \
 SKILL CARD for a student: how to actually apply this method. Return ONLY raw JSON of the shape \
 {\"title\":string,\"summary\":string,\"when_to_use\":string,\"steps\":[string,...]}. Rules: \
@@ -160,13 +160,14 @@ pub fn precipitate(app: &AppHandle, limit: usize) -> Result<(usize, usize)> {
             book_list
         );
         model.set_max_tokens(1024);
-        let raw = match model.complete(SYSTEM, &user) {
+        let sys = crate::prompts::text(crate::prompts::SKILL_DISTILL);
+        let raw = match model.complete(&sys, &user) {
             Ok(r) => r,
             Err(_) => continue, // one failed concept must not abort the run
         };
         {
             let c = state.db.lock().unwrap();
-            crate::tokens::record(&c, "skill-card", &model.name(), &format!("{SYSTEM}\\n{user}"), &raw, None);
+            crate::tokens::record(&c, "skill-card", &model.name(), &format!("{sys}\\n{user}"), &raw, None);
         }
         let Some(payload) = crate::llm::extract_json(&raw).ok() else { continue };
         let clamp = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();

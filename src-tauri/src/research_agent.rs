@@ -44,7 +44,7 @@ const OPENALEX_WORKS: &str = "https://api.openalex.org/works";
 const OPENALEX_AUTHORS: &str = "https://api.openalex.org/authors";
 const UA: &str = "Cortex/1.0 (research chat)";
 
-const SYSTEM: &str = r#"你是 Cortex 的研究助手。你能真的去查资料，而不是凭训练记忆回答。
+pub(crate) const SYSTEM: &str = r#"你是 Cortex 的研究助手。你能真的去查资料，而不是凭训练记忆回答。
 
 可用工具（每次只输出一个动作）：
 TOOL search_literature {"query":"主题词，可空","author":"作者名，可空","institution":"机构/团队，可空","year_from":2020,"sort":"relevance|citations|newest","limit":8}
@@ -235,6 +235,9 @@ pub fn ask(
         return Err(Error::Other("问题是空的。".into()));
     }
     let started = std::time::Instant::now();
+    // Read once per turn: a mid-turn edit of the prompt in the lab should not
+    // change the instructions the loop is already following.
+    let sys = crate::prompts::text(crate::prompts::RESEARCH_CHAT);
     let thread = ensure_thread(c, thread_id, input)?;
     append_message(c, &thread.id, "user", input, None)?;
     let history = thread_messages(c, &thread.id, HISTORY_MESSAGES)?;
@@ -245,12 +248,12 @@ pub fn ask(
 
     for _ in 0..MAX_STEPS {
         let prompt = build_prompt(&history, &scratch);
-        let reply = model.complete(SYSTEM, &prompt)?;
+        let reply = model.complete(&sys, &prompt)?;
         crate::tokens::record(
             c,
             "research",
             &model.name(),
-            &format!("{SYSTEM}\n{prompt}"),
+            &format!("{sys}\n{prompt}"),
             &reply,
             None,
         );
@@ -278,7 +281,7 @@ pub fn ask(
                 "{}\n\n工具调用次数已到上限。不要再调用工具，直接用已有结果回答；缺什么就说明缺什么。",
                 build_prompt(&history, &scratch)
             );
-            let last = model.complete(SYSTEM, &prompt)?;
+            let last = model.complete(&sys, &prompt)?;
             let text = match parse_action(&last) {
                 Action::Answer(t) => t,
                 Action::Tool(..) => last.trim().to_string(),

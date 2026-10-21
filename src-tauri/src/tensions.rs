@@ -56,7 +56,7 @@ pub struct TensionResult {
     pub tensions: Vec<Tension>,
 }
 
-const SYSTEM: &str = "You are a systematic-review analyst. You are given several academic \
+pub(crate) const SYSTEM: &str = "You are a systematic-review analyst. You are given several academic \
 papers (title + extracted card). Your job: find GENUINE TENSIONS between them — places where \
 the literature disagrees, not where it agrees. Return ONLY a raw JSON object of the shape \
 {\"tensions\":[{\"topic\":string,\"paper_a\":string,\"paper_b\":string,\"claim_a\":string,\"claim_b\":string,\
@@ -215,10 +215,11 @@ pub fn execute(app: &AppHandle, run_id: &str) -> Result<()> {
         "PAPERS:\n{blocks}Return the tensions JSON now. If none are genuine, return {{\"tensions\":[]}}."
     );
     model.set_max_tokens(4096);
-    let raw = model.complete(SYSTEM, &user);
+    let sys = crate::prompts::text(crate::prompts::TENSION_ANALYZE);
+    let raw = model.complete(&sys, &user);
     let parsed = match raw {
         Ok(r) => {
-            { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "tension", &model.name(), &format!("{SYSTEM}\n{user}"), &r, None); }
+            { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "tension", &model.name(), &format!("{sys}\n{user}"), &r, None); }
             crate::llm::extract_json(&r).ok()
         }
         Err(e) => {
