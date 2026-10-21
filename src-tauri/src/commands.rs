@@ -184,7 +184,12 @@ pub(crate) fn model_spec_for(c: &Connection, slot: &str) -> String {
     match slot {
         "vision" => DEFAULT_VISION_MODEL.to_string(),
         "cheatsheet" => DEFAULT_CHAT_MODEL.to_string(),
-        _ => want("model_cheatsheet").unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
+        // Unassigned text slots ride the chat model: with a custom gateway
+        // (e.g. MiniMax) as the only key, falling through to the openrouter
+        // default 400s — the user HAS a model, it's just not openrouter.
+        _ => want("model_cheatsheet")
+            .or_else(|| want("model_chat"))
+            .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
     }
 }
 

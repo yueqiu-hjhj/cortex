@@ -130,22 +130,24 @@
       <div class="ms-list">
         {#if loading && options.length === 0}
           <div class="ms-empty">正在加载模型…</div>
+        {:else if customCandidate}
+          <!-- allowCustom providers (custom endpoint, ollama-free-text) have empty
+               curated lists — the Use button must render even when `shown` is empty,
+               otherwise there is NO way to enter a model id via the UI. -->
+          <button
+            type="button"
+            class="picker-item ms-item ms-custom"
+            onclick={() => pick(customCandidate)}
+          >
+            <Icon name="plus" size={11} color="var(--accent)" />
+            <span class="grow ms-text">
+              <span class="ms-label">Use “{customCandidate}”</span>
+              <span class="ms-sub mono">自定义模型 ID</span>
+            </span>
+          </button>
         {:else if shown.length === 0}
           <div class="ms-empty">No models match “{q}”</div>
         {:else}
-          {#if customCandidate}
-            <button
-              type="button"
-              class="picker-item ms-item ms-custom"
-              onclick={() => pick(customCandidate)}
-            >
-              <Icon name="plus" size={11} color="var(--accent)" />
-              <span class="grow ms-text">
-                <span class="ms-label">Use “{customCandidate}”</span>
-                <span class="ms-sub mono">自定义模型 ID</span>
-              </span>
-            </button>
-          {/if}
           {#each shown as o (o.id)}
             <button
               type="button"

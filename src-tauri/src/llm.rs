@@ -367,6 +367,24 @@ pub struct OpenAiCompatLlm {
     pub max_tokens: Option<u32>,
 }
 
+/// Reasoning models (MiniMax M-series, DeepSeek-R1 style) inline their
+/// chain-of-thought as `<think>…</think>` inside message.content. Strip
+/// completed blocks; an unterminated block (max_tokens cut mid-think) drops
+/// everything from the opening tag so the UI never shows raw reasoning.
+fn strip_think(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("<think>") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find("</think>") {
+            Some(j) => rest = &rest[i + j + "</think>".len()..],
+            None => rest = "",
+        }
+    }
+    out.push_str(rest);
+    out.trim_start().to_string()
+}
+
 impl OpenAiCompatLlm {
     /// One chat/completions attempt with an explicit max_tokens (or none).
     fn complete_once(&self, system: &str, user: &str, max_tokens: Option<u32>) -> Result<String> {
@@ -396,7 +414,7 @@ impl OpenAiCompatLlm {
         )?;
         json["choices"][0]["message"]["content"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(strip_think)
             .ok_or_else(|| Error::Other(format!("{}: empty response", self.label)))
     }
 }
@@ -460,10 +478,11 @@ impl Llm for OpenAiCompatLlm {
                 .header("X-Title", "Cortex")
                 .json(&body),
         )?;
-        Ok(json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(strip_think(
+            json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or_default(),
+        ))
     }
     /// Vision Q&A with a custom prompt (2.6 figure explanation).
     fn vision(&self, images: &[(String, String)], system: &str, user: &str) -> Result<String> {
@@ -497,10 +516,11 @@ impl Llm for OpenAiCompatLlm {
                 .header("X-Title", "Cortex")
                 .json(&body),
         )?;
-        Ok(json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(strip_think(
+            json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or_default(),
+        ))
     }
     fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
         let key = self.api_key.trim();
@@ -522,8 +542,8 @@ impl Llm for OpenAiCompatLlm {
             .header("HTTP-Referer", "https://cortex.study")
             .header("X-Title", "Cortex")
             .json(&body))?;
-        let text = json["choices"][0]["message"]["content"].as_str().unwrap_or_default();
-        parse_card_drafts(text)
+        let text = strip_think(json["choices"][0]["message"]["content"].as_str().unwrap_or_default());
+        parse_card_drafts(&text)
     }
     fn gen_image(&self, prompt: &str) -> Result<String> {
         let key = self.api_key.trim();
@@ -734,7 +754,6 @@ const AUTO_FALLBACKS: &[&str] = &[
     "gemini:gemini-2.5-flash",
     "openai:gpt-4o-mini",
     "claude:claude-3-5-sonnet-20241022",
-    "custom:default",
 ];
 
 /// Runtime multi-provider fallback (2.9). `from_spec_or_any` handles a MISSING
@@ -838,9 +857,10 @@ fn build_chain(spec: &str, keys: &Keys) -> Option<Vec<Box<dyn Llm>>> {
             "openai:gpt-4o-mini"
         } else if nonempty(&keys.claude).is_some() {
             "claude:claude-3-5-sonnet-20241022"
-        } else if nonempty(&keys.custom_endpoint).is_some() {
-            "custom:default"
         } else {
+            // No custom ("custom:default") guess here: a custom gateway has no
+            // universal model name, and sending "default" to e.g. MiniMax 400s
+            // with an opaque error. Custom models join only via explicit slots.
             return None;
         };
         from_spec(fallback, keys)?

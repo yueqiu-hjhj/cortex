@@ -1650,7 +1650,11 @@
     const payload: Record<string, string> = {};
     for (const k of keyMeta) {
       const v = keys[k.id as keyof typeof keys] ?? "";
+      // custom_endpoint is a URL and custom_api_key is already the final setting
+      // name — the backend (commands.rs) reads both verbatim, so the generic
+      // `<id>_api_key` suffix must not be applied to either.
       if (k.id === "custom_endpoint") payload.custom_endpoint = v;
+      else if (k.id === "custom_api_key") payload.custom_api_key = v;
       else payload[`${k.id}_api_key`] = v;
     }
     api.setSettings(payload).then(() => app.pushToast({ kind: "success", title: "Keys saved", body: "Stored in the system keychain." }))
