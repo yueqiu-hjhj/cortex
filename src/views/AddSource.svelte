@@ -172,6 +172,24 @@
     startIngest({ subject_id: selectedSubjectId, topic_id: topicId, url, name: url, tags: [] }, url);
   }
 
+  // PDF 提取出来的文本常带硬换行、断词连字符和多余空行。入库前整理一次，
+  // 比入库后再后悔强 —— 这份能力原先挂在一个单独的文献阅读面的草稿上，
+  // 那个面已经并进阅读器，所以它搬到了真正产生草稿的地方。
+  let fixing = $state(false);
+  let fixErr = $state<string | null>(null);
+  async function fixLayout() {
+    if (!value.trim() || fixing) return;
+    fixing = true;
+    fixErr = null;
+    try {
+      value = await api.literatureRepair(value);
+    } catch (e) {
+      fixErr = String(e);
+    } finally {
+      fixing = false;
+    }
+  }
+
   function beginText() {
     if (!guardSubject()) return;
     if (!value.trim()) return;
@@ -505,6 +523,13 @@
           <!-- svelte-ignore a11y_autofocus -->
           <input class="input" autofocus placeholder="标题（可选）" bind:value={textTitle} />
           <textarea class="input addsrc-textarea" placeholder="在这里粘贴文本或 Markdown…" bind:value></textarea>
+          <div class="addsrc-text-tools">
+            <button class="btn btn--ghost btn--sm" disabled={!value.trim() || fixing} onclick={() => void fixLayout()}
+                    title="合并断行、去掉软换行与多余空行 —— 从 PDF / OCR 复制出来的文本通常需要这一步">
+              {fixing ? "整理中…" : "修排版"}
+            </button>
+            {#if fixErr}<span class="mono" style="color:var(--err,var(--warn));font-size:var(--t-2xs)">{fixErr}</span>{/if}
+          </div>
         {:else if method === "upload"}
           <span class="onb-label mono">上传文件</span>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -717,6 +742,7 @@
     gap: 12px;
     text-align: center;
   }
+  .addsrc-text-tools { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .addsrc-textarea { flex: 1 1 auto; min-height: 160px; resize: none; }
   .addsrc-drop { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
   .addsrc-hint { font-size: var(--t-xs); margin: 2px 0 0; }

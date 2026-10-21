@@ -114,7 +114,7 @@
     { id: "v-exam", group: "跳转", label: "开始考试", kind: "view", icon: "check", run: () => app.setView("exam") },
 
     { id: "v-sprint", group: "跳转", label: "冲刺规划", kind: "view", icon: "star", hint: "g " + kh(keybinds.map.leader) + " q", run: () => app.setView("sprint") },
-    { id: "v-literature", group: "跳转", label: "文献阅读", kind: "view", icon: "reader", hint: "g " + kh(keybinds.map.leader) + " l", run: () => app.setView("literature") },
+    { id: "v-literature", group: "跳转", label: "文献发现", kind: "view", icon: "reader", hint: "g " + kh(keybinds.map.leader) + " l", run: () => app.setView("literature") },
     { id: "v-vocabulary", group: "跳转", label: "词汇本", kind: "view", icon: "cards", hint: "g " + kh(keybinds.map.leader) + " v", run: () => app.setView("vocabulary") },
     { id: "s-settings", group: "设置", label: "打开设置", kind: "setting", icon: "settings", run: () => app.setView("settings") },
     { id: "s-keys", group: "设置", label: "API 密钥与模型", kind: "setting", icon: "lock", run: () => app.setView("settings") },

@@ -280,7 +280,7 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === "Enter" && app.setView("literature")}
-      title="文献阅读 — 论文精读 + 划词解释 (Space l)"
+      title="文献 — 四源检索，找到就入库，读在阅读器里 (Space l)"
     >
       <Icon name="reader" size={14} /><span class="lbl"> 文献</span><span class="nav-k">␣ l</span>
     </div>
