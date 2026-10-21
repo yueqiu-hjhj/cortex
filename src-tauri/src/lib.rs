@@ -61,6 +61,7 @@ pub mod proposals;
 pub mod clips;
 pub mod note_knowledge;
 pub mod node_docs;
+pub mod tutor;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -682,6 +683,15 @@ pub fn run() {
             node_docs::node_doc_get,
             node_docs::node_doc_generate,
             node_docs::node_doc_delete,
+            // tutor bench — a scaffold ladder that moves both ways
+            tutor::tutor_start,
+            tutor::tutor_reply,
+            tutor::tutor_sessions,
+            tutor::tutor_history,
+            tutor::tutor_end,
+            tutor::tutor_misjudged,
+            tutor::tutor_misjudged_resolve,
+            tutor::tutor_due_count,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,

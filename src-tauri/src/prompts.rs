@@ -33,6 +33,7 @@ pub const CHEATSHEET_MAP: &str = "cheatsheet.map";
 pub const SKILL_DISTILL: &str = "skill.distill";
 pub const TENSION_ANALYZE: &str = "tension.analyze";
 pub const NODE_DOC: &str = "node.doc";
+pub const TUTOR_TURN: &str = "tutor.turn";
 
 const PREFIX: &str = "prompt.";
 
@@ -133,6 +134,13 @@ static SPECS: &[Spec] = &[
         group: "知识框架",
         default: crate::node_docs::SYSTEM,
         sample: "知识点：拥塞控制（topic）\n层号：第 1 层（0 为基础层，没有前置）\n框架里的摘要：发送方如何感知网络容量并调整发送速率\n前置知识点（按依赖顺序）：TCP 握手\n\n用户笔记里提到它的原文：\n—— 《BBR 笔记》\nBBR 的瓶颈带宽估计很关键，它不再把丢包当信号。\n\n按系统提示的规则写讲解材料，结尾用 ---WHY--- 分隔顺序说明。",
+    },
+    Spec {
+        key: TUTOR_TURN,
+        label: "陪练回合",
+        group: "陪练",
+        default: crate::tutor::SYSTEM,
+        sample: "陪练对象：TCP 握手\n当前档位：第 3 档「提问引导」\n学生信心：4 / 5\n\n最近的对话：\n教练：第一题：SYN 在握手里做什么？\n学生：同步序列号吧\n\n学生这一轮的回答：同步序列号吧\n\n按规则输出 VERDICT 行和你的回复。",
     },
 ];
 
@@ -260,6 +268,7 @@ mod tests {
         SKILL_DISTILL,
         TENSION_ANALYZE,
         NODE_DOC,
+        TUTOR_TURN,
     ];
 
     #[test]
@@ -294,6 +303,7 @@ mod tests {
                 "research.chat",
                 "skill.distill",
                 "tension.analyze",
+                "tutor.turn",
             ]
         );
     }

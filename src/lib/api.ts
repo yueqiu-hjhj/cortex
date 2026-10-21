@@ -2061,6 +2061,85 @@ export const nodeDocGenerate = (nodeId: string) =>
 export const nodeDocDelete = (nodeId: string) =>
   invoke<void>("node_doc_delete", { nodeId });
 
+// ---- tutor bench — a scaffold ladder that moves both ways ------------------
+
+export interface TutorSession {
+  id: string;
+  subject_id: string;
+  subject_name: string;
+  node_id: string | null;
+  node_title: string | null;
+  title: string;
+  level: number;
+  level_label: string;
+  turns: number;
+  status: string;
+  updated_at: number;
+}
+
+export interface TutorTurn {
+  id: string;
+  role: "user" | "tutor";
+  text: string;
+  level: number;
+  confidence: number | null;
+  verdict: string | null;
+  created_at: number;
+}
+
+export interface TutorExchange {
+  session_id: string;
+  verdict: string;
+  reply: string;
+  level: number;
+  level_label: string;
+  turns: number;
+  /** True when this turn also opened a next-day calibration slot. */
+  misjudged: boolean;
+}
+
+export interface TutorOpened {
+  session: TutorSession;
+  opening: string;
+}
+
+export interface TutorMisjudged {
+  id: string;
+  session_id: string;
+  subject_id: string;
+  node_id: string | null;
+  node_title: string | null;
+  question: string;
+  answer: string;
+  scheduled_for: number;
+  due: boolean;
+  created_at: number;
+}
+
+export const tutorStart = (subjectId: string, nodeId: string | null) =>
+  invoke<TutorOpened>("tutor_start", { subjectId, nodeId: nodeId ?? null });
+
+export const tutorReply = (sessionId: string, answer: string, confidence: number) =>
+  invoke<TutorExchange>("tutor_reply", { sessionId, answer, confidence });
+
+export const tutorSessions = (subjectId: string) =>
+  invoke<TutorSession[]>("tutor_sessions", { subjectId });
+
+export const tutorHistory = (sessionId: string) =>
+  invoke<TutorTurn[]>("tutor_history", { sessionId });
+
+export const tutorEnd = (sessionId: string) =>
+  invoke<void>("tutor_end", { sessionId });
+
+export const tutorMisjudged = () =>
+  invoke<TutorMisjudged[]>("tutor_misjudged");
+
+export const tutorMisjudgedResolve = (id: string) =>
+  invoke<void>("tutor_misjudged_resolve", { id });
+
+export const tutorDueCount = () =>
+  invoke<number>("tutor_due_count");
+
 export const applyObservation = (
   nodeId: string,
   correct: boolean,

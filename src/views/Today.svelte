@@ -87,10 +87,13 @@
   // the notes view until you accept them. Surfacing the count here is what
   // makes the hand-off visible without opening the editor.
   let propCount = $state(0);
+  // 陪练台的校准队列：答错但当时很确定的点，次日来这里「先修」。
+  let tutorDue = $state(0);
   $effect(() => {
     api.reviewToday(500).then((cs) => { dueCards = cs; }).catch(() => { dueCards = null; });
     api.cronRecentRuns(3).then((rs) => { cronLatest = rs; }).catch(() => { cronLatest = null; });
     api.proposalPendingCount().then((n) => { propCount = n; }).catch(() => { propCount = 0; });
+    api.tutorDueCount().then((n) => { tutorDue = n; }).catch(() => { tutorDue = 0; });
   });
   const dueCount = $derived(dueCards?.length ?? 0);
   const dueNew = $derived(dueCards?.filter((c) => c.reps === 0).length ?? 0);
@@ -328,13 +331,24 @@
     </div>
   </header>
 
-  {#if dueCount > 0 || (cronLatest?.length ?? 0) > 0 || propCount > 0}
+  {#if dueCount > 0 || (cronLatest?.length ?? 0) > 0 || propCount > 0 || tutorDue > 0}
     <div class="flowbar">
       {#if dueCount > 0}
         <button class="flow-chip flow-review" title="进入今日复习" onclick={() => app.setView("review")}>
           <Icon name="cards" size={13} />
           <b>复习 {dueCount} 张</b>
           {#if dueNew > 0}<span class="flow-sub mono">· 含新卡 {dueNew}</span>{/if}
+        </button>
+      {/if}
+      {#if tutorDue > 0}
+        <button
+          class="flow-chip flow-tutor"
+          title="陪练时答错、但当时很确定的点 —— 印象最深的时候错的，先修这些"
+          onclick={() => app.setView("tutor")}
+        >
+          <Icon name="bolt" size={13} />
+          <b>先修 {tutorDue} 个点</b>
+          <span class="flow-sub">误以为会</span>
         </button>
       {/if}
       {#if propCount > 0}
@@ -535,6 +549,12 @@
   }
   .flow-proposal b {
     color: var(--warn);
+  }
+  .flow-tutor {
+    border-color: color-mix(in oklab, var(--danger, #e24b4a) 45%, var(--border));
+  }
+  .flow-tutor b {
+    color: var(--danger, #e24b4a);
   }
   .flow-sub {
     overflow: hidden;

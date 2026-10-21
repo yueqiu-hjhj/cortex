@@ -31,6 +31,7 @@ export type View =
   | "sprint"
   | "literature"
   | "vocabulary"
+  | "tutor"
   | "glossary"
   | "mindmap"
   | "exam"

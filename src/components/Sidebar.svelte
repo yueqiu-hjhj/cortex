@@ -162,6 +162,15 @@
       <Icon name="chat" size={14} /><span class="lbl"> 研究对话</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'tutor' ? ' on' : ''}" title="陪练台 — 五档支架，答错且自信会掉档并进「先修」队列"
+      onclick={() => app.setView("tutor")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("tutor")}
+    >
+      <Icon name="bolt" size={14} /><span class="lbl"> 陪练台</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'agents' ? ' on' : ''}" title="智能体平台 — 自定义 Agent 与运行记录 (Space z)"
       onclick={() => app.setView("agents")}
       role="button"
