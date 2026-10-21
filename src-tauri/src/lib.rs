@@ -63,6 +63,7 @@ pub mod note_knowledge;
 pub mod node_docs;
 pub mod tutor;
 pub mod provenance;
+pub mod redteam;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -686,6 +687,14 @@ pub fn run() {
             node_docs::node_doc_delete,
             // source view — the materials × points bipartite, with 孤证 called out
             provenance::provenance_bipartite,
+            // red-team review — read your paper the way a hostile reviewer will
+            redteam::redteam_run_create,
+            redteam::redteam_run_list,
+            redteam::redteam_run_result,
+            redteam::redteam_run_delete,
+            redteam::redteam_run_execute,
+            redteam::redteam_export_md,
+            redteam::redteam_md_file,
             // tutor bench — a scaffold ladder that moves both ways
             tutor::tutor_start,
             tutor::tutor_reply,

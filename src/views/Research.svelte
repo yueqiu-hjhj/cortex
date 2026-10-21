@@ -750,6 +750,99 @@
     } catch (e) { app.pushToast({ kind: "error", title: "导出失败", body: String(e) }); }
   }
 
+  // ----- 3.4: red-team review — one paper, read like a hostile reviewer ----
+  // 知源's 顶刊红队: Soundness/Novelty/Rigor + 致命挑刺 + 抢救性实验 +
+  // 反驳防守。和张力分析的区别：张力是「文献之间」，红队是「一篇论文对
+  // 着一个会议的审稿标准」——所以入口是勾选正好 1 篇，venue 是参数。
+  let redteamOpen = $state(false);
+  let redteamView = $state<"pick" | "runs" | "result">("pick");
+  let redteamRuns = $state<api.RedteamRun[]>([]);
+  let redteamResult = $state<api.RedteamResult | null>(null);
+  let redteamVenue = $state("顶刊（NeurIPS / CVPR 级）");
+  let redteamBusy = $state(false);
+  let redteamError = $state<string | null>(null);
+  const redteamRunning = $derived(redteamResult?.run.status === "running");
+
+  async function loadRedteamRuns() {
+    try { redteamRuns = await api.redteamRunList(); }
+    catch (e) { redteamError = String(e); }
+  }
+  function openRedteam() {
+    redteamOpen = true;
+    redteamError = null;
+    void loadRedteamRuns();
+  }
+  function closeRedteam() {
+    redteamOpen = false;
+    redteamResult = null;
+    redteamError = null;
+    redteamView = "pick";
+  }
+  async function startRedteam() {
+    if (matrixSelectionCount !== 1 || redteamBusy) return;
+    redteamBusy = true;
+    redteamError = null;
+    try {
+      const runId = await api.redteamRunCreate(matrixSelectionIds[0], redteamVenue.trim() || undefined);
+      redteamResult = await api.redteamRunResult(runId);
+      redteamView = "result";
+      jobs.start({
+        kind: "redteam",
+        label: `红队评审 · ${matrixSelectionIds.length} 篇`,
+        subjectId: app.activeSubject?.id ?? "",
+        run: () => api.redteamRunExecute(runId),
+        onDone: () => void refreshRedteam(runId),
+      });
+    } catch (e) { redteamError = String(e); }
+    finally { redteamBusy = false; }
+  }
+  async function refreshRedteam(runId: string) {
+    try {
+      const fresh = await api.redteamRunResult(runId);
+      if (redteamResult?.run.id === runId) redteamResult = fresh;
+      redteamRuns = await api.redteamRunList();
+    } catch { /* transient */ }
+  }
+  $effect(() => {
+    if (!redteamOpen || !redteamRunning || !redteamResult) return;
+    const iv = setInterval(() => void refreshRedteam(redteamResult!.run.id), 2500);
+    return () => clearInterval(iv);
+  });
+  async function openRedteamRun(id: string) {
+    try {
+      redteamResult = await api.redteamRunResult(id);
+      redteamView = "result";
+    } catch (e) { redteamError = String(e); }
+  }
+  async function deleteRedteamRun(id: string) {
+    if (!await app.confirm({ title: "删除这次红队评审？", danger: true })) return;
+    await api.redteamRunDelete(id).catch(() => {});
+    await loadRedteamRuns();
+    if (redteamResult?.run.id === id) { redteamResult = null; redteamView = "pick"; }
+  }
+  async function exportRedteamMd() {
+    if (!redteamResult) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const dest = await save({
+      defaultPath: `红队评审-${redteamResult.run.paper_title}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!dest) return;
+    try {
+      await api.redteamMdFile(redteamResult.run.id, dest);
+      app.pushToast({ kind: "success", title: "已导出 Markdown" });
+    } catch (e) { app.pushToast({ kind: "error", title: "导出失败", body: String(e) }); }
+  }
+  const REDTEAM_KIND_LABEL: Record<string, string> = {
+    fatal: "致命",
+    weakness: "次要",
+    rescue: "抢救实验",
+    rebuttal: "防守策略",
+  };
+  function redteamKindLabel(kind: string): string {
+    return REDTEAM_KIND_LABEL[kind] ?? kind;
+  }
+
   async function loadPrismaRuns() {
     try {
       prismaRuns = await api.prismaRunList();
@@ -1253,6 +1346,13 @@
         title="文献张力分析：模型通读勾选的论文，找出文献间互相矛盾/互补/证据冲突的地方，每条张力带双方原话（至少勾选 2 篇）"
       >
         张力分析
+      </button>
+      <button
+        class="btn"
+        onclick={openRedteam}
+        title="顶刊红队评审：模型扮演敌意审稿人，给 Soundness/Novelty/Rigor 打分，列出致命问题（必须带论文原话）、抢救性实验与反驳防守策略（勾选正好 1 篇）"
+      >
+        红队评审
       </button>
       {#if matrixSelectionCount > 0}
         <button class="btn btn--ghost" onclick={clearMatrixSelection}>清除选择</button>
@@ -2112,6 +2212,111 @@
           <button class="btn" onclick={exportTensionMd}>导出 Markdown</button>
           <button class="btn" onclick={() => { tensionResult = null; tensionView = "pick"; }}>再分析一次</button>
           <button class="btn primary" onclick={closeTensions}>完成</button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+{#if redteamOpen}
+  <div class="matrix-modal-bg" onclick={closeRedteam} role="presentation"></div>
+  <div class="matrix-modal extract-modal" role="dialog" aria-label="顶刊红队评审">
+    {#if redteamError}
+      <div class="matrix-modal-bd err">
+        {redteamError}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (redteamError = null)}>返回</button>
+          <button class="btn" onclick={closeRedteam}>关闭</button>
+        </div>
+      </div>
+    {:else if redteamView === "pick"}
+      <div class="matrix-modal-bd">
+        <div class="shead">顶刊红队评审 <span class="n">已勾选 {matrixSelectionCount} 篇</span></div>
+        <p class="dhint">知源式「顶刊红队」：模型扮演敌意审稿人，按 Soundness / Novelty / Rigor 三个维度打分，列出足以单独拒稿的致命问题（每条必须带论文原话，没有引用的问题不会被记录）、能补救的实验，以及你决定守住的观点怎么防守。张量是待核查的假设——红队意见也一样，是投稿前的自查，不是判决。</p>
+        {#if matrixSelectionCount !== 1}
+          <p class="dhint" style="color:var(--warn)">请勾选正好 1 篇论文（红队审一篇，不审一批）。</p>
+        {/if}
+        <input class="dt" bind:value={redteamVenue} placeholder="对标会议/期刊（如：NeurIPS 2026）" />
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (redteamView = "runs")}>评审历史</button>
+          <button class="btn" onclick={closeRedteam}>取消</button>
+          <button class="btn primary" disabled={matrixSelectionCount !== 1 || redteamBusy} onclick={startRedteam}>
+            {redteamBusy ? "创建中…" : "开始评审"}
+          </button>
+        </div>
+      </div>
+    {:else if redteamView === "runs"}
+      <div class="matrix-modal-bd">
+        <div class="shead">评审历史 <span class="n">{redteamRuns.length}</span></div>
+        {#if !redteamRuns.length}
+          <p class="dhint">还没有评审记录。</p>
+        {:else}
+          <ul class="runlist">
+            {#each redteamRuns as r (r.id)}
+              <li>
+                <button class="runpick" onclick={() => openRedteamRun(r.id)}>
+                  <span class="mono">{r.paper_title}</span>
+                  <span class="mut mono">{r.venue} · {new Date(r.created_at).toLocaleDateString("zh-CN")}</span>
+                </button>
+                <button class="x" title="删除" onclick={() => deleteRedteamRun(r.id)}><Icon name="x" size={11} /></button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={() => (redteamView = "pick")}>返回</button>
+          <button class="btn" onclick={closeRedteam}>关闭</button>
+        </div>
+      </div>
+    {:else if redteamResult}
+      <div class="matrix-modal-bd">
+        <div class="shead">
+          {redteamResult.run.paper_title}
+          {#if redteamResult.run.status === "running"}<span class="runbadge">进行中</span>
+          {:else if redteamResult.run.status === "error"}<span class="runbadge failed">失败</span>{/if}
+          <span class="n">{redteamResult.findings.length} 条意见</span>
+        </div>
+        {#if redteamResult.run.status === "error"}
+          <p class="dhint">{redteamResult.run.error}</p>
+        {:else}
+          <div class="rt-scores">
+            <span class="rt-score" title="Soundness：结论是否被给出的证据支撑"><b>{redteamResult.run.soundness ?? "–"}</b>/10 严谨度</span>
+            <span class="rt-score" title="Novelty：相对于这个会议的读者已经知道的东西，新在哪"><b>{redteamResult.run.novelty ?? "–"}</b>/10 新颖度</span>
+            <span class="rt-score" title="Rigor：方法、基线、消融、统计、可复现性"><b>{redteamResult.run.rigor ?? "–"}</b>/10 严格度</span>
+            {#if redteamResult.run.verdict}
+              <span class="rt-verdict v-{redteamResult.run.verdict}">{redteamResult.run.verdict}</span>
+            {/if}
+          </div>
+          {#if redteamResult.run.summary}<p class="dhint">{redteamResult.run.summary}</p>{/if}
+          {#each ["fatal", "weakness", "rescue", "rebuttal"] as kind (kind)}
+            {@const items = redteamResult.findings.filter((f) => f.kind === kind)}
+            {#if items.length}
+              <div class="rt-group">
+                <h4>
+                  {redteamKindLabel(kind)}{kind === "fatal"
+                    ? " · 单独任何一条都足以拒稿"
+                    : kind === "rescue"
+                      ? " · 补救它的实验"
+                      : ""}
+                </h4>
+                {#each items as f (f.id)}
+                  <div class="rt-finding k-{f.kind}">
+                    <div class="rt-f-t">{f.title}</div>
+                    <div class="rt-f-d">{f.detail}</div>
+                    {#if f.quote}<div class="rt-f-q">「{f.quote}」</div>{/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/each}
+          {#if redteamResult.findings.length === 0 && !redteamRunning}
+            <p class="dhint">没有产出意见——模型输出无法解析，或卡片信息不足。</p>
+          {/if}
+        {/if}
+        <div class="matrix-modal-actions">
+          <button class="btn" onclick={exportRedteamMd}>导出 Markdown</button>
+          <button class="btn" onclick={() => { redteamResult = null; redteamView = "pick"; }}>再评审一次</button>
+          <button class="btn primary" onclick={closeRedteam}>完成</button>
         </div>
       </div>
     {/if}
@@ -3001,6 +3206,25 @@
   .ts-claim { font-size: var(--t-s); color: var(--fg); margin-bottom: 5px; }
   .ts-quote { font-size: var(--t-xs); color: var(--fg-muted); border-left: 2px solid var(--border); padding-left: 8px; }
   .tension-vs { align-self: center; color: var(--fg-faint); font-size: 10px; }
+  /* 红队评审：打分条 + 分组意见卡 */
+  .rt-scores { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 10px; }
+  .rt-score { font-size: var(--t-xs); color: var(--fg-muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
+  .rt-score b { color: var(--fg-bright); font-size: var(--t-s); }
+  .rt-verdict { font-size: 10.5px; font-family: var(--font-mono); padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); text-transform: uppercase; }
+  .rt-verdict.v-accept { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 45%, transparent); }
+  .rt-verdict.v-minor { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+  .rt-verdict.v-major { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
+  .rt-verdict.v-reject { color: var(--err, #e5484d); border-color: color-mix(in oklab, var(--err, #e5484d) 45%, transparent); }
+  .rt-group { margin: 10px 0 4px; }
+  .rt-group h4 { margin: 0 0 6px; font-size: 11px; color: var(--fg-muted); font-weight: 600; letter-spacing: 0.04em; }
+  .rt-finding { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 11px; margin-bottom: 7px; background: var(--surface); }
+  .rt-finding.k-fatal { border-left-color: var(--err, #e5484d); }
+  .rt-finding.k-weakness { border-left-color: var(--warn); }
+  .rt-finding.k-rescue { border-left-color: var(--accent); }
+  .rt-finding.k-rebuttal { border-left-color: var(--fg-faint); }
+  .rt-f-t { font-size: var(--t-s); font-weight: 600; color: var(--fg-bright); margin-bottom: 2px; }
+  .rt-f-d { font-size: var(--t-xs); color: var(--fg); line-height: 1.55; }
+  .rt-f-q { font-size: var(--t-xs); color: var(--fg-muted); border-left: 2px solid var(--border); padding-left: 8px; margin-top: 5px; }
   @media (max-width: 760px) {
     .tension-card { grid-template-columns: 1fr; }
     .tension-vs { text-align: center; }

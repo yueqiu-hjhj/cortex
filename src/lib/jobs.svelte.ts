@@ -23,6 +23,7 @@ export type JobKind =
   | "extract"
   | "prisma"
   | "tension"
+  | "redteam"
   | "sumtree"
   | "connector"
   | "source";
@@ -60,6 +61,7 @@ const KIND_LABEL: Record<JobKind, string> = {
   extract: "paper extraction",
   prisma: "PRISMA extraction",
   tension: "tension analysis",
+  redteam: "red-team review",
   sumtree: "summary tree",
   connector: "connector sync",
   source: "source",

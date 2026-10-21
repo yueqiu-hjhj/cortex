@@ -1218,6 +1218,52 @@ export const tensionExportMd = (runId: string) =>
 export const tensionMdFile = (runId: string, dest: string) =>
   invoke<void>("tension_md_file", { runId, dest });
 
+// ---- red-team review — read your paper the way a hostile reviewer will ---
+
+export interface RedteamRun {
+  id: string;
+  title: string;
+  status: string;
+  error: string | null;
+  paper_id: string;
+  paper_title: string;
+  venue: string;
+  soundness: number | null;
+  novelty: number | null;
+  rigor: number | null;
+  /** accept | minor | major | reject */
+  verdict: string | null;
+  summary: string | null;
+  created_at: number;
+  updated_at: number;
+}
+export interface RedteamFinding {
+  id: string;
+  /** fatal | weakness | rescue | rebuttal */
+  kind: string;
+  title: string;
+  detail: string;
+  quote: string | null;
+  created_at: number;
+}
+export interface RedteamResult {
+  run: RedteamRun;
+  findings: RedteamFinding[];
+}
+export const redteamRunCreate = (paperId: string, venue?: string) =>
+  invoke<string>("redteam_run_create", { paperId, venue });
+export const redteamRunList = () => invoke<RedteamRun[]>("redteam_run_list");
+export const redteamRunResult = (runId: string) =>
+  invoke<RedteamResult>("redteam_run_result", { runId });
+export const redteamRunDelete = (runId: string) =>
+  invoke<void>("redteam_run_delete", { runId });
+export const redteamRunExecute = (runId: string) =>
+  invoke<void>("redteam_run_execute", { runId });
+export const redteamExportMd = (runId: string) =>
+  invoke<string>("redteam_export_md", { runId });
+export const redteamMdFile = (runId: string, dest: string) =>
+  invoke<void>("redteam_md_file", { runId, dest });
+
 // ---- token accounting (0049, estimates) ----
 export interface TokenDayBucket { day: string; prompt: number; completion: number; calls: number }
 export interface TokenBucket { kind: string; total: number; calls: number }

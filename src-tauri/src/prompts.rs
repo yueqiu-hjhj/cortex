@@ -35,6 +35,7 @@ pub const TENSION_ANALYZE: &str = "tension.analyze";
 pub const NODE_DOC: &str = "node.doc";
 pub const TUTOR_TURN: &str = "tutor.turn";
 pub const VOCAB_MINE: &str = "vocab.mine";
+pub const REDTEAM_REVIEW: &str = "redteam.review";
 
 const PREFIX: &str = "prompt.";
 
@@ -65,6 +66,13 @@ static SPECS: &[Spec] = &[
         group: "研究",
         default: crate::tensions::SYSTEM,
         sample: "PAPERS:\n### PAPER 1 (title: Scaling laws for retrieval)\nScaling retrieval helps up to 10^9 tokens; beyond that gains flatten.\n\n### PAPER 2 (title: Retrieval is not all you need)\nLong-context models match retrieval pipelines at comparable cost.\n\nReturn the tensions JSON now.",
+    },
+    Spec {
+        key: REDTEAM_REVIEW,
+        label: "顶刊红队评审",
+        group: "研究",
+        default: crate::redteam::SYSTEM,
+        sample: "VENUE: 顶刊（NeurIPS / CVPR 级）\nPAPER TITLE: TinyBERT-12: A 12-layer student distilled from BERT-base\nPAPER CARD:\nWe distill BERT-base into a 12-layer student. On GLUE, TinyBERT-12 reaches 96.8% of the teacher's score with 7.5x smaller size and 9.4x faster inference. We evaluate on GLUE dev sets only.\n\nReturn the review JSON now.",
     },
     Spec {
         key: LIT_PLAN,
@@ -278,6 +286,7 @@ mod tests {
         NODE_DOC,
         TUTOR_TURN,
         VOCAB_MINE,
+        REDTEAM_REVIEW,
     ];
 
     #[test]
@@ -309,6 +318,7 @@ mod tests {
                 "notes.summary.reduce",
                 "notes.summary.source",
                 "notes.summary.subject",
+                "redteam.review",
                 "research.chat",
                 "skill.distill",
                 "tension.analyze",
