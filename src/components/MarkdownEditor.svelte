@@ -6,7 +6,14 @@
   import Icon from "./Icon.svelte";
   import RichText from "./RichText.svelte";
 
-  let { value, onChange }: { value: string; onChange: (v: string) => void } = $props();
+  // `clipLabel` opts the preview into the clip picker (L3): when set, selecting
+  // text in Preview offers "摘到笔记" and carries this attribution. Notes pass
+  // their title; other editors that merely render Markdown leave it unset.
+  let { value, onChange, clipLabel = null }: {
+    value: string;
+    onChange: (v: string) => void;
+    clipLabel?: string | null;
+  } = $props();
 
   let ta = $state<HTMLTextAreaElement | null>(null);
   let tab = $state<"write" | "preview">("write");
@@ -179,7 +186,11 @@
       onkeydown={handleKeydown}
     ></textarea>
   {:else}
-    <div class="md-preview">
+    <div
+      class="md-preview"
+      data-clip-scope={clipLabel ? "note" : undefined}
+      data-clip-label={clipLabel ?? undefined}
+    >
       <div class="md-preview-inner">
         {#if value.trim()}
           <RichText text={value} />

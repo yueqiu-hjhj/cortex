@@ -371,6 +371,37 @@ class AppStore {
   // drag-drop listener and routes every drop here; AddSource drains the queue
   // (subject-guarded) so PDFs/md/images can be dropped without navigating first.
   pendingDrops = $state<string[]>([]);
+
+  // ── clips: one selected passage, carried to a note (L3) ───────────────────
+  // `clipPick` is the request the floating picker is currently serving. Set by
+  // the selection bar (a real selection) or by an answer's "+" button (the whole
+  // reply) — one picker, so both paths land in the same place.
+  // Filled by NotesView: flushes the editor's pending autosave. Filing a clip
+  // writes the note through the backend, so unsaved keystrokes in the OPEN note
+  // must land first — otherwise the clip write and the debounced autosave race,
+  // and the clip is the one that loses.
+  flushNote: (() => Promise<void>) | null = null;
+  // Filled by NotesView: re-reads the open note. Filing a clip changes the body
+  // server-side, so the editor must refresh or the user sees nothing happen.
+  reloadNote: (() => Promise<void>) | null = null;
+  clipPick = $state<api.ClipRequest | null>(null);
+  openClipPicker(req: api.ClipRequest) { this.clipPick = req; }
+  closeClipPicker() { this.clipPick = null; }
+  // The note the user is currently reading/editing. The picker offers it as the
+  // one-click default target, since "摘到这篇" is the common case.
+  lastNoteId = $state<string | null>(null);
+  lastNoteTitle = $state<string | null>(null);
+  noteHere(id: string | null, title: string | null) {
+    this.lastNoteId = id;
+    this.lastNoteTitle = title;
+  }
+  // Cross-view "open this note" (filing a clip jumps to the result). NotesView
+  // consumes + clears it after its list loads.
+  pendingNoteId = $state<string | null>(null);
+  openNote(id: string) {
+    this.pendingNoteId = id;
+    this.setView("notes");
+  }
   // Subject detail panel (modal) — opened by clicking the subject header.
   subjectPanelOpen = $state(false);
   openSubjectPanel() { this.subjectPanelOpen = true; }

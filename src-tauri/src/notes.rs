@@ -66,7 +66,7 @@ pub fn update_note(
 /// best-effort: the DB row is already committed, so a transient filesystem
 /// error (file locked by an editor, vault on a detached drive) is logged rather
 /// than reported as a failed save. The next save or startup pass repairs it.
-fn mirror_to_vault(state: &AppState, c: &rusqlite::Connection, note: &Note) {
+pub(crate) fn mirror_to_vault(state: &AppState, c: &rusqlite::Connection, note: &Note) {
     let Some(root) = crate::vault::root_for(c, state.data_dir.as_deref()) else {
         return;
     };

@@ -296,7 +296,8 @@
             {#each messages as m}
               <li class={"msg " + m.role}>
                 <div class="mut mono">{m.role}{m.agent_name ? ` · ${m.agent_name}` : ""}{m.tool_name ? ` · ${m.tool_name}` : ""}</div>
-                <div>{m.content}</div>
+                <!-- selectable so a useful step can be clipped into a note (L3) -->
+                <div data-clip-scope="agent" data-clip-label={`智能体 · ${m.agent_name ?? "agent"}`}>{m.content}</div>
               </li>
             {/each}
           </ol>

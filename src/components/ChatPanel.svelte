@@ -460,18 +460,26 @@
     app.stopChat();
   }
 
-  // ── save an assistant answer as a note ─────────────────────────────────────
-  // Title = first ~6 words of the message; body = the full markdown.
-  async function saveToNote(text: string) {
-    const title =
-      text.replace(/\s+/g, " ").trim().split(" ").slice(0, 6).join(" ") || "Note";
-    try {
-      await api.createNote(title, text, app.activeSubjectId ?? null);
-      app.pushToast({ kind: "success", title: "Saved to notes" });
-    } catch (e) {
-      app.pushToast({ kind: "error", title: "Save failed", body: String(e) });
-    }
+  // ── keep an answer: the whole reply, or just the part you select ───────────
+  // Both end in the same picker (SelectionClip): pick a note, and the passage
+  // lands under its 「## 摘录」 heading, attributed. The old behaviour — silently
+  // creating a note titled "the first six words" — is gone: it produced notes
+  // nobody could find again, and it could not keep a single sentence.
+  /** "provider:model" → the model part; that is what a reader recognizes. */
+  function modelLabel(): string {
+    const m = chatModel.trim();
+    if (!m) return "chat";
+    return m.includes(":") ? m.split(":").slice(1).join(":") : m;
   }
+
+  function clipReply(text: string) {
+    app.openClipPicker({
+      quote: text,
+      sourceKind: "chat",
+      sourceLabel: `AI 回答 · ${modelLabel()}`,
+    });
+  }
+
 
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -642,7 +650,13 @@
           {@const citedCount = cites.filter((c) => c.cited).length}
           {@const isUncited = cites.length > 0 && citedCount === 0}
           {@const noRetrieval = !!m.retrieval && m.retrieval.hits === 0}
-          <div class="bubble assistant" class:is-uncited={isUncited} class:is-unretrieved={noRetrieval}>
+          <div
+            class="bubble assistant"
+            class:is-uncited={isUncited}
+            class:is-unretrieved={noRetrieval}
+            data-clip-scope="chat"
+            data-clip-label={`AI 回答 · ${modelLabel()}`}
+          >
             {#if noRetrieval}
               <span class="retr-badge">未检索 · 零命中</span>
             {/if}
@@ -710,9 +724,9 @@
               <button
                 type="button"
                 class="msg-action"
-                title="Save to notes"
-                aria-label="Save to notes"
-                onclick={() => saveToNote(m.text)}
+                title="摘到笔记 —— 也可以先选中回答里的一段"
+                aria-label="摘到笔记"
+                onclick={() => clipReply(m.text)}
               >
                 <Icon name="plus" size={12} />
               </button>
@@ -722,7 +736,7 @@
       {/each}
 
       {#if streaming !== null}
-        <div class="bubble assistant">
+        <div class="bubble assistant" data-clip-scope="chat" data-clip-label={`AI 回答 · ${modelLabel()}`}>
           <RichText text={streaming} /><span class="cursor-blink">▋</span>
         </div>
       {/if}

@@ -58,6 +58,7 @@ pub mod xmind;
 pub mod wiki;
 pub mod vault;
 pub mod proposals;
+pub mod clips;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
@@ -665,6 +666,12 @@ pub fn run() {
             proposals::accept_proposal,
             proposals::reject_proposal,
             proposals::pending_proposals,
+            // clips: select a passage anywhere → file it under a note
+            clips::clip_add,
+            clips::clips_list,
+            clips::clip_to_note,
+            clips::clip_to_new_note,
+            clips::clip_discard,
             // calendar
             calendar::create_event,
             calendar::list_events,

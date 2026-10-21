@@ -1,7 +1,7 @@
 //! `cortex-mcp` — stdio MCP server exposing the local Cortex library.
 //!
 //! Thin shell over `cortex_lib::mcp_server` (which owns the protocol layer,
-//! the 21 tools, and the tests). The protocol layer is
+//! the 22 tools, and the tests). The protocol layer is
 //! spec-compliant: `tools/list` carries real `inputSchema`s, tool results are
 //! `content:[{type:"text"}]`, failures set `isError`, notifications get no
 //! response, and unknown methods return JSON-RPC -32601.
@@ -31,11 +31,11 @@ fn main() -> ExitCode {
                  Env: CORTEX_DB (exact db file) or CORTEX_DATA_DIR (dir with cortex.db).\n\
                  Default: platform app-data dir for app.study.cortex.\n\
                  \n\
-                 Tools (21: 18 read-only + 3 queue): list_notebooks, search_notebook, get_source,\n\
+                 Tools (22: 19 read-only + 3 queue): list_notebooks, search_notebook, get_source,\n\
                  read_document, search_notes, get_knowledge_tree, list_wiki, get_wiki,\n\
                  wiki_reverse_links, list_agents, agent_messages, cross_book_bridges,\n\
                  list_provenance, list_papers, get_paper, search_papers, list_excerpts,\n\
-                 get_note, propose_note, list_proposals, withdraw_proposal.\n\
+                 get_note, list_clips, propose_note, list_proposals, withdraw_proposal.\n\
                  \n\
                  Resources: cortex://note/<id>, cortex://paper/<cite_key>.\n\
                  \n\
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
         }
     };
     eprintln!(
-        "cortex-mcp: serving {} (21 tools; writes limited to the proposal queue; logs on stderr)",
+        "cortex-mcp: serving {} (22 tools; writes limited to the proposal queue; logs on stderr)",
         path.display()
     );
     match cortex_lib::mcp_server::run_stdio(&conn) {

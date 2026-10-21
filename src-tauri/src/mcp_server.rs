@@ -21,7 +21,7 @@
 //!   exposes the note's vault-relative path, which the agent needs to open the
 //!   file — it is not a machine-specific absolute path.)
 //!
-//! Tools: 18 read-only + 3 for the proposal queue.
+//! Tools: 19 read-only + 3 for the proposal queue.
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -360,6 +360,17 @@ fn tool_defs() -> Value {
                 "properties": { "proposal_id": { "type": "string" } },
                 "required": ["proposal_id"]
             }
+        },
+        {
+            "name": "list_clips",
+            "description": "Passages the user selected and kept but has not filed under a note yet (`note_id` is null for these). Each carries where it came from and, when relevant, a page. Use them as raw material: a cluster of clips about one idea is the strongest signal that the user wants a note on it — draft one with propose_note and quote the clips.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pending_only": { "type": "boolean", "description": "Default true: unfiled clips. false also returns clips already filed under notes." },
+                    "limit": { "type": "number", "description": "Default 50, max 200" }
+                }
+            }
         }
     ])
 }
@@ -532,9 +543,37 @@ fn call_tool(conn: &Connection, name: &str, args: &Value) -> std::result::Result
         "propose_note" => propose_note(conn, args),
         "list_proposals" => list_proposals(conn, args),
         "withdraw_proposal" => withdraw_proposal(conn, args),
+        "list_clips" => list_clips(conn, args),
         other => return Err(format!("unknown tool: {other}")),
     };
     res.map_err(|e| e.to_string())
+}
+
+fn list_clips(conn: &Connection, args: &Value) -> Result<String> {
+    let pending_only = args.get("pending_only").and_then(Value::as_bool).unwrap_or(true);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(50)
+        .min(200) as usize;
+    let mut all = crate::clips::list(conn, pending_only)?;
+    all.truncate(limit);
+    if all.is_empty() {
+        return Ok("No clips waiting. The user has not set any passages aside yet.".into());
+    }
+    let mut out = String::new();
+    out.push_str(&format!("{} clip(s):\n", all.len()));
+    for c in all {
+        let src = c.source_label.clone().unwrap_or_else(|| c.source_kind.clone());
+        let page = c.page.map(|p| format!(" · p.{p}")).unwrap_or_default();
+        let where_ = c
+            .note_title
+            .as_ref()
+            .map(|t| format!(" → 已归位《{t}》"))
+            .unwrap_or_else(|| " → 待整理".to_string());
+        out.push_str(&format!("\n- [{}] {}{}{}\n  {}\n", c.id, src, page, where_, one_line(&c.quote, 240)));
+    }
+    Ok(out.trim_end().to_string())
 }
 
 // ---- additional read-only tools (ported from the previous binary) ------
@@ -981,7 +1020,7 @@ fn get_note(conn: &Connection, args: &Value) -> Result<String> {
 // just "saved a note" is the failure mode this whole layer exists to prevent.
 //
 // A read-only connection (someone pointing cortex-mcp at a copy of a DB) still
-// serves all 18 read tools; only the queue needs writability, and the error
+// serves all 19 read tools; only the queue needs writability, and the error
 // says so instead of failing with a raw SQLite code.
 
 fn require_queue(conn: &Connection) -> Result<()> {
@@ -1216,7 +1255,9 @@ Notes and papers are also exposed as resources (cortex://note/<id>, cortex://pap
 Writing: you cannot edit notes. propose_note queues a draft with a diff; the user accepts or discards it in \
 Cortex (notes → AI 提案), and only then does it become a note and a .md file. Use list_proposals to check what \
 is already waiting, withdraw_proposal to retract your own draft. Prefer append over replace, and say in the \
-rationale why the note is worth having."
+rationale why the note is worth having. \
+Clips: list_clips returns passages the user selected and has not filed yet — treat them as the best signal of \
+what they are thinking about right now, and quote them when you draft."
             }))
         }
         "ping" => ok(json!({})),
@@ -1319,6 +1360,13 @@ mod tests {
                            3, '本文核心贡献', 1, 1);",
             )
             .unwrap();
+            c.execute_batch(
+                "INSERT INTO clips (id, quote, source_kind, source_label, page, created_at)
+                   VALUES ('cl1', '特征值分解把矩阵拆成旋转与缩放。', 'chat', 'AI 回答 · test', NULL, 10);
+                 INSERT INTO clips (id, quote, source_kind, note_id, block, created_at)
+                   VALUES ('cl2', '已经归位的一句', 'note', 'n1', '> 已经归位的一句', 9);",
+            )
+            .unwrap();
             crate::papers::ensure_cite_keys(&c).unwrap();
             crate::wiki::upsert_page(
                 &c,
@@ -1376,7 +1424,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
-        assert_eq!(names.len(), 21, "18 read-only tools + 3 queue tools");
+        assert_eq!(names.len(), 22, "19 read-only tools + 3 queue tools");
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1558,6 +1606,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bad["error"]["code"], -32602);
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_clips_shows_the_inbox_and_hides_filed_ones() {
+        let (c, dir) = seeded("clips");
+        let inbox = call_tool(&c, "list_clips", &json!({})).unwrap();
+        assert!(inbox.contains("待整理"), "{inbox}");
+        assert!(inbox.contains("特征值分解把矩阵拆成旋转与缩放"));
+        assert!(!inbox.contains("已经归位的一句"), "filed clips are not inbox");
+
+        let all = call_tool(&c, "list_clips", &json!({ "pending_only": false })).unwrap();
+        assert!(all.contains("已归位《特征值笔记》"), "{all}");
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }

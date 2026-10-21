@@ -113,6 +113,33 @@
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // Hand the editor's save to the clip picker: a clip filed into the note being
+  // edited must not race the 800 ms autosave (see store.flushNote).
+  async function reloadSelected() {
+    const id = selectedId;
+    if (!id) return;
+    try {
+      const fresh = await api.getNote(id);
+      if (fresh.id !== selectedId) return; // the user moved on mid-flight
+      notes = notes.map((n) => (n.id === fresh.id ? fresh : n));
+      title = fresh.title;
+      body = fresh.body;
+      saved = true;
+      void refreshLinks();
+    } catch {
+      /* deleted elsewhere — leave the editor as it is */
+    }
+  }
+
+  $effect(() => {
+    app.flushNote = save;
+    app.reloadNote = reloadSelected;
+    return () => {
+      if (app.flushNote === save) app.flushNote = null;
+      if (app.reloadNote === reloadSelected) app.reloadNote = null;
+    };
+  });
+
   // ── vault layer: the .md file is the source of truth ─────────────────────
   // Every save mirrors the note to a Markdown file on disk, and a startup pass
   // pulls back anything edited in Obsidian / by an AI agent. This bar makes
@@ -146,6 +173,86 @@
       vaultBusy = false;
     }
   }
+
+  // ── clip inbox: passages you kept from anywhere (L3) ─────────────────────
+  // Selecting text in an AI answer (or a paper, or a note's preview) and choosing
+  // "先存着" leaves a row here. Filing uses the SAME picker as the selection bar,
+  // so there is exactly one way to decide where a passage belongs — and one
+  // place to see what you kept but never filed.
+  let clips = $state<api.Clip[]>([]);
+  // Open by default: the inbox only ever holds passages the user picked by
+  // hand, so it is small — and a collapsed inbox is an inbox you forget.
+  let clipsOpen = $state(true);
+  let clipBusy = $state<string | null>(null);
+
+  async function loadClips() {
+    try {
+      clips = await api.clipsList(true);
+    } catch {
+      clips = [];
+    }
+  }
+
+  $effect(() => {
+    void loadClips();
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void loadClips();
+    }, 10_000);
+    return () => clearInterval(t);
+  });
+
+  const clipKind = (k: string) =>
+    ({ chat: "AI 对话", agent: "智能体", note: "笔记", paper: "论文", source: "资料", web: "网页" })[
+      k
+    ] ?? "摘录";
+
+  function fileClip(c: api.Clip) {
+    app.openClipPicker({
+      clipId: c.id,
+      quote: c.quote,
+      sourceKind: c.source_kind as api.ClipKind,
+      sourceId: c.source_id,
+      sourceLabel: c.source_label,
+      page: c.page,
+    });
+  }
+
+  async function dropClip(c: api.Clip) {
+    clipBusy = c.id;
+    try {
+      await api.clipDiscard(c.id);
+      await loadClips();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "丢弃失败", body: String(e) });
+    } finally {
+      clipBusy = null;
+    }
+  }
+
+  // "Open this note" from outside this view (a filed clip's toast action). The
+  // note may belong to another subject, so it is fetched directly when missing.
+  let handledNoteId: string | null = null;
+  async function openById(id: string) {
+    const hit = notes.find((n) => n.id === id);
+    if (hit) {
+      select(hit);
+      return;
+    }
+    try {
+      const n = await api.getNote(id);
+      if (!notes.some((x) => x.id === n.id)) notes = [n, ...notes];
+      select(n);
+    } catch {
+      /* the note vanished — nothing to open */
+    }
+  }
+  $effect(() => {
+    const want = app.pendingNoteId;
+    if (!want || want === handledNoteId) return;
+    handledNoteId = want;
+    app.pendingNoteId = null;
+    void openById(want);
+  });
 
   // ── agent write-back: drafts from Codex / Claude Code (L2) ───────────────
   // The agent can only *propose* — it writes to a queue, never to `notes` or
@@ -230,7 +337,8 @@
     }
   }
 
-  async function load(sid: string | null) {    loading = true;
+  async function load(sid: string | null) {
+    loading = true;
     try {
       const list = await api.listNotes(sid);
       notes = list;
@@ -251,6 +359,9 @@
     title = n?.title ?? "";
     body = n?.body ?? "";
     saved = true;
+    // The clip picker offers this note as its one-click target, so "摘到这篇"
+    // never requires searching for the note you are already looking at.
+    app.noteHere(n?.id ?? null, n ? n.title || "未命名笔记" : null);
   }
 
   async function newNote() {
@@ -277,6 +388,7 @@
       const updated = await api.updateNote(id, title, body);
       notes = notes.map((n) => (n.id === id ? updated : n));
       saved = true;
+      app.noteHere(id, updated.title || "未命名笔记");
       void refreshLinks();
     } catch (e) {
       app.pushToast({ kind: "error", title: "Save failed", body: String(e) });
@@ -631,8 +743,47 @@
           </div>
         {/if}
 
+        {#if clips.length > 0}
+          <div class="clip-box">
+            <button
+              type="button"
+              class="clip-head"
+              onclick={() => (clipsOpen = !clipsOpen)}
+              aria-expanded={clipsOpen}
+            >
+              <span class="clip-badge">摘录收件箱 {clips.length}</span>
+              <span class="clip-sub">选中后「先存着」的片段 —— 归位到某篇笔记的「## 摘录」下</span>
+              <span class={"clip-chev" + (clipsOpen ? " on" : "")}><Icon name="chevron" size={12} /></span>
+            </button>
+            {#if clipsOpen}
+              <ul class="clip-list">
+                {#each clips as c (c.id)}
+                  <li class="clip-row">
+                    <div class="clip-quote">{c.quote}</div>
+                    <div class="clip-meta mono">
+                      {c.source_label || clipKind(c.source_kind)}{c.page ? ` · p.${c.page}` : ""} · {relTime(c.created_at)}
+                    </div>
+                    <div class="clip-acts">
+                      <button class="btn btn--primary btn--sm" type="button" disabled={clipBusy === c.id} onclick={() => fileClip(c)}>
+                        归位
+                      </button>
+                      <button class="btn btn--ghost btn--sm" type="button" disabled={clipBusy === c.id} onclick={() => void dropClip(c)}>
+                        丢弃
+                      </button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
         <div class="notes-editor-wrap">
-          <MarkdownEditor value={body} onChange={(v) => { body = v; markDirty(); }} />
+          <MarkdownEditor
+            value={body}
+            onChange={(v) => { body = v; markDirty(); }}
+            clipLabel={title || "未命名笔记"}
+          />
         </div>
 
         <!-- Print-only rendered preview — hidden on screen, shown when printing -->
@@ -1241,6 +1392,70 @@
   .nl-chip:hover { border-color: var(--accent); color: var(--accent); }
   .nl-chip.nl-missing { border-style: dashed; color: var(--fg-muted); }
   .nl-chip.nl-back { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
+
+  /* clip inbox — same visual family as the proposal panel, cooler accent so the
+     two never read as the same kind of "waiting for you" */
+  .clip-box {
+    flex: none;
+    max-height: 38%;
+    overflow-y: auto;
+    padding: 8px 14px 10px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--fg) 3%, var(--surface));
+  }
+  .clip-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    padding: 2px 0;
+    cursor: pointer;
+    text-align: left;
+  }
+  .clip-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+    white-space: nowrap;
+  }
+  .clip-sub {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--fg-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .clip-chev { color: var(--fg-faint); display: inline-flex; transition: transform .12s ease; }
+  .clip-chev.on { transform: rotate(90deg); }
+  .clip-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .clip-row {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 8px);
+    background: var(--surface);
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .clip-quote {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    white-space: pre-wrap;
+  }
+  .clip-meta { margin-top: 4px; font-size: 10px; color: var(--fg-faint); }
+  .clip-acts { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
 
   /* [[double links]] strip — outlinks (missing = dashed) + backlinks */
   .notes-links {

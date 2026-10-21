@@ -1441,6 +1441,64 @@ export const rejectProposal = (id: string) => invoke<void>("reject_proposal", { 
 /** Cheap count for the Today flow bar (no diffs). */
 export const proposalPendingCount = () => invoke<number>("pending_proposals");
 
+// ---- clips: select a passage anywhere → file it under a note (L3) ---------
+// Distinct from `excerpts` (paper evidence, always tied to a paper/source and
+// citable) and from the browser clip server (whole-page URL capture). A clip is
+// one selected passage with no owner until you give it one.
+export type ClipKind = "chat" | "agent" | "note" | "paper" | "source" | "web" | "manual";
+
+export interface ClipRequest {
+  quote: string;
+  sourceKind: ClipKind;
+  /** Set when the passage is already a clip (filing from the inbox) — the
+   *  picker then files that row instead of capturing it a second time. */
+  clipId?: string | null;
+  sourceId?: string | null;
+  /** What the reader should see: "AI 回答 · deepseek", "《TCP 详解》". */
+  sourceLabel?: string | null;
+  page?: number | null;
+}
+
+export interface Clip {
+  id: string;
+  quote: string;
+  source_kind: string;
+  source_id: string | null;
+  source_label: string | null;
+  page: number | null;
+  /** null = still in the inbox (not yet filed under a note). */
+  note_id: string | null;
+  /** The exact Markdown written into the note — used by undo. */
+  block: string | null;
+  created_at: number;
+  note_title: string | null;
+}
+
+export interface ClipDiscardOutcome {
+  /** True when the passage was also taken back out of the note. */
+  reverted: boolean;
+}
+
+export const clipAdd = (req: ClipRequest) =>
+  invoke<Clip>("clip_add", {
+    quote: req.quote,
+    sourceKind: req.sourceKind,
+    sourceId: req.sourceId ?? null,
+    sourceLabel: req.sourceLabel ?? null,
+    page: req.page ?? null,
+  });
+export const clipsList = (pendingOnly = true) =>
+  invoke<Clip[]>("clips_list", { pendingOnly });
+/** File under an existing note — lands at the end of its `## 摘录` section. */
+export const clipToNote = (clipId: string, noteId: string) =>
+  invoke<Clip>("clip_to_note", { clipId, noteId });
+export const clipToNewNote = (clipId: string, title: string, subjectId?: string | null) =>
+  invoke<Clip>("clip_to_new_note", { clipId, title, subjectId: subjectId ?? null });
+/** Forget it. When the note still holds the block verbatim, it is removed too. */
+export const clipDiscard = (clipId: string) =>
+  invoke<ClipDiscardOutcome>("clip_discard", { clipId });
+
+
 
 
 // ---- calendar (events + tasks) ----

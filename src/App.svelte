@@ -7,6 +7,7 @@
   import GlobalSearch from "./components/GlobalSearch.svelte";
   import ToastStack from "./components/ToastStack.svelte";
   import OcrModal from "./components/OcrModal.svelte";
+  import SelectionClip from "./components/SelectionClip.svelte";
   import DiffModal from "./components/DiffModal.svelte";
   import MusicPanel from "./components/MusicPanel.svelte";
   import SourceMetaModal from "./components/SourceMetaModal.svelte";
@@ -634,6 +635,7 @@
     <ContextMenu />
     <ToastStack />
     <OcrModal />
+    <SelectionClip />
   </div>
 {/if}
 
