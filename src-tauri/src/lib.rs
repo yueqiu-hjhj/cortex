@@ -60,6 +60,7 @@ pub mod vault;
 pub mod proposals;
 pub mod clips;
 pub mod note_knowledge;
+pub mod node_docs;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -677,6 +678,10 @@ pub fn run() {
             note_knowledge::note_knowledge_resync,
             // 综述 → MOC: a map of content, gaps included
             moc::moc_generate,
+            // knowledge point docs — local layers, model prose
+            node_docs::node_doc_get,
+            node_docs::node_doc_generate,
+            node_docs::node_doc_delete,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,

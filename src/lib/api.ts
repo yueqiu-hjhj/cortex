@@ -2028,6 +2028,39 @@ export const mocGenerate = (subjectId: string, title?: string | null) =>
 export const getKnowledgeGraph = (subjectId: string) =>
   invoke<KnowledgeGraph>("get_knowledge_graph", { subjectId });
 
+// ---- knowledge point docs — local layers, model prose ----------------------
+
+export interface NodeLayer {
+  node_id: string;
+  title: string;
+  kind: string;
+  layer: number;
+}
+
+export interface NodeDoc {
+  node_id: string;
+  node_title: string;
+  subject_id: string;
+  /** This node's layer in the local prerequisite peel (0 = foundation). */
+  layer: number;
+  layers: NodeLayer[];
+  prereqs: string[];
+  has_doc: boolean;
+  body: string;
+  why: string;
+  model: string;
+  updated_at: number;
+}
+
+export const nodeDocGet = (nodeId: string) =>
+  invoke<NodeDoc>("node_doc_get", { nodeId });
+
+export const nodeDocGenerate = (nodeId: string) =>
+  invoke<NodeDoc>("node_doc_generate", { nodeId });
+
+export const nodeDocDelete = (nodeId: string) =>
+  invoke<void>("node_doc_delete", { nodeId });
+
 export const applyObservation = (
   nodeId: string,
   correct: boolean,

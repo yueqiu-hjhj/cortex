@@ -32,6 +32,7 @@ pub const SUMMARY_SUBJECT: &str = "notes.summary.subject";
 pub const CHEATSHEET_MAP: &str = "cheatsheet.map";
 pub const SKILL_DISTILL: &str = "skill.distill";
 pub const TENSION_ANALYZE: &str = "tension.analyze";
+pub const NODE_DOC: &str = "node.doc";
 
 const PREFIX: &str = "prompt.";
 
@@ -125,6 +126,13 @@ static SPECS: &[Spec] = &[
         group: "卡片与笔记",
         default: crate::skill_cards::SYSTEM,
         sample: "CONCEPT: 间隔重复\nAPPEARS IN (3 books): 《认知天性》、《Make It Stick》、《学习之道》\nReturn the skill card JSON now.",
+    },
+    Spec {
+        key: NODE_DOC,
+        label: "知识点讲解",
+        group: "知识框架",
+        default: crate::node_docs::SYSTEM,
+        sample: "知识点：拥塞控制（topic）\n层号：第 1 层（0 为基础层，没有前置）\n框架里的摘要：发送方如何感知网络容量并调整发送速率\n前置知识点（按依赖顺序）：TCP 握手\n\n用户笔记里提到它的原文：\n—— 《BBR 笔记》\nBBR 的瓶颈带宽估计很关键，它不再把丢包当信号。\n\n按系统提示的规则写讲解材料，结尾用 ---WHY--- 分隔顺序说明。",
     },
 ];
 
@@ -251,6 +259,7 @@ mod tests {
         CHEATSHEET_MAP,
         SKILL_DISTILL,
         TENSION_ANALYZE,
+        NODE_DOC,
     ];
 
     #[test]
@@ -276,6 +285,7 @@ mod tests {
                 "cheatsheet.map",
                 "literature.plan",
                 "literature.rerank",
+                "node.doc",
                 "notes.summary.group",
                 "notes.summary.part",
                 "notes.summary.reduce",

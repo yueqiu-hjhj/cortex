@@ -3792,6 +3792,20 @@ pub fn list_knowledge_nodes(conn: &Connection, subject_id: &str) -> Result<Vec<K
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// One node by id. The list endpoint is the common path; single-node reads
+/// exist for the doc/tutor panels, which open from a node row and already
+/// know the id.
+pub fn get_knowledge_node(conn: &Connection, node_id: &str) -> Result<KnowledgeNode> {
+    let sql = format!("SELECT {KNOWLEDGE_NODE_COLS} FROM knowledge_nodes WHERE id=?1");
+    conn.query_row(&sql, params![node_id], map_knowledge_node)
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::error::Error::Other(format!("knowledge node not found: {node_id}"))
+            }
+            other => other.into(),
+        })
+}
+
 pub fn get_knowledge_graph(conn: &Connection, subject_id: &str) -> Result<KnowledgeGraph> {
     sync_knowledge_graph(conn, subject_id)?;
     let nodes = list_knowledge_nodes(conn, subject_id)?;

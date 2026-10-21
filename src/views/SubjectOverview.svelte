@@ -120,6 +120,33 @@
     let knErr = $state<string | null>(null);
     let knExpanded = $state<Record<string, boolean>>({}); // node id -> open?
     let knSyncNote = $state<string | null>(null);
+    // 知识点文档：层号本地算，模型只写正文。缓存按 node id，不随框架刷新失效
+    // （层号每次都重新算，所以框架改了重开面板就是新层号）。
+    let knDoc = $state<Record<string, api.NodeDoc | null>>({});
+    let knDocOpen = $state<Record<string, boolean>>({});
+    let knDocBusy = $state<string | null>(null);
+    async function toggleDoc(n: api.KnowledgeNode) {
+      if (knDocOpen[n.id]) { knDocOpen[n.id] = false; return; }
+      knDocOpen[n.id] = true;
+      if (knDoc[n.id]) return;
+      try { knDoc[n.id] = await api.nodeDocGet(n.id); }
+      catch (e) { knErr = String(e); knDocOpen[n.id] = false; }
+    }
+    async function genDoc(n: api.KnowledgeNode) {
+      knDocBusy = n.id;
+      knErr = null;
+      try {
+        knDoc[n.id] = await api.nodeDocGenerate(n.id);
+        knDocOpen[n.id] = true;
+      } catch (e) { knErr = String(e); }
+      finally { knDocBusy = null; }
+    }
+    async function delDoc(n: api.KnowledgeNode) {
+      try {
+        await api.nodeDocDelete(n.id);
+        knDoc[n.id] = await api.nodeDocGet(n.id);
+      } catch (e) { knErr = String(e); }
+    }
     const knTopicAccuracy = $derived.by(() => {
       const m: Record<string, number | null> = {};
       for (const s of stats) m[s.topic_id] = s.accuracy ?? null;
@@ -677,12 +704,64 @@
       {#if t.node.note_count > 0}
         <span class="ov-tree-n mono" title="你有 {t.node.note_count} 篇笔记提到这个知识点">{t.node.note_count} 笔记</span>
       {/if}
+      {#if t.node.kind === "topic" || t.node.kind === "concept"}
+        <span
+          class="ov-tree-act"
+          class:on={knDocOpen[t.node.id]}
+          role="button"
+          tabindex="0"
+          title="知识点文档 —— 层号和前置由框架本地计算，模型只写正文"
+          onclick={(e) => { e.stopPropagation(); toggleDoc(t.node); }}
+          onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); toggleDoc(t.node); } }}
+        >
+          <Icon name="doc" size={11} />
+        </span>
+      {/if}
       {#if hasKids}
         <Icon name={open ? "x" : "arrowR"} size={11} />
       {:else if t.node.source_id}
         <Icon name="arrowR" size={11} />
       {/if}
     </button>
+    {#if knDocOpen[t.node.id]}
+      {@const d = knDoc[t.node.id]}
+      <div class="ov-doc">
+        {#if !d}
+          <p class="ov-doc-empty">加载中…</p>
+        {:else}
+          <div class="ov-doc-head">
+            <span class="ov-doc-layer mono" title="层号由前置依赖本地计算，不是模型说的">第 {d.layer} 层</span>
+            {#if d.prereqs.length > 0}
+              <span class="ov-doc-pre" title="读这个点之前应该先读什么">前置：{d.prereqs.join(" → ")}</span>
+            {/if}
+            <span class="ov-doc-acts">
+              <button
+                class="ov-doc-btn"
+                type="button"
+                disabled={knDocBusy === t.node.id}
+                onclick={() => genDoc(t.node)}
+              >
+                {knDocBusy === t.node.id ? "生成中…" : d.has_doc ? "重新生成" : "生成文档"}
+              </button>
+              {#if d.has_doc}
+                <button class="ov-doc-btn ghost" type="button" onclick={() => delDoc(t.node)}>删除</button>
+              {/if}
+            </span>
+          </div>
+          {#if d.has_doc}
+            <div class="ov-doc-body">{d.body}</div>
+            {#if d.why}
+              <div class="ov-doc-why"><b>为什么排在这：</b>{d.why}</div>
+            {/if}
+          {:else}
+            <p class="ov-doc-empty">
+              还没有文档。生成一篇「能从头读到尾」的讲解材料——它只用你已有的笔记和摘要，
+              材料里没有的事实会标出来建议补，而不是编一个。
+            </p>
+          {/if}
+        {/if}
+      </div>
+    {/if}
     {#if hasKids && open}
       <ul class="ov-tree-list">
         {#each t.children as child (child.node.id)}
@@ -975,6 +1054,87 @@
   }
   .ov-tree-n {
     flex: none; color: var(--fg-faint); font-size: 10px;
+  }
+  .ov-tree-act {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    color: var(--fg-faint);
+    cursor: pointer;
+    opacity: 0.55;
+  }
+  .ov-tree-act:hover { opacity: 1; background: var(--surface-2); color: var(--accent); }
+  .ov-tree-act.on { opacity: 1; color: var(--accent); }
+  .ov-doc {
+    margin: 4px 0 8px 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-1, var(--surface-2));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ov-doc-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ov-doc-layer {
+    flex: none;
+    font-size: 10px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .ov-doc-pre {
+    flex: 1; min-width: 0;
+    font-size: 11px; color: var(--fg-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ov-doc-acts { display: flex; gap: 6px; margin-left: auto; }
+  .ov-doc-btn {
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--bg, #fff);
+    cursor: pointer;
+  }
+  .ov-doc-btn:hover { filter: brightness(1.08); }
+  .ov-doc-btn:disabled { opacity: 0.55; cursor: default; }
+  .ov-doc-btn.ghost {
+    background: transparent;
+    color: var(--fg-muted);
+    border-color: var(--border);
+  }
+  .ov-doc-body {
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 420px;
+    overflow: auto;
+  }
+  .ov-doc-why {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 6px;
+    line-height: 1.6;
+  }
+  .ov-doc-empty {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--fg-faint);
+    line-height: 1.6;
   }
   .ov-tree-row > .ov-tree-list {
     margin: 0 0 0 18px;
