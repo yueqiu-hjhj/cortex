@@ -73,6 +73,26 @@ pub struct LiteratureResult {
     pub sources_succeeded: Vec<String>,
     pub took_ms: i64,
 }
+
+/// Result ordering requested by the UI. Sources without a native equivalent
+/// fall back to relevance ordering; after fusion the final list is re-sorted
+/// by the chosen key so the user's pick is always honored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LitSort {
+    Relevance,
+    Newest,
+    Cited,
+}
+
+impl LitSort {
+    pub fn parse(s: &str) -> LitSort {
+        match s {
+            "newest" => LitSort::Newest,
+            "cited" => LitSort::Cited,
+            _ => LitSort::Relevance,
+        }
+    }
+}
 // ---- query rewrite ----------------------------------------------------
 
     /// Produce 2-3 search variants for the user query. Tries the chat LLM first;
@@ -175,6 +195,12 @@ fn host_of(url: &str) -> Option<String> {
     if host.is_empty() { None } else { Some(host.to_string()) }
 }
 
+/// Reject impossible publication years. Upper bound is next year so papers
+/// with a forward-dated issue (Jan 2027 published in Dec 2026) still pass.
+fn sane_year(y: i64) -> bool {
+    (1500..=current_year() + 1).contains(&y)
+}
+
 fn first_author_year(s: &serde_json::Value) -> (Vec<String>, Option<i64>) {
     let authors: Vec<String> = s["author"].as_array()
         .map(|a| a.iter().filter_map(|x| {
@@ -184,19 +210,36 @@ fn first_author_year(s: &serde_json::Value) -> (Vec<String>, Option<i64>) {
             Some(format!("{} {}", g, f))
         }).collect())
         .unwrap_or_default();
-    let year = s["published-print"]["date-parts"][0][0].as_i64()
-        .or_else(|| s["published-online"]["date-parts"][0][0].as_i64())
-        .or_else(|| s["created"]["date-parts"][0][0].as_i64());
+    // Crossref metadata is user-submitted and occasionally carries impossible
+    // years (2121, 2115…). An implausible value is worse than no value: under
+    // "sort by newest" it puts junk at the top, so clamp and fall through.
+    let year = [
+        s["published-print"]["date-parts"][0][0].as_i64(),
+        s["published-online"]["date-parts"][0][0].as_i64(),
+        s["issued"]["date-parts"][0][0].as_i64(),
+        s["created"]["date-parts"][0][0].as_i64(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|y| sane_year(*y));
     (authors, year)
 }
 
 // ---- arXiv (Atom XML) -----------------------------------------------
 
-pub fn search_arxiv(query: &str) -> Vec<RawHit> {
+pub fn search_arxiv(query: &str, sort: LitSort) -> Vec<RawHit> {
     let client = http();
-    let resp = match client.get(ARXIV_BASE)
-        .query(&[("search_query", format!("all:\"{}\"", query)), ("max_results", "25".to_string())])
-        .send()
+    let mut params: Vec<(&str, String)> = vec![
+        ("search_query", format!("all:\"{}\"", query)),
+        ("max_results", "25".to_string()),
+    ];
+    // arXiv has no citation sort; "cited" falls back to relevance here, the
+    // final cross-source re-sort still orders by citation count.
+    if sort == LitSort::Newest {
+        params.push(("sortBy", "submittedDate".into()));
+        params.push(("sortOrder", "descending".into()));
+    }
+    let resp = match client.get(ARXIV_BASE).query(&params).send()
     {
         Ok(r) if r.status().is_success() => r,
         _ => return Vec::new(),
@@ -212,7 +255,7 @@ pub fn search_arxiv(query: &str) -> Vec<RawHit> {
         let summary = strip_tags(extract_between(body, "<summary>", "</summary>").unwrap_or_default().to_string());
         let id = extract_between(body, "<id>", "</id>").map(|s| s.to_string());
         let published = extract_between(body, "<published>", "</published>").unwrap_or_default();
-        let year = published.get(..4).and_then(|y| y.parse::<i64>().ok());
+        let year = published.get(..4).and_then(|y| y.parse::<i64>().ok()).filter(|y| sane_year(*y));
         let authors: Vec<String> = body.split("<author>").skip(1)
             .filter_map(|a| a.split("</author>").next())
             .filter_map(|a| extract_between(a, "<name>", "</name>").map(|s| s.trim().to_string()))
@@ -255,11 +298,25 @@ fn strip_tags(s: String) -> String {
 
 // ---- Crossref --------------------------------------------------------
 
-pub fn search_crossref(query: &str) -> Vec<RawHit> {
+pub fn search_crossref(query: &str, sort: LitSort) -> Vec<RawHit> {
     let client = http();
-    let resp = match client.get(CROSSREF_BASE)
-        .query(&[("query.bibliographic", query), ("rows", "25"), ("mailto", POLITE_MAILTO)])
-        .send()
+    let mut params: Vec<(&str, String)> = vec![
+        ("query.bibliographic", query.to_string()),
+        ("rows", "25".into()),
+        ("mailto", POLITE_MAILTO.into()),
+    ];
+    match sort {
+        LitSort::Newest => {
+            params.push(("sort", "published".into()));
+            params.push(("order", "desc".into()));
+        }
+        LitSort::Cited => {
+            params.push(("sort", "is-referenced-by-count".into()));
+            params.push(("order", "desc".into()));
+        }
+        LitSort::Relevance => {}
+    }
+    let resp = match client.get(CROSSREF_BASE).query(&params).send()
     {
         Ok(r) if r.status().is_success() => r,
         _ => return Vec::new(),
@@ -290,10 +347,15 @@ pub fn search_crossref(query: &str) -> Vec<RawHit> {
 
 // ---- OpenAlex --------------------------------------------------------
 
-pub fn search_openalex(query: &str) -> Vec<RawHit> {
+pub fn search_openalex(query: &str, sort: LitSort) -> Vec<RawHit> {
     let client = http();
+    let sort_param = match sort {
+        LitSort::Newest => "publication_date:desc",
+        LitSort::Cited => "cited_by_count:desc",
+        LitSort::Relevance => "relevance_score:desc",
+    };
     let resp = match client.get(OPENALEX_BASE)
-        .query(&[("search", query), ("per-page", "25"), ("mailto", POLITE_MAILTO)])
+        .query(&[("search", query), ("per-page", "25"), ("sort", sort_param), ("mailto", POLITE_MAILTO)])
         .send()
     {
         Ok(r) if r.status().is_success() => r,
@@ -308,7 +370,7 @@ pub fn search_openalex(query: &str) -> Vec<RawHit> {
         let authors: Vec<String> = it["authorships"].as_array()
             .map(|a| a.iter().filter_map(|x| x["author"]["display_name"].as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
-        let year = it["publication_year"].as_i64();
+        let year = it["publication_year"].as_i64().filter(|y| sane_year(*y));
         let venue = it["primary_location"]["source"]["display_name"].as_str().map(|s| s.to_string());
         let doi = it["doi"].as_str().map(|s| s.to_string());
         let url = it["id"].as_str().map(|s| s.to_string());
@@ -332,7 +394,9 @@ pub fn search_openalex(query: &str) -> Vec<RawHit> {
 
 // ---- Semantic Scholar ------------------------------------------------
 
-pub fn search_semantic_scholar(query: &str) -> Vec<RawHit> {
+pub fn search_semantic_scholar(query: &str, _sort: LitSort) -> Vec<RawHit> {
+    // S2's public relevance endpoint has no sort parameter; final ordering is
+    // handled by the cross-source re-sort.
     let client = http();
     let fields = "title,authors,year,venue,abstract,externalIds,url,citationCount";
     let resp = match client.get(S2_BASE)
@@ -351,7 +415,7 @@ pub fn search_semantic_scholar(query: &str) -> Vec<RawHit> {
         let authors: Vec<String> = it["authors"].as_array()
             .map(|a| a.iter().filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
-        let year = it["year"].as_i64();
+        let year = it["year"].as_i64().filter(|y| sane_year(*y));
         let venue = it["venue"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty());
         let doi = it["externalIds"]["DOI"].as_str().map(|s| s.to_string());
         let url = it["url"].as_str().map(|s| s.to_string());
@@ -573,17 +637,66 @@ pub fn subject_keywords(conn: &rusqlite::Connection, subject_id: &str) -> Vec<St
         .unwrap_or_default()
 }
 
-/// Run the full pipeline. query is the user prompt; subject_id (if
-/// given) supplies topic keywords for the rewrite + rerank stages.
-/// limit caps the final hit list (default 30). Best-effort: a single
-/// source failure does not abort, and a query that nothing can match
-/// returns an empty hit list rather than an error.
+/// Fan one query out to every source in parallel; returns (source, hits).
+fn fan_out_sources(
+    query: &str,
+    searxng_base: Option<&str>,
+    sort: LitSort,
+) -> Vec<(String, Vec<RawHit>)> {
+    std::thread::scope(|scope| {
+        let mut jobs = vec![
+            ("arxiv", scope.spawn(|| search_arxiv(query, sort))),
+            ("crossref", scope.spawn(|| search_crossref(query, sort))),
+            ("openalex", scope.spawn(|| search_openalex(query, sort))),
+            ("semantic_scholar", scope.spawn(|| search_semantic_scholar(query, sort))),
+        ];
+        if searxng_base.is_some() {
+            jobs.push(("searxng", scope.spawn(|| search_searxng_science(query, searxng_base))));
+        }
+        jobs.into_iter()
+            .map(|(name, job)| (name.to_string(), job.join().unwrap_or_default()))
+            .collect::<Vec<_>>()
+    })
+}
+
+/// One source, by name — used for the empty-result retry below.
+fn run_source(name: &str, query: &str, searxng_base: Option<&str>, sort: LitSort) -> Vec<RawHit> {
+    match name {
+        "arxiv" => search_arxiv(query, sort),
+        "crossref" => search_crossref(query, sort),
+        "openalex" => search_openalex(query, sort),
+        "semantic_scholar" => search_semantic_scholar(query, sort),
+        "searxng" => searxng_base.map(|b| search_searxng_science(query, Some(b))).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Honor the UI sort on the final fused list: a stable sort keeps RRF order
+/// among ties, so relevance still breaks draws.
+fn sort_hits(hits: &mut [LiteratureHit], sort: LitSort) {
+    match sort {
+        LitSort::Relevance => {}
+        LitSort::Newest => {
+            hits.sort_by_key(|a| std::cmp::Reverse(a.year.unwrap_or(0)));
+        }
+        LitSort::Cited => {
+            hits.sort_by_key(|a| std::cmp::Reverse(a.citation_count.unwrap_or(0)));
+        }
+    }
+}
+
+/// Run the full pipeline. query is the user prompt; subject keywords (if
+/// given) feed the rewrite + rerank stages. limit caps the final hit list
+/// (default 30). sort is honored after fusion. Best-effort: a single source
+/// failure does not abort, and a query that nothing can match returns an
+/// empty hit list rather than an error.
 pub fn literature_search(
     llm: Option<&dyn crate::llm::Llm>,
     query: &str,
     keywords: &[String],
     searxng_base: Option<&str>,
     limit: usize,
+    sort: LitSort,
 ) -> Result<LiteratureResult> {
     let started = std::time::Instant::now();
     let trimmed = query.trim();
@@ -600,28 +713,22 @@ pub fn literature_search(
         return Err(Error::Other("no rewrite variants produced".into()));
     }
 
-    // SearXNG base is optional; resolved through the homelab chain.
-
     let mut attempted: Vec<String> = Vec::new();
     let mut succeeded: Vec<String> = Vec::new();
     let mut all_lists: Vec<Vec<RawHit>> = Vec::new();
     for v in &variants {
-        let lists = std::thread::scope(|scope| {
-            let mut jobs = vec![
-                ("arxiv", scope.spawn(|| search_arxiv(v))),
-                ("crossref", scope.spawn(|| search_crossref(v))),
-                ("openalex", scope.spawn(|| search_openalex(v))),
-                ("semantic_scholar", scope.spawn(|| search_semantic_scholar(v))),
-            ];
-            if searxng_base.is_some() {
-                jobs.push(("searxng", scope.spawn(|| search_searxng_science(v, searxng_base))));
+        let mut lists = fan_out_sources(v, searxng_base, sort);
+        // One immediate retry per empty source: rate limits (semantic_scholar
+        // especially) are transient, and a silent empty would shrink results.
+        for (name, list) in lists.iter_mut() {
+            if list.is_empty() {
+                *list = run_source(name, v, searxng_base, sort);
             }
-            jobs.into_iter().map(|(name, job)| (name, job.join().unwrap_or_default())).collect::<Vec<_>>()
-        });
+        }
         for (name, list) in lists {
-            if !attempted.contains(&name.to_string()) { attempted.push(name.to_string()); }
+            if !attempted.contains(&name) { attempted.push(name.clone()); }
             if !list.is_empty() {
-                if !succeeded.contains(&name.to_string()) { succeeded.push(name.to_string()); }
+                if !succeeded.contains(&name) { succeeded.push(name.clone()); }
                 all_lists.push(list);
             }
         }
@@ -629,6 +736,7 @@ pub fn literature_search(
 
     let fused = rrf_fuse(&all_lists);
     let mut hits = rule_rerank(&fused, keywords);
+    sort_hits(&mut hits, sort);
     hits.truncate(limit.max(1));
 
     Ok(LiteratureResult {
@@ -639,6 +747,148 @@ pub fn literature_search(
         sources_succeeded: succeeded,
         took_ms: started.elapsed().as_millis() as i64,
     })
+}
+
+// ---- AI deep search ----------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSearchStep {
+    pub query: String,
+    pub hits: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSearchOutcome {
+    pub hits: Vec<LiteratureHit>,
+    pub queries: Vec<AiSearchStep>,
+    pub took_ms: i64,
+}
+
+const PLAN_SYS: &str = "You plan scholarly database searches. Given a research question, \
+output 4 to 6 English search queries as a JSON array of strings. Cover: the core \
+key-phrase query; a synonym/terminology variant; a method or technique angle; a \
+problem/application angle. Queries target arXiv/Crossref/OpenAlex — no Boolean \
+operators, quotes only when essential, each <= 100 characters. Output ONLY the \
+JSON array.";
+
+/// Break a natural-language research question into diverse English queries.
+/// Always includes the raw question first; LLM failure degrades to just it.
+fn plan_queries(model: &dyn crate::llm::Llm, question: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![question.trim().to_string()];
+    if let Ok(raw) = model.complete(PLAN_SYS, &format!("Research question: {}", question)) {
+        if let (Some(s), Some(e)) = (raw.find('['), raw.rfind(']')) {
+            if s <= e {
+                if let Ok(arr) = serde_json::from_str::<Vec<String>>(&raw[s..=e]) {
+                    for q in arr {
+                        let q = q.trim().to_string();
+                        if q.is_empty() || q.chars().count() > 120 { continue; }
+                        if !out.iter().any(|x| x.eq_ignore_ascii_case(&q)) {
+                            out.push(q);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.truncate(6);
+    out
+}
+
+const RERANK_SYS: &str = "You rerank scholarly search results for relevance to a research \
+question. Input: numbered papers with year, title, venue, abstract snippet. \
+Output ONLY a JSON array of the paper numbers ordered from most to least \
+relevant, e.g. [3,1,7,2,...] — every number exactly once. Judge by alignment \
+of title/venue/abstract with the question; prefer seminal and recent work \
+when both fit.";
+
+/// LLM rerank of the fused pool. Any parse/LLM failure returns the input
+/// order unchanged — reranking is a quality boost, never a hard dependency.
+fn llm_rerank(
+    model: &dyn crate::llm::Llm,
+    question: &str,
+    hits: Vec<LiteratureHit>,
+) -> Vec<LiteratureHit> {
+    if hits.len() < 2 { return hits; }
+    let listing: String = hits
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            format!(
+                "{}. [{}] {} ({}) — {}",
+                i + 1,
+                h.year.map(|y| y.to_string()).unwrap_or_else(|| "n.d.".into()),
+                h.title,
+                h.venue.clone().unwrap_or_default(),
+                h.abstract_text
+                    .as_deref()
+                    .map(|a| a.chars().take(160).collect::<String>())
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let raw = match model.complete(RERANK_SYS, &format!("Question: {}\n\n{}", question, listing)) {
+        Ok(r) => r,
+        Err(_) => return hits,
+    };
+    let (Some(s), Some(e)) = (raw.find('['), raw.rfind(']')) else { return hits };
+    if s > e { return hits; }
+    let Ok(order) = serde_json::from_str::<Vec<usize>>(&raw[s..=e]) else { return hits };
+    let mut used = vec![false; hits.len() + 1];
+    let mut out = Vec::with_capacity(hits.len());
+    for idx in order {
+        if idx >= 1 && idx <= hits.len() && !used[idx] {
+            used[idx] = true;
+            out.push(hits[idx - 1].clone());
+        }
+    }
+    for (i, h) in hits.iter().enumerate() {
+        if !used[i + 1] { out.push(h.clone()); }
+    }
+    out
+}
+
+/// AI deep search: plan queries with the LLM, run each across all sources in
+/// parallel, RRF-fuse across query rankings, then LLM-rerank the merged pool.
+/// Every LLM step degrades gracefully (raw question / fused order).
+pub fn literature_ai_search(
+    llm: Option<&dyn crate::llm::Llm>,
+    question: &str,
+    keywords: &[String],
+    searxng_base: Option<&str>,
+    limit: usize,
+    sort: LitSort,
+) -> Result<(Vec<LiteratureHit>, Vec<AiSearchStep>, i64)> {
+    let started = std::time::Instant::now();
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Other("empty question".into()));
+    }
+
+    let queries = match llm {
+        Some(m) => plan_queries(m, trimmed),
+        None => vec![trimmed.to_string()],
+    };
+    // Each query runs the full multi-source fan-out (≈25 hits/source), so the
+    // raw pool can reach 6 × 5 × 25 — the pool cap below keeps rerank sane.
+    let mut all_lists: Vec<Vec<RawHit>> = Vec::new();
+    let mut steps: Vec<AiSearchStep> = Vec::new();
+    for q in &queries {
+        let lists = fan_out_sources(q, searxng_base, sort);
+        let n: usize = lists.iter().map(|(_, l)| l.len()).sum();
+        steps.push(AiSearchStep { query: q.clone(), hits: n });
+        all_lists.extend(lists.into_iter().map(|(_, l)| l));
+    }
+
+    let fused = rrf_fuse(&all_lists);
+    let mut hits = rule_rerank(&fused, keywords);
+    sort_hits(&mut hits, sort);
+    hits.truncate((limit * 2).clamp(20, 80)); // rerank pool cap
+    if let Some(m) = llm {
+        hits = llm_rerank(m, trimmed, hits);
+    }
+    hits.truncate(limit.max(1));
+    Ok((hits, steps, started.elapsed().as_millis() as i64))
 }
 
 

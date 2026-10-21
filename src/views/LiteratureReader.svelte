@@ -30,14 +30,26 @@
   let searchQuery = $state("");
   let searchBusy = $state(false);
   let searchResult = $state<api.LiteratureResult | null>(null);
+  let searchLimit = $state(30);
+  let searchSort = $state<api.LiteratureSort>("relevance");
+  let aiBusy = $state(false);
+  let aiResult = $state<api.AiSearchResult | null>(null);
   let paperElement: HTMLElement;
   let actionSerial = 0;
   async function searchPapers() {
     if (!searchQuery.trim() || searchBusy) return;
-    searchBusy = true; error = null;
-    try { searchResult = await api.literatureSearch(searchQuery.trim(), app.activeSubjectId, 30); }
+    searchBusy = true; error = null; aiResult = null;
+    try { searchResult = await api.literatureSearch(searchQuery.trim(), app.activeSubjectId, searchLimit, searchSort); }
     catch (e) { error = String(e); }
     finally { searchBusy = false; }
+  }
+  // AI 深度检索：LLM 把自然语言问题拆成多组检索式并行搜全源，再按相关度重排。
+  async function aiSearchPapers() {
+    if (!searchQuery.trim() || aiBusy) return;
+    aiBusy = true; error = null; searchResult = null;
+    try { aiResult = await api.literatureAiSearch(searchQuery.trim(), app.activeSubjectId, searchLimit); }
+    catch (e) { error = String(e); }
+    finally { aiBusy = false; }
   }
   // Source diagnostics: sources that were tried but contributed nothing (they
   // fail silently by design — timeout / rate limit / network) so "结果怎么这么
@@ -344,8 +356,41 @@
   </header>
 
   <section class="literature-search">
-    <input class="ipt" aria-label="文献检索" placeholder="检索论文关键词…" bind:value={searchQuery} onkeydown={(e) => e.key === "Enter" && void searchPapers()} />
-    <button class="btn primary" disabled={searchBusy || !searchQuery.trim()} onclick={() => void searchPapers()}>{searchBusy ? "检索中…" : "多源检索"}</button>
+    <input class="ipt" aria-label="文献检索" placeholder="检索论文关键词，或输入一句自然语言研究问题…" bind:value={searchQuery} onkeydown={(e) => e.key === "Enter" && void searchPapers()} />
+    <select class="ipt sel" aria-label="结果数" bind:value={searchLimit} title="最终融合排序后保留的条数（每个来源先各取 25 条参与融合）">
+      <option value={10}>10 篇结果</option>
+      <option value={30}>30 篇结果</option>
+      <option value={50}>50 篇结果</option>
+      <option value={100}>100 篇结果</option>
+    </select>
+    <select class="ipt sel" aria-label="排序" bind:value={searchSort} title="结果排序方式">
+      <option value="relevance">按相关度</option>
+      <option value="newest">按最新</option>
+      <option value="cited">按被引最多</option>
+    </select>
+    <button class="btn primary" disabled={searchBusy || aiBusy || !searchQuery.trim()} onclick={() => void searchPapers()}>{searchBusy ? "检索中…" : "多源检索"}</button>
+    <button class="btn" disabled={searchBusy || aiBusy || !searchQuery.trim()} onclick={() => void aiSearchPapers()} title="LLM 拆解问题为多组检索式并行搜索，再按相关度重排——适合自然语言长问题">
+      {aiBusy ? "AI 检索中…" : "AI 深度检索"}
+    </button>
+    {#if aiResult}
+      <p class="mono">AI 展开的检索式：{aiResult.queries.map((q) => `「${q.query}」(${q.hits})`).join(" · ")} · 共 {aiResult.hits.length} 篇 · {aiResult.took_ms} ms</p>
+      {#each aiResult.hits as hit}
+        <div class="search-hit">
+          <button class="btn" onclick={() => readHit(hit)}>{hit.title}</button>
+          <p class="mono">{hit.year ?? ""} · {hit.authors.slice(0, 3).join(", ")} · {hit.sources.join(", ")}</p>
+          <p>{hit.abstract_text?.slice(0, 450) ?? "暂无摘要；可点击下方链接阅读原文。"}</p>
+          <div class="hit-actions">
+            {#if hit.url}<a href={hit.url} target="_blank" rel="noreferrer">原文</a>{/if}
+            <button
+              class="btn btn--sm"
+              class:btn--primary={!savedKeys[hitKey(hit)]}
+              disabled={!!savedKeys[hitKey(hit)] || saveBusy === hitKey(hit)}
+              onclick={() => void saveHit(hit)}
+              title="加入「研究」阅读清单">{savedKeys[hitKey(hit)] ? "已收藏" : saveBusy === hitKey(hit) ? "收藏中…" : "收藏"}</button>
+          </div>
+        </div>
+      {/each}
+    {/if}
     {#if searchResult}
       <p class="mono">{searchResult.hits.length} 篇 · {searchResult.took_ms} ms · 返回结果的来源：{searchResult.sources_succeeded.join(", ") || "无"}</p>
       {#if failedSources.length}

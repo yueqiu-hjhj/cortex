@@ -200,7 +200,7 @@ pub fn run(
     // 1. DISCOVER — multi-source scholarly search, RRF-fused, query rewritten.
     progress("search", "正在多源检索文献…", 5);
     let keywords = literature::subject_keywords(conn, subject_id);
-    let lit = literature::literature_search(model, topic, &keywords, searxng, 30)?;
+    let lit = literature::literature_search(model, topic, &keywords, searxng, 30, literature::LitSort::Relevance)?;
     if lit.hits.is_empty() {
         return Err(crate::error::Error::Other(
             "检索没有返回任何候选 —— 换个表述（或配置 SearXNG 扩大覆盖）再试。".into(),

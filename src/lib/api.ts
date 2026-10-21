@@ -922,16 +922,39 @@ export const vocabDelete = (id: string) =>
 export const vocabExtract = (subjectId: string, limit?: number) =>
   invoke<number>("vocab_extract", { subjectId, limit: limit ?? null });
 
+export type LiteratureSort = "relevance" | "newest" | "cited";
+
 export const literatureSearch = (
   query: string,
   subjectId?: string | null,
   limit?: number,
+  sort?: LiteratureSort,
 ) =>
   invoke<LiteratureResult>("literature_search", {
-
-
-
     query,
+    subjectId: subjectId ?? null,
+    limit: limit ?? null,
+    sort: sort ?? "relevance",
+  });
+
+/** AI deep search: LLM expands the question into multi-angle queries, runs
+ *  them across every connector, then reranks the merged hits with reasons. */
+export interface AiSearchStep {
+  query: string;
+  hits: number;
+}
+export interface AiSearchResult {
+  hits: LiteratureHit[];
+  queries: AiSearchStep[];
+  took_ms: number;
+}
+export const literatureAiSearch = (
+  question: string,
+  subjectId?: string | null,
+  limit?: number,
+) =>
+  invoke<AiSearchResult>("literature_ai_search", {
+    question,
     subjectId: subjectId ?? null,
     limit: limit ?? null,
   });
@@ -1500,7 +1523,6 @@ export const clipToNewNote = (clipId: string, title: string, subjectId?: string 
 export const clipDiscard = (clipId: string) =>
   invoke<ClipDiscardOutcome>("clip_discard", { clipId });
 
-
 /** A passage → self-test questions. Drafts only; nothing is scheduled until
  *  `clipSaveCards`, so a bad guess costs one call instead of review clutter. */
 export interface ClipCardDraft {
@@ -1529,9 +1551,6 @@ export const clipSaveCards = (
     subjectId: subjectId ?? null,
     topicId: topicId ?? null,
   });
-
-
-
 
 // ---- calendar (events + tasks) ----
 export interface CalEvent {

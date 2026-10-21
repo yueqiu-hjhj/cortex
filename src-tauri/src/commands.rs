@@ -5347,10 +5347,12 @@ pub async fn literature_search(
     query: String,
     subject_id: Option<String>,
     limit: Option<usize>,
+    sort: Option<String>,
 ) -> Result<crate::literature::LiteratureResult> {
     let query = query;
     let subject_id = subject_id;
     let limit = limit.unwrap_or(30);
+    let sort = crate::literature::LitSort::parse(sort.as_deref().unwrap_or("relevance"));
     tauri::async_runtime::spawn_blocking(move || -> Result<crate::literature::LiteratureResult> {
         let state = app.state::<AppState>();
         let c = state.db.lock().unwrap();
@@ -5367,7 +5369,45 @@ pub async fn literature_search(
         let keywords = subject_id.as_deref().map(|id| crate::literature::subject_keywords(&c, id)).unwrap_or_default();
         let searxng = crate::homelab::resolved_setting(&c, "searxng_url");
         drop(c);
-        crate::literature::literature_search(llm_opt.as_deref(), &query, &keywords, searxng.as_deref(), limit)
+        crate::literature::literature_search(llm_opt.as_deref(), &query, &keywords, searxng.as_deref(), limit, sort)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+/// AI deep search: LLM plans 4-6 query angles from one natural-language
+/// question, every angle runs the full multi-source fan-out, and the merged
+/// pool is LLM-reranked for relevance. Falls back to the plain pipeline when
+/// no model is configured.
+#[tauri::command]
+pub async fn literature_ai_search(
+    app: AppHandle,
+    question: String,
+    subject_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<crate::literature::AiSearchOutcome> {
+    let limit = limit.unwrap_or(30);
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::literature::AiSearchOutcome> {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other(
+                "Offline mode is on — literature search is disabled. Turn it off in Settings → Data & privacy.".into(),
+            ));
+        }
+        let llm_opt = {
+            let s = model_spec_for(&c, "chat");
+            let k = read_keys(&c).unwrap_or_default();
+            llm::from_spec_or_any(&s, &k)
+        };
+        let keywords = subject_id.as_deref().map(|id| crate::literature::subject_keywords(&c, id)).unwrap_or_default();
+        let searxng = crate::homelab::resolved_setting(&c, "searxng_url");
+        drop(c);
+        let (hits, steps, took_ms) = crate::literature::literature_ai_search(
+            llm_opt.as_deref(), &question, &keywords, searxng.as_deref(), limit,
+            crate::literature::LitSort::Relevance,
+        )?;
+        Ok(crate::literature::AiSearchOutcome { hits, queries: steps, took_ms })
     })
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
