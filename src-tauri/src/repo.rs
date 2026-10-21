@@ -941,17 +941,43 @@ pub fn query_terms(query: &str) -> Vec<String> {
     let mut terms = Vec::new();
     for raw in query.split(|c: char| !c.is_alphanumeric()) {
         let t = raw.trim().to_lowercase();
-        if t.len() < 3 || STOPWORDS.contains(&t.as_str()) {
+        if t.is_empty() || STOPWORDS.contains(&t.as_str()) {
             continue;
         }
-        if seen.insert(t.clone()) {
+        // Chinese (and other space-less scripts) never splits on the regex
+        // above — a whole sentence arrives as one giant token whose full
+        // substring match against e.g. English PDF text can only ever be zero
+        // hits. Expand CJK runs into overlapping character bigrams so partial
+        // term-count scoring can rank chunks containing any of the phrase.
+        if t.chars().any(is_cjk) {
+            let chars: Vec<char> = t.chars().collect();
+            if chars.len() <= 2 {
+                if seen.insert(t.clone()) {
+                    terms.push(t);
+                }
+            } else {
+                for w in chars.windows(2) {
+                    let b: String = w.iter().collect();
+                    if seen.insert(b.clone()) {
+                        terms.push(b);
+                    }
+                }
+            }
+        } else if t.len() >= 3 && seen.insert(t.clone()) {
             terms.push(t);
         }
-        if terms.len() >= 12 {
+        if terms.len() >= 32 {
             break;
         }
     }
     terms
+}
+
+/// CJK ideographs + kana + hangul ranges — scripts where a whole query run
+/// becomes one unbroken token under `char::is_alphanumeric` splitting.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x3040..=0x30FF | 0xAC00..=0xD7AF)
 }
 
 /// Keyword fallback for retrieval when vector search is unreliable (e.g. the

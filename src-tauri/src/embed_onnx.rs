@@ -80,6 +80,30 @@ fn tracker() -> &'static Mutex<DownloadTracker> {
     DOWNLOAD_STATE.get_or_init(|| Mutex::new(DownloadTracker::default()))
 }
 
+/// Download sources, in try order: huggingface directly, then the CN mirror —
+/// huggingface.co is unreachable on many CN networks, where hf-mirror.com works.
+const MODEL_HOSTS: &[&str] = &["https://huggingface.co", "https://hf-mirror.com"];
+
+fn download_from_hosts<F: FnMut(u64, u64)>(
+    client: &reqwest::blocking::Client,
+    file: &str,
+    mut on_progress: F,
+) -> Result<Vec<u8>> {
+    let mut last: Option<String> = None;
+    for host in MODEL_HOSTS {
+        let url = format!("{host}/{MODEL_REPO}/resolve/main/{file}");
+        match download_with_progress(client, &url, &mut on_progress) {
+            Ok(bytes) => return Ok(bytes),
+            Err(e) => last = Some(format!("{host}: {e}")),
+        }
+    }
+    Err(Error::Other(format!(
+        "download failed from all mirrors ({}): {}",
+        MODEL_HOSTS.join(", "),
+        last.unwrap_or_default()
+    )))
+}
+
 /// Kick off a download. Returns the file paths once finished. Reports via the
 /// `tracker()` so the frontend can poll `onnx_status`, and also fires the
 /// `on_progress` callback so callers (the Tauri command) can emit progress
@@ -113,11 +137,7 @@ where
         .map_err(|e| Error::Other(format!("reqwest: {e}")))?;
 
     if !mp.exists() {
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            MODEL_REPO, MODEL_FILE
-        );
-        match download_with_progress(&client, &url, |d, total| {
+        match download_from_hosts(&client, MODEL_FILE, |d, total| {
             let mut t = tracker().lock().unwrap();
             t.downloaded = d;
             if total > 0 { t.total = total; }
@@ -135,11 +155,7 @@ where
     }
 
     {
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            MODEL_REPO, TOKENIZER_FILE
-        );
-        match download_with_progress(&client, &url, |_, _| {}) {
+        match download_from_hosts(&client, TOKENIZER_FILE, |_, _| {}) {
             Ok(bytes) => std::fs::write(&tp, &bytes).map_err(|e| Error::Other(format!(
                 "write {}: {e}", tp.display()
             )))?,

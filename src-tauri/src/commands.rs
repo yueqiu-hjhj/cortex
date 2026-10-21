@@ -1957,12 +1957,29 @@ pub async fn chat_answer(
     } else if embeddings_reliable {
         let embedder =
             embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
-        let qvec = embedder.embed(std::slice::from_ref(&query))?.pop().unwrap_or_default();
+        // Embedding is an optimization, not a requirement: a failed embed
+        // (local model not downloaded yet, provider unreachable) degrades to
+        // the keyword channel instead of killing the whole answer.
+        let qvec = match embedder.embed(std::slice::from_ref(&query)) {
+            Ok(mut v) => v.pop().unwrap_or_default(),
+            Err(e) => {
+                // Silent degradation hides real breakage (e.g. a transient
+                // ONNX session failure during re-ingest) behind the same
+                // "zero hits" badge as a genuinely empty library.
+                eprintln!("[embed] query embed failed, keyword-only: {e}");
+                Vec::new()
+            }
+        };
         let c = state.db.lock().unwrap();
-        let mut vec_hits = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
-        if let Some(sid) = scoped_source {
-            vec_hits.retain(|h| h.source_id == sid);
-        }
+        let vec_hits = if qvec.is_empty() {
+            Vec::new()
+        } else {
+            let mut vh = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
+            if let Some(sid) = scoped_source {
+                vh.retain(|h| h.source_id == sid);
+            }
+            vh
+        };
         let kw_hits =
             repo::keyword_search_chunks(&c, Some(&subject_id), scoped_source, &query, 8)?;
         // Cosine and keyword scores are not on the same scale; rank-fuse them
