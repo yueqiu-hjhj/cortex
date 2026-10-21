@@ -1107,4 +1107,93 @@ mod tests {
         // (subject_id is NOT NULL on sources, so the no-subject branch is
         // defensive only — a source always has a deck to land in.)
     }
+
+    #[test]
+    fn a_culture_word_without_a_proper_translation_is_dropped() {
+        let payload = serde_json::json!({
+            "words": [
+                {"phrase":" individualism ","literal":"个人主义","proper":"individualism 所强调的个体自主","example":"He is a rugged individualist."},
+                {"phrase":"","literal":"x","proper":"y"},
+                {"phrase":"z","literal":"x","proper":""},
+            ]
+        });
+        let clean = validate_dimension("translate", "culture_words", &payload, "x").unwrap();
+        let ws = clean.get("words").unwrap().as_array().unwrap();
+        assert_eq!(ws.len(), 1, "a word with no proper translation teaches the literal trap it warns about");
+        let blank = serde_json::json!({ "words": [ {"phrase":"","literal":"x","proper":""} ] });
+        assert!(validate_dimension("translate", "culture_words", &blank, "x").is_err());
+    }
+
+    #[test]
+    fn a_scoring_phrase_needs_both_sides() {
+        let payload = serde_json::json!({
+            "items": [
+                {"scene":"观点","plain":"I think","better":"I would argue that"},
+                {"scene":"","plain":"","better":"y"},
+                {"scene":"x","plain":"a lot of","better":""},
+            ]
+        });
+        let clean = validate_dimension("translate", "phrases", &payload, "x").unwrap();
+        let is = clean.get("items").unwrap().as_array().unwrap();
+        assert_eq!(is.len(), 1);
+        assert_eq!(is[0].get("better").unwrap().as_str().unwrap(), "I would argue that");
+        let blank = serde_json::json!({ "items": [ {"scene":"x","plain":"","better":""} ] });
+        assert!(validate_dimension("translate", "phrases", &blank, "x").is_err());
+    }
+
+    #[test]
+    fn a_checklist_row_without_a_name_is_not_a_check() {
+        let payload = serde_json::json!({
+            "dimensions": [
+                {"name":" 忠实 ","what":"译文是否遗漏信息"},
+                {"name":"","what":"x"},
+            ]
+        });
+        let clean = validate_dimension("translate", "checklist", &payload, "x").unwrap();
+        let ds = clean.get("dimensions").unwrap().as_array().unwrap();
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].get("name").unwrap().as_str().unwrap(), "忠实");
+        let blank = serde_json::json!({ "dimensions": [ {"name":"","what":"x"} ] });
+        assert!(validate_dimension("translate", "checklist", &blank, "x").is_err());
+    }
+
+    #[test]
+    fn markdown_renders_the_translation_drills() {
+        let (st, _sid) = seed();
+        let src = source_of(&st);
+        let run_id = {
+            let c = st.db.lock().unwrap();
+            let run_id = create_run(&c, "translate", &src).unwrap();
+            c.execute(
+                "UPDATE bench_items SET status='done', payload=?2 WHERE run_id=?1 AND dimension='culture_words'",
+                params![run_id, serde_json::json!({"words":[{"phrase":"individualism","literal":"个人主义","proper":"个体自主意识","example":"He is a rugged individualist."}]}).to_string()],
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE bench_items SET status='done', payload=?2 WHERE run_id=?1 AND dimension='phrases'",
+                params![run_id, serde_json::json!({"items":[{"scene":"观点","plain":"I think","better":"I would argue that"}]}).to_string()],
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE bench_items SET status='error', error='评分维度生成失败' WHERE run_id=?1 AND dimension='checklist'",
+                params![run_id],
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE bench_runs SET status='done', truncated=1 WHERE id=?1",
+                params![run_id],
+            )
+            .unwrap();
+            run_id
+        };
+        let md = {
+            let c = st.db.lock().unwrap();
+            to_markdown(&get_result(&c, &run_id).unwrap())
+        };
+        assert!(md.starts_with("# 翻译训练 · "), "the drills are titled 翻译训练, not 应试精读");
+        assert!(md.contains("只解析了前段"), "the truncation note is kind-agnostic");
+        assert!(md.contains("- **individualism**：直译「个人主义」→ 宜译「个体自主意识」（He is a rugged individualist.）"));
+        assert!(md.contains("- 观点：I think → **I would argue that**"));
+        assert!(md.contains("## 评分自查\n\n（未完成：评分维度生成失败）"));
+    }
 }
