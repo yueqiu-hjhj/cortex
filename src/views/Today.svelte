@@ -83,9 +83,14 @@
   // cron job. Non-fatal loads: the bar just doesn't render when empty.
   let dueCards = $state<api.ReviewTodayCard[] | null>(null);
   let cronLatest = $state<api.CronRecentRun[] | null>(null);
+  // Agents (Codex / Claude Code) can only propose notes; their drafts wait in
+  // the notes view until you accept them. Surfacing the count here is what
+  // makes the hand-off visible without opening the editor.
+  let propCount = $state(0);
   $effect(() => {
     api.reviewToday(500).then((cs) => { dueCards = cs; }).catch(() => { dueCards = null; });
     api.cronRecentRuns(3).then((rs) => { cronLatest = rs; }).catch(() => { cronLatest = null; });
+    api.proposalPendingCount().then((n) => { propCount = n; }).catch(() => { propCount = 0; });
   });
   const dueCount = $derived(dueCards?.length ?? 0);
   const dueNew = $derived(dueCards?.filter((c) => c.reps === 0).length ?? 0);
@@ -323,13 +328,24 @@
     </div>
   </header>
 
-  {#if dueCount > 0 || (cronLatest?.length ?? 0) > 0}
+  {#if dueCount > 0 || (cronLatest?.length ?? 0) > 0 || propCount > 0}
     <div class="flowbar">
       {#if dueCount > 0}
         <button class="flow-chip flow-review" title="进入今日复习" onclick={() => app.setView("review")}>
           <Icon name="cards" size={13} />
           <b>复习 {dueCount} 张</b>
           {#if dueNew > 0}<span class="flow-sub mono">· 含新卡 {dueNew}</span>{/if}
+        </button>
+      {/if}
+      {#if propCount > 0}
+        <button
+          class="flow-chip flow-proposal"
+          title="AI 起草的笔记还在等你看 diff —— 采纳后才写入笔记库和 .md"
+          onclick={() => app.setView("notes")}
+        >
+          <Icon name="pencil" size={13} />
+          <b>AI 提案 {propCount} 条</b>
+          <span class="flow-sub">待你确认</span>
         </button>
       {/if}
       {#each cronLatest ?? [] as r (r.job_id)}
@@ -513,6 +529,12 @@
   }
   .flow-review b {
     color: var(--accent);
+  }
+  .flow-proposal {
+    border-color: color-mix(in oklab, var(--warn) 55%, var(--border));
+  }
+  .flow-proposal b {
+    color: var(--warn);
   }
   .flow-sub {
     overflow: hidden;

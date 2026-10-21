@@ -147,8 +147,90 @@
     }
   }
 
-  async function load(sid: string | null) {
-    loading = true;
+  // ── agent write-back: drafts from Codex / Claude Code (L2) ───────────────
+  // The agent can only *propose* — it writes to a queue, never to `notes` or
+  // the vault. This panel is the human half of that contract: a line diff and
+  // two buttons. Polling is deliberate: the writer is another process, so
+  // there is no event to subscribe to.
+  let proposals = $state<api.Proposal[]>([]);
+  let openProposal = $state<string | null>(null);
+  let proposalBusy = $state<string | null>(null);
+
+  async function loadProposals() {
+    try {
+      proposals = await api.listProposals("pending");
+    } catch {
+      proposals = []; // panel is optional — a read failure must not break notes
+    }
+  }
+
+  $effect(() => {
+    void loadProposals();
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void loadProposals();
+    }, 5000);
+    return () => clearInterval(t);
+  });
+
+  const kindLabel = (k: api.ProposalKind) =>
+    k === "note_new" ? "新建" : k === "note_append" ? "追加" : "改写";
+
+  async function acceptProposal(p: api.Proposal, force = false) {
+    proposalBusy = p.id;
+    try {
+      const applied = await api.acceptProposal(p.id, force);
+      await load(app.activeSubjectId ?? null);
+      const opened = notes.find((n) => n.id === applied.note_id);
+      if (opened) select(opened);
+      app.pushToast({
+        kind: "success",
+        title: `已采纳「${applied.title}」`,
+        body: applied.vault_error
+          ? `笔记已保存，但 Markdown 落盘失败：${applied.vault_error}`
+          : applied.vault_path
+            ? `已写入 ${applied.vault_path}`
+            : "已写入笔记库",
+      });
+      await loadProposals();
+      openProposal = null;
+    } catch (e) {
+      const msg = String(e);
+      // The two-phase guard: the note moved on since the draft was written.
+      if (!force && msg.includes("又被改过")) {
+        const ok = await app.confirm({
+          title: "笔记已被改动",
+          body: `${msg}\n\n仍然用这份提案覆盖你后来的修改吗？`,
+          danger: true,
+          okLabel: "仍然应用",
+        });
+        if (ok) {
+          proposalBusy = null;
+          await acceptProposal(p, true);
+          return;
+        }
+      } else {
+        app.pushToast({ kind: "error", title: "采纳失败", body: msg });
+      }
+    } finally {
+      proposalBusy = null;
+    }
+  }
+
+  async function discardProposal(p: api.Proposal) {
+    proposalBusy = p.id;
+    try {
+      await api.rejectProposal(p.id);
+      proposals = proposals.filter((x) => x.id !== p.id);
+      if (openProposal === p.id) openProposal = null;
+      app.pushToast({ kind: "info", title: "已丢弃提案", body: p.title });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "取消失败", body: String(e) });
+    } finally {
+      proposalBusy = null;
+    }
+  }
+
+  async function load(sid: string | null) {    loading = true;
     try {
       const list = await api.listNotes(sid);
       notes = list;
@@ -421,6 +503,70 @@
     {/if}
 
     <section class="notes-detail">
+      <!-- Drafts from an agent, waiting for a human. The agent cannot write a
+           note; it can only put a diff here. -->
+      {#if proposals.length > 0}
+        <div class="prop-panel">
+          <div class="prop-head">
+            <span class="prop-badge">AI 提案 {proposals.length}</span>
+            <span class="prop-sub">来自 {proposals[0].author} · 采纳后才会写入笔记与 .md 文件</span>
+          </div>
+          {#each proposals as p (p.id)}
+            <div class="prop-row" class:open={openProposal === p.id}>
+              <button
+                type="button"
+                class="prop-main"
+                onclick={() => (openProposal = openProposal === p.id ? null : p.id)}
+                aria-expanded={openProposal === p.id}
+              >
+                <span class="prop-kind">{kindLabel(p.kind)}</span>
+                <span class="prop-title">{p.title}</span>
+                <span class="prop-counts">
+                  <span class="p-add">+{p.preview.added}</span>
+                  <span class="p-del">−{p.preview.removed}</span>
+                </span>
+                <span class="prop-when">{relTime(p.created_at)}</span>
+                <span class={"prop-chev" + (openProposal === p.id ? " on" : "")}>
+                  <Icon name="chevron" size={12} />
+                </span>
+              </button>
+              {#if p.rationale}
+                <div class="prop-rationale">{p.rationale}</div>
+              {/if}
+              {#if openProposal === p.id}
+                <div class="prop-diff" aria-label="提案差异">
+                  {#each p.preview.lines as l}
+                    <div class={"dline " + l.kind}>
+                      <span class="dno">{l.old_no ?? ""}</span>
+                      <span class="dno">{l.new_no ?? ""}</span>
+                      <span class="dtext">{l.kind === "gap" ? l.text : l.text || " "}</span>
+                    </div>
+                  {/each}
+                </div>
+                <div class="prop-actions">
+                  <button
+                    class="btn btn--primary btn--sm"
+                    type="button"
+                    onclick={() => acceptProposal(p)}
+                    disabled={proposalBusy === p.id}
+                  >
+                    {proposalBusy === p.id ? "写入中…" : p.kind === "note_new" ? "采纳并新建" : "采纳"}
+                  </button>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    onclick={() => discardProposal(p)}
+                    disabled={proposalBusy === p.id}
+                  >
+                    丢弃
+                  </button>
+                  <span class="prop-tip">采纳 = 写入笔记库 + 同步 .md</span>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
       {#if selected}
         <div class="notes-detail-head">
           {#if isMobile}
@@ -1128,4 +1274,97 @@
   .nl-chip:hover { border-color: var(--accent); color: var(--accent); }
   .nl-chip.nl-missing { border-style: dashed; color: var(--fg-muted); }
   .nl-chip.nl-back { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
+
+  /* ── AI proposals (agent write-back) ───────────────────────────────────── */
+  /* Pinned above the editor: a draft from Codex is only real once you have
+     read the diff, so it sits in the eye-line, not in a settings page. */
+  .prop-panel {
+    flex: none;
+    max-height: 42%;
+    overflow-y: auto;
+    padding: 10px 14px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--accent) 5%, var(--surface));
+  }
+  .prop-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .prop-badge {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 18%, var(--surface));
+    color: var(--accent);
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+    white-space: nowrap;
+  }
+  .prop-sub { font-size: 11px; color: var(--fg-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prop-row {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 8px);
+    background: var(--surface);
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  .prop-row.open { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
+  .prop-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .prop-main:hover { background: var(--surface-2); }
+  .prop-kind {
+    flex: none;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+  }
+  .prop-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .prop-counts { flex: none; display: inline-flex; gap: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .p-add { color: var(--ok); }
+  .p-del { color: var(--err); }
+  .prop-when { flex: none; font-size: 11px; color: var(--fg-faint); }
+  .prop-chev { flex: none; display: inline-flex; color: var(--fg-faint); }
+  .prop-chev.on { transform: rotate(180deg); }
+  .prop-rationale {
+    padding: 0 10px 6px 10px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    line-height: 1.45;
+  }
+  .prop-diff {
+    max-height: 260px;
+    overflow: auto;
+    border-top: 1px solid var(--border);
+    background: var(--bg-sunken);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    line-height: 1.5;
+    padding: 4px 0;
+  }
+  .dline { display: flex; gap: 8px; padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+  .dno {
+    flex: none;
+    width: 30px;
+    text-align: right;
+    color: var(--fg-faint);
+    user-select: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .dtext { flex: 1 1 auto; min-width: 0; }
+  .dline.add { background: var(--diff-add-bg); box-shadow: inset 2px 0 var(--diff-add-bd); }
+  .dline.del { background: var(--diff-del-bg); box-shadow: inset 2px 0 var(--diff-del-bd); }
+  .dline.gap { color: var(--fg-faint); font-style: italic; padding-top: 2px; padding-bottom: 2px; }
+  .prop-actions { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
+  .prop-tip { font-size: 11px; color: var(--fg-faint); }
 </style>

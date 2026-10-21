@@ -63,7 +63,7 @@ cortex-mcp.exe --db D:\somewhere\cortex.db
 
 ---
 
-## 3. 工具面（18 个，全部只读）
+## 3. 工具面（18 个只读 + 3 个提案）
 
 **科目与资料库**
 `list_notebooks` · `search_notebook` · `get_source` · `read_document`
@@ -71,7 +71,7 @@ cortex-mcp.exe --db D:\somewhere\cortex.db
 **笔记**
 `search_notes` · `get_note`
 
-**论文（新增）**
+**论文**
 `list_papers` · `get_paper` · `search_papers` · `list_excerpts`
 
 **知识结构**
@@ -79,6 +79,9 @@ cortex-mcp.exe --db D:\somewhere\cortex.db
 
 **agent 运行记录**
 `list_agents` · `agent_messages`
+
+**写入（提案队列，见 §4.5）**
+`propose_note` · `list_proposals` · `withdraw_proposal`
 
 ### Resources
 
@@ -102,14 +105,58 @@ cortex://paper/<cite_key>
 **笔记的使用与生成**
 > 「读一下《TCP 核心机制笔记》的出链和反链，把这周新增的三条笔记并进一个 MOC。」
 
-`get_note` 返回正文、vault 路径、出链与反链。写回目前**不由 agent 直接完成**——
-agent 起草，你在 Cortex 里确认后落盘（提案队列，P3）。
+`get_note` 返回正文、vault 路径、出链与反链。写整篇 MOC 时 agent 用 `propose_note`，
+你在 Cortex 里看 diff 后决定是否采纳（见 §4.5）。
 
 **论文管理与探索**
 > 「比较我收藏里 BBR 和 CUBIC 的实测结论，只用摘录里的句子，标出页码。」
 > 「围绕 attention 这个主题，我收藏的论文里有哪些互相矛盾的结论？」
 
 `get_paper` 给的是**你自己的摘录**，不是摘要——摘录带页码，是真正能写进论文的证据。
+
+---
+
+## 4.5 写回：agent 起草，你确认
+
+Agent **不能直接改笔记**。它只有一条写路径：
+
+```
+agent ──propose_note──▶ agent_proposals（pending）
+                              │
+           Cortex「笔记 → AI 提案」显示逐行 diff
+                              │
+                    你点「采纳」 ──▶ notes 表 + vault/<标题>.md
+```
+
+```text
+propose_note(
+  mode      = "new" | "append" | "replace",
+  title     = 新笔记标题 / 目标笔记标题,
+  note_id   = 追加或改写时的目标（优先于 title）,
+  body      = new/replace 是完整正文；append 只写新增那一段,
+  subject   = 学科名（新建时可选）,
+  rationale = 一句话说明为什么值得写,
+)
+```
+
+三个细节决定了这套东西敢用：
+
+1. **`base_body` 快照**。提案排队时的正文被记下来；如果这期间你自己又改过这篇笔记，
+   采纳会被拒绝，除非你在弹窗里选「仍然应用」。所以一份过期的草稿永远不可能悄悄覆盖你的修改。
+2. **幂等**。同样的目标 + 同样的正文重复提交，返回同一条提案，不会在队列里堆重复项。
+3. **append 优先**。`append` 只把新段落接在现有正文后面，比 `replace` 安全得多；
+   `replace` 适合"重写这一篇"，用之前先看一眼 diff 里的 `-` 行。
+
+采纳之后走的是和手动保存**同一条代码路径**：`[[双链]]` 索引重建、frontmatter 盖章、
+`.md` 原子写入，全都一致。所以 agent 写的笔记在 Obsidian 里也一样能用。
+
+用到的工具：
+
+| 工具 | 作用 |
+|---|---|
+| `propose_note` | 入队一份草稿，返回 proposal id、改动行数、前几行 diff |
+| `list_proposals` | 看队列里还有什么在等（避免重复起草） |
+| `withdraw_proposal` | 撤回自己已经过时的草稿 |
 
 ---
 
@@ -131,10 +178,12 @@ Vaswani2017Attention-2      # 冲突时加后缀
 
 ## 6. 边界
 
-- **连接是 SQLITE_OPEN_READ_ONLY**。MCP 进程在任何情况下都不会写入你的库。
-- **不调用任何模型**。这里返回的是你已有的内容，不含生成。
+- **唯一的写入目标是 `agent_proposals` 表**。连接本身可写（WAL + busy_timeout，
+  和桌面应用的保存互不阻塞），但代码里所有写操作都经由 `proposals` 模块，
+  它不会碰 `notes`——草稿只有在你点「采纳」之后才变成笔记。
+- **不调用任何模型**。这里返回的是你已有的内容，不含生成；提案文本由 agent 自己写。
 - **不暴露文件系统绝对路径**（`vault_path` 是 vault 内的相对路径）。
-- 笔记的写入走 Cortex 应用本身（或你直接编辑 `.md`），不经过 MCP。
+- 只读副本（比如拷一份 db 出来看）仍然支持全部 18 个读工具，写工具会明确报错。
 
 ---
 
@@ -143,8 +192,14 @@ Vaswani2017Attention-2      # 冲突时加后缀
 **`数据库不存在`**
 先打开一次 Cortex 桌面应用（迁移要跑一次），或用 `--db` 指定已有库。
 
+**`这个库还没有提案队列`**
+库还没升到迁移 0060。启动一次桌面应用即可。
+
+**`提案队列需要可写连接`**
+`cortex-mcp` 打开的是可写连接；报这个说明你把它指向了只读副本。
+
 **工具列表里没有 `list_papers`**
-客户端缓存了旧的 `tools/list`。重启客户端；或确认 `cortex-mcp --help` 显示 18 个工具。
+客户端缓存了旧的 `tools/list`。重启客户端；或确认 `cortex-mcp --help` 显示 21 个工具。
 
 **`no paper with cite_key ...`**
 库里的 `cite_key` 由主应用启动时回填（迁移 0059 之后）。打开一次 Cortex，

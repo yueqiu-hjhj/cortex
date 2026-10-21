@@ -57,6 +57,7 @@ pub mod recovery;
 pub mod xmind;
 pub mod wiki;
 pub mod vault;
+pub mod proposals;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
@@ -659,6 +660,11 @@ pub fn run() {
             notes::vault_status,
             notes::vault_set_path,
             notes::vault_reindex,
+            // agent write-back queue (L2)
+            proposals::list_proposals,
+            proposals::accept_proposal,
+            proposals::reject_proposal,
+            proposals::pending_proposals,
             // calendar
             calendar::create_event,
             calendar::list_events,

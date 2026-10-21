@@ -7,17 +7,21 @@
 //!
 //! Transport: MCP over stdio — newline-delimited JSON-RPC 2.0 on stdin/stdout,
 //! logs on stderr. The desktop app is untouched; this is a separate binary
-//! (`cortex-mcp`) that opens the SAME database **read-only**.
+//! (`cortex-mcp`) that opens the SAME database.
 //!
-//! Boundaries (deliberately KnowNote-grade strict):
-//! - READ-ONLY connection (SQLITE_OPEN_READ_ONLY) — the server cannot write,
-//!   no matter what a client asks for.
+//! Boundaries:
+//! - Reads are unrestricted; the only WRITE target is `agent_proposals` (L2's
+//!   review queue). Tools that touch it go through [`crate::proposals`], which
+//!   never updates `notes` — a draft becomes a note only when the user accepts
+//!   it in the app. "The agent proposes, the human disposes" is enforced by the
+//!   code path, not by a connection flag.
 //! - No model calls. Retrieval is deterministic keyword search; external
 //!   agents do the thinking.
-//! - No path leaks: stored_path / origin never leave the process.
+//! - No path leaks: stored_path / origin never leave the process. (`get_note`
+//!   exposes the note's vault-relative path, which the agent needs to open the
+//!   file — it is not a machine-specific absolute path.)
 //!
-//! Tools: list_notebooks, search_notebook, get_source, read_document,
-//! search_notes.
+//! Tools: 18 read-only + 3 for the proposal queue.
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -89,6 +93,32 @@ pub fn open_readonly(path: &std::path::Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| Error::Other(format!("打开 {} 失败: {e}", path.display())))?;
+    Ok(conn)
+}
+
+/// Read-write connection for the agent surface.
+///
+/// The app keeps the DB in WAL mode, so a second writer only ever blocks for
+/// the duration of a short statement — `busy_timeout` covers the overlap with
+/// a save in the desktop UI. `NO_CREATE` matters: a typo'd `--db` path must
+/// fail loudly instead of materialising an empty database that then looks like
+/// an empty library.
+///
+/// The write surface is still one table (`agent_proposals`), reached only via
+/// [`crate::proposals`]. Everything else this connection does is reads.
+pub fn open_for_agent(path: &std::path::Path) -> Result<Connection> {
+    if !path.is_file() {
+        return Err(Error::Other(format!(
+            "数据库不存在: {} —— 先打开一次 Cortex 桌面应用（或用 CORTEX_DB 指定路径）。",
+            path.display()
+        )));
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| Error::Other(format!("打开 {} 失败: {e}", path.display())))?;
+    conn.busy_timeout(std::time::Duration::from_millis(4000))?;
     Ok(conn)
 }
 
@@ -278,6 +308,58 @@ fn tool_defs() -> Value {
                     "title": { "type": "string", "description": "Exact title, when the id is not known" }
                 }
             }
+        },
+        {
+            "name": "propose_note",
+            "description": "Draft a note for the user to review. NOTHING is written to the library: the draft enters a review queue, Cortex shows the user a line diff, and only their click turns it into a note and a .md file. Use mode=new for a new note, append to add a section to an existing note, replace to rewrite one. Returns a proposal id and what to tell the user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["new", "append", "replace"],
+                        "default": "new",
+                        "description": "new = create a note; append = add a section to an existing note; replace = rewrite an existing note"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "mode=new: the new note's title. mode=append/replace: the target note's title (only when note_id is unknown)."
+                    },
+                    "note_id": { "type": "string", "description": "Target note id for append/replace; takes precedence over title." },
+                    "body": {
+                        "type": "string",
+                        "description": "Markdown. mode=new/replace: the complete body. mode=append: only the section to add — the existing body is kept as-is in front of it."
+                    },
+                    "subject": { "type": "string", "description": "Subject (notebook) name for a new note, e.g. 计算机网络. Call list_notebooks for exact names." },
+                    "rationale": { "type": "string", "description": "One line on why this note is worth having — shown to the user in the review queue." },
+                    "author": { "type": "string", "description": "Your client name, e.g. codex or claude-code." }
+                },
+                "required": ["body"]
+            }
+        },
+        {
+            "name": "list_proposals",
+            "description": "List note drafts in the review queue (pending by default) with ids, targets, change counts and rationale. Use it to check whether an earlier draft is still waiting before proposing again.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "accepted", "rejected", "withdrawn", "all"],
+                        "default": "pending"
+                    },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+                }
+            }
+        },
+        {
+            "name": "withdraw_proposal",
+            "description": "Withdraw your own pending draft — when the user changed their mind, or you are about to replace it with a better one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "proposal_id": { "type": "string" } },
+                "required": ["proposal_id"]
+            }
         }
     ])
 }
@@ -447,6 +529,9 @@ fn call_tool(conn: &Connection, name: &str, args: &Value) -> std::result::Result
         "search_papers" => search_papers(conn, args),
         "list_excerpts" => list_excerpts(conn, args),
         "get_note" => get_note(conn, args),
+        "propose_note" => propose_note(conn, args),
+        "list_proposals" => list_proposals(conn, args),
+        "withdraw_proposal" => withdraw_proposal(conn, args),
         other => return Err(format!("unknown tool: {other}")),
     };
     res.map_err(|e| e.to_string())
@@ -888,6 +973,145 @@ fn get_note(conn: &Connection, args: &Value) -> Result<String> {
     Ok(out)
 }
 
+// ---- write-back queue (L2) --------------------------------------------
+//
+// None of these tools writes a note. They queue a draft and report it back;
+// the app applies it only after the user has read the diff. The tool results
+// therefore always say what the user has to do next — an agent that thinks it
+// just "saved a note" is the failure mode this whole layer exists to prevent.
+//
+// A read-only connection (someone pointing cortex-mcp at a copy of a DB) still
+// serves all 18 read tools; only the queue needs writability, and the error
+// says so instead of failing with a raw SQLite code.
+
+fn require_queue(conn: &Connection) -> Result<()> {
+    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
+        return Err(Error::Other(
+            "提案队列需要可写连接 —— 用 cortex-mcp（它打开可写库）连本机库，只读副本只能读。".into(),
+        ));
+    }
+    let has: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_proposals'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has == 0 {
+        return Err(Error::Other(
+            "这个库还没有提案队列：先启动一次 Cortex 桌面应用，让它完成数据库升级（0060）。".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A handful of changed lines, so the agent can see what it actually proposed
+/// without dumping the whole draft back into the conversation.
+fn changed_head(p: &crate::proposals::Proposal, max: usize) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for line in &p.preview.lines {
+        if line.kind != "add" && line.kind != "del" {
+            continue;
+        }
+        if n == max {
+            out.push_str("  …\n");
+            break;
+        }
+        let sign = if line.kind == "add" { '+' } else { '-' };
+        out.push_str(&format!("  {sign} {}\n", one_line(&line.text, 100)));
+        n += 1;
+    }
+    out
+}
+
+fn propose_note(conn: &Connection, args: &Value) -> Result<String> {
+    require_queue(conn)?;
+    let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("new");
+    let kind = match mode {
+        "new" => crate::proposals::NOTE_NEW,
+        "append" => crate::proposals::NOTE_APPEND,
+        "replace" => crate::proposals::NOTE_REPLACE,
+        other => {
+            return Err(Error::Other(format!(
+                "unknown mode \"{other}\" — use new, append or replace"
+            )))
+        }
+    };
+    let text = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    let p = crate::proposals::create(
+        conn,
+        crate::proposals::Draft {
+            kind,
+            title: args.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+            note_id: args.get("note_id").and_then(|v| v.as_str()),
+            subject: args.get("subject").and_then(|v| v.as_str()),
+            text,
+            rationale: args.get("rationale").and_then(|v| v.as_str()).unwrap_or(""),
+            author: args.get("author").and_then(|v| v.as_str()).unwrap_or("agent"),
+        },
+    )?;
+
+    let target = match &p.note_id {
+        Some(id) => format!("「{}」 (note_id={id})", p.title),
+        None => format!("new note 「{}」", p.title),
+    };
+    let mut out = format!(
+        "proposal: {} (pending)\nkind: {mode} → {target}\nchanges: +{} −{} lines\n",
+        p.id, p.preview.added, p.preview.removed
+    );
+    if !p.rationale.is_empty() {
+        out.push_str(&format!("rationale: {}\n", one_line(&p.rationale, 160)));
+    }
+    out.push_str(&changed_head(&p, 8));
+    out.push_str(
+        "\nNOT in the library yet — the draft waits in Cortex's review queue. \
+Ask the user to open Cortex → 笔记 → AI 提案 and accept or discard it. \
+Do not paste the draft into the chat: they will read it as a diff.",
+    );
+    Ok(out)
+}
+
+fn list_proposals(conn: &Connection, args: &Value) -> Result<String> {
+    require_queue(conn)?;
+    let status = args.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+    let filter = if status == "all" { None } else { Some(status) };
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .clamp(1, 100) as usize;
+    let rows = crate::proposals::list(conn, filter, limit)?;
+    if rows.is_empty() {
+        return Ok(match filter {
+            Some(s) => format!("no {s} proposals."),
+            None => "no proposals yet.".into(),
+        });
+    }
+    let mut out = format!("{} {} proposal(s):\n", rows.len(), status);
+    for p in rows {
+        let target = p.note_id.clone().unwrap_or_else(|| "(new)".into());
+        out.push_str(&format!(
+            "- {} | {} | {} | note={} | +{} −{}",
+            p.id, p.kind, one_line(&p.title, 40), target, p.preview.added, p.preview.removed
+        ));
+        if !p.rationale.is_empty() {
+            out.push_str(&format!(" | {}", one_line(&p.rationale, 80)));
+        }
+        out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
+}
+
+fn withdraw_proposal(conn: &Connection, args: &Value) -> Result<String> {
+    require_queue(conn)?;
+    let id = args
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::Other("proposal_id is required".into()))?;
+    crate::proposals::withdraw(conn, id)?;
+    Ok(format!("withdrawn: {id} — it no longer appears in the user's queue."))
+}
+
 // ---- resources --------------------------------------------------------
 //
 // Notes and papers are addressable by URI so a client can attach one directly
@@ -989,7 +1213,10 @@ pub fn handle_message(conn: &Connection, msg: &Value) -> Option<Value> {
 (3) papers — a curated library where excerpts carry page numbers: list_papers, get_paper, search_papers, list_excerpts. \
 When you cite, use the paper's cite_key and the excerpt's page — both are stable. \
 Notes and papers are also exposed as resources (cortex://note/<id>, cortex://paper/<cite_key>). \
-Read-only: no tool here writes to the library."
+Writing: you cannot edit notes. propose_note queues a draft with a diff; the user accepts or discards it in \
+Cortex (notes → AI 提案), and only then does it become a note and a .md file. Use list_proposals to check what \
+is already waiting, withdraw_proposal to retract your own draft. Prefer append over replace, and say in the \
+rationale why the note is worth having."
             }))
         }
         "ping" => ok(json!({})),
@@ -1144,10 +1371,12 @@ mod tests {
             "list_notebooks", "search_notebook", "get_source", "read_document", "search_notes",
             "get_knowledge_tree", "list_wiki", "get_wiki", "wiki_reverse_links",
             "list_agents", "agent_messages", "cross_book_bridges", "list_provenance",
+            "list_papers", "get_paper", "search_papers", "list_excerpts", "get_note",
+            "propose_note", "list_proposals", "withdraw_proposal",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
-        assert_eq!(names.len(), 18, "tool surface should be exactly 18 read-only tools");
+        assert_eq!(names.len(), 21, "18 read-only tools + 3 queue tools");
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1329,6 +1558,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bad["error"]["code"], -32602);
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- write-back queue (L2) ----------------------------------------
+
+    /// Same shape as `seeded`, but the connection stays writable — the mode the
+    /// real binary uses so it can append to the proposal queue.
+    fn seeded_writable(tag: &str) -> (Connection, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("cortex-mcp-rw-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cortex.db");
+        {
+            let st = crate::db::AppState::new(&path).unwrap();
+            let c = st.db.lock().unwrap();
+            c.execute_batch(
+                "INSERT INTO subjects (id, name, created_at, updated_at) VALUES ('s1', '计算机网络', 1, 1);
+                 INSERT INTO notes (id, subject_id, title, body, created_at, updated_at)
+                   VALUES ('n1', 's1', 'TCP 笔记', '第一段。', 1, 1);",
+            )
+            .unwrap();
+        }
+        (open_for_agent(&path).unwrap(), dir)
+    }
+
+    #[test]
+    fn propose_note_queues_a_draft_without_touching_notes() {
+        let (c, dir) = seeded_writable("pn");
+        let resp = call(
+            &c,
+            "propose_note",
+            json!({ "mode": "append", "note_id": "n1", "body": "第二段。",
+                    "rationale": "补上实测数据", "author": "codex" }),
+        );
+        assert_eq!(resp["result"]["isError"], false, "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("proposal: "), "{text}");
+        assert!(text.contains("pending"), "{text}");
+        assert!(text.contains("NOT in the library yet"), "{text}");
+
+        // The note itself is untouched: the draft lives in the queue only.
+        let body: String = c
+            .query_row("SELECT body FROM notes WHERE id='n1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(body, "第一段。");
+        let status: String = c
+            .query_row("SELECT status FROM agent_proposals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending");
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_then_withdraw_the_draft() {
+        let (c, dir) = seeded_writable("wd");
+        call(&c, "propose_note", json!({ "title": "新笔记", "body": "# 标题" }));
+        let listed = call(&c, "list_proposals", json!({}));
+        let text = listed["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("1 pending proposal"), "{text}");
+        assert!(text.contains("新笔记"), "{text}");
+        let id = text
+            .lines()
+            .nth(1)
+            .and_then(|l| l.trim_start_matches("- ").split(' ').next())
+            .unwrap()
+            .to_string();
+
+        let with = call(&c, "withdraw_proposal", json!({ "proposal_id": id }));
+        assert_eq!(with["result"]["isError"], false, "{with}");
+        let after = call(&c, "list_proposals", json!({}));
+        assert!(
+            after["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("no pending proposals"),
+            "{after}"
+        );
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_tools_refuse_a_read_only_connection() {
+        let (c, dir) = seeded("ro");
+        let resp = call(&c, "propose_note", json!({ "title": "x", "body": "y" }));
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("可写连接"), "{text}");
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -1395,6 +1395,54 @@ export const vaultSetPath = (path: string) =>
 /** Rescan the vault now — picks up files edited outside the app. */
 export const vaultReindex = () => invoke<VaultStatus>("vault_reindex");
 
+// ---- agent write-back: drafts waiting for review (L2) ----
+// An MCP client (Codex / Claude Code) can only *propose* a note. It lands here
+// with a line diff; the note and its .md file are written when you accept.
+export type ProposalKind = "note_new" | "note_append" | "note_replace";
+export interface ProposalDiffLine {
+  kind: "same" | "add" | "del" | "gap";
+  text: string;
+  old_no: number | null;
+  new_no: number | null;
+}
+export interface ProposalPreview {
+  lines: ProposalDiffLine[];
+  added: number;
+  removed: number;
+  truncated: boolean;
+}
+export interface Proposal {
+  id: string;
+  kind: ProposalKind;
+  status: "pending" | "accepted" | "rejected" | "withdrawn";
+  note_id: string | null;
+  title: string;
+  subject_id: string | null;
+  rationale: string;
+  author: string;
+  created_at: number;
+  resolved_at: number | null;
+  result_note_id: string | null;
+  preview: ProposalPreview;
+}
+export interface AppliedProposal {
+  note_id: string;
+  title: string;
+  vault_path: string | null;
+  vault_error: string | null;
+}
+/** Pending proposals by default; pass "all" for the history. */
+export const listProposals = (status?: string | null) =>
+  invoke<Proposal[]>("list_proposals", { status: status ?? null });
+/** Apply a draft. `force` overwrites a note that changed since the draft. */
+export const acceptProposal = (id: string, force = false) =>
+  invoke<AppliedProposal>("accept_proposal", { id, force });
+export const rejectProposal = (id: string) => invoke<void>("reject_proposal", { id });
+/** Cheap count for the Today flow bar (no diffs). */
+export const proposalPendingCount = () => invoke<number>("pending_proposals");
+
+
+
 // ---- calendar (events + tasks) ----
 export interface CalEvent {
   id: string;
