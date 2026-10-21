@@ -33,6 +33,7 @@ export type View =
   | "glossary"
   | "mindmap"
   | "exam"
+  | "lab"
   | "settings";
 export type Mode = "NOR" | "INS" | "SEL";
 // One item in the notification centre, derived from cached Moodle data.

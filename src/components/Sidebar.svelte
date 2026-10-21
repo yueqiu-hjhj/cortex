@@ -287,6 +287,17 @@
       <Icon name="cards" size={14} /><span class="lbl"> 词汇</span><span class="nav-k">␣ v</span>
     </div>
 
+    <div
+      class="sb-nav-item{app.view === 'lab' ? ' on' : ''}"
+      onclick={() => app.setView("lab")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("lab")}
+      title="实验室 — 改提示词、并排比两版、用固定用例判分"
+    >
+      <Icon name="bolt" size={14} /><span class="lbl"> 实验室</span>
+    </div>
+
     <!-- Subjects section header -->
     <div class="sb-section-l">
       <span class="label">科目</span>

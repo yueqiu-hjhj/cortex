@@ -38,6 +38,7 @@
   import Today from "./views/Today.svelte";
   import Plan from "./views/Plan.svelte";
   import Research from "./views/Research.svelte";
+  import Lab from "./views/Lab.svelte";
   import Agents from "./views/Agents.svelte";
   import SubjectView from "./views/SubjectView.svelte";
   import SourceViewer from "./views/SourceViewer.svelte";
@@ -567,6 +568,8 @@
           {#if LiteratureReaderC}{@const LiteratureReader = LiteratureReaderC}<LiteratureReader />{/if}
         {:else if app.view === "vocabulary"}
           {#if VocabularyWorkbenchC}{@const VocabularyWorkbench = VocabularyWorkbenchC}<VocabularyWorkbench />{/if}
+        {:else if app.view === "lab"}
+          <Lab />
         {:else if app.view === "glossary"}
           {#if GlossaryViewC}{@const GlossaryView = GlossaryViewC}<GlossaryView />{/if}
         {:else if app.view === "mindmap"}

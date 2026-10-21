@@ -72,6 +72,7 @@ pub mod draft_review;
 pub mod research_connectors;
 pub mod research_agent;
 pub mod prompts;
+pub mod prompt_lab;
 pub mod slides;
 pub mod drafts;
 pub mod extraction;
@@ -695,6 +696,16 @@ pub fn run() {
             research_agent::research_thread_messages,
             research_agent::research_thread_delete,
             research_agent::research_ask,
+            // prompt lab — edit a prompt, compare two versions, score both
+            prompt_lab::prompt_list,
+            prompt_lab::prompt_save,
+            prompt_lab::prompt_reset,
+            prompt_lab::prompt_run,
+            prompt_lab::prompt_evals,
+            prompt_lab::prompt_eval_add,
+            prompt_lab::prompt_eval_delete,
+            prompt_lab::prompt_eval_run,
+            prompt_lab::prompt_eval_history,
             // calendar
             calendar::create_event,
             calendar::list_events,

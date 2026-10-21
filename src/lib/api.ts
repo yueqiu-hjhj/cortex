@@ -3057,3 +3057,88 @@ export const researchThreadDelete = (threadId: string) =>
 
 export const researchAsk = (input: string, threadId?: string | null) =>
   invoke<ResearchAskOutcome>("research_ask", { threadId: threadId ?? null, input });
+
+// ---- prompt lab (edit a prompt, compare two versions, score both) ----
+export interface PromptInfo {
+  key: string;
+  label: string;
+  group: string;
+  /** Effective text — what the next model call will actually use. */
+  body: string;
+  default_body: string;
+  /** A realistic input the lab can run without needing your data. */
+  sample: string;
+  custom: boolean;
+}
+
+export interface PromptRun {
+  text: string;
+  ms: number;
+  chars: number;
+  model: string;
+}
+
+export interface PromptEval {
+  id: string;
+  prompt_key: string;
+  name: string;
+  input: string;
+  rules: string;
+  created_at: number;
+}
+
+export interface PromptCaseResult {
+  output: string;
+  passed: boolean;
+  failures: string[];
+  ms: number;
+}
+
+export interface PromptEvalRow {
+  eval_id: string;
+  eval_name: string;
+  a: PromptCaseResult;
+  b: PromptCaseResult;
+}
+
+export interface PromptVariantScore {
+  label: string;
+  passed: number;
+  total: number;
+}
+
+export interface PromptEvalOutcome {
+  run_id: string;
+  a: PromptVariantScore;
+  b: PromptVariantScore;
+  rows: PromptEvalRow[];
+}
+
+export const promptList = () => invoke<PromptInfo[]>("prompt_list");
+export const promptSave = (key: string, body: string) =>
+  invoke<void>("prompt_save", { key, body });
+export const promptReset = (key: string) => invoke<void>("prompt_reset", { key });
+/** `body` is a draft — pass null/undefined to run the saved prompt. */
+export const promptRun = (key: string, input: string, body?: string | null) =>
+  invoke<PromptRun>("prompt_run", { key, input, body: body ?? null });
+
+export const promptEvals = (key: string) => invoke<PromptEval[]>("prompt_evals", { key });
+export const promptEvalAdd = (key: string, name: string, input: string, rules: string) =>
+  invoke<PromptEval>("prompt_eval_add", { key, name, input, rules });
+export const promptEvalDelete = (id: string) => invoke<void>("prompt_eval_delete", { id });
+export const promptEvalRun = (key: string, bodyA?: string | null, bodyB?: string | null) =>
+  invoke<PromptEvalOutcome>("prompt_eval_run", { key, bodyA: bodyA ?? null, bodyB: bodyB ?? null });
+
+export interface PromptEvalRunSummary {
+  run_id: string;
+  label_a: string;
+  label_b: string;
+  /** [passed, total] */
+  a: [number, number];
+  b: [number, number];
+  created_at: number;
+}
+
+/** Past comparisons for one prompt — "it scored better last week" needs data. */
+export const promptEvalHistory = (key: string, limit = 8) =>
+  invoke<PromptEvalRunSummary[]>("prompt_eval_history", { key, limit });

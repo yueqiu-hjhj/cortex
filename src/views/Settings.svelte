@@ -3252,6 +3252,18 @@ Notes: {about}</pre>
         <section class="set-group">
           <div class="set-group-h">
             <div>
+              <h3 class="set-group-t">提示词实验室</h3>
+              <p class="set-group-d">
+                模型用的提示词现在可以改：并排跑两版、用固定用例判分，改坏了还能一键还原。在侧栏「实验室」里。
+              </p>
+            </div>
+            <button class="btn btn--sm" onclick={() => app.setView("lab")}>打开实验室</button>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <div class="set-group-h">
+            <div>
               <h3 class="set-group-t">检索评测</h3>
               <p class="set-group-d">
                 用一份固定的合成语料跑四种检索配置，看各自能召回多少。语料临时写入一个名为「(eval) 检索评测」的科目，不会和你自己的资料混在一起。
