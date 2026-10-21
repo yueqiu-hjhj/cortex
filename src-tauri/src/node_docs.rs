@@ -567,4 +567,57 @@ mod tests {
         let p = build_user_prompt(&node, 2, &["拥塞控制".into()], &g);
         assert!(p.contains("《BBR 笔记》"), "{p}");
     }
+
+    /// Manual end-to-end against a COPY of the real library: migrations
+    /// 0066–0069 must apply to a 60-migration database, and the layer peel
+    /// must survive a framework built by sync (contains-edges only, no
+    /// prerequisites yet — everything is layer 0 by definition).
+    ///
+    /// ```text
+    /// CORTEX_REAL_DB="$APPDATA/app.study.cortex/cortex.db" \
+    ///   cargo test --lib node_docs::tests::real_library_layers -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "manual: set CORTEX_REAL_DB to the real cortex.db"]
+    fn real_library_layers() {
+        let Ok(src) = std::env::var("CORTEX_REAL_DB") else {
+            eprintln!("CORTEX_REAL_DB not set — skipping");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("cortex-doc-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("cortex.db");
+        std::fs::copy(&src, &copy).unwrap();
+        for ext in ["-wal", "-shm"] {
+            let from = std::path::PathBuf::from(format!("{src}{ext}"));
+            if from.exists() {
+                std::fs::copy(&from, dir.join(format!("cortex.db{ext}"))).unwrap();
+            }
+        }
+        // AppState::new runs every migration, 0066 included.
+        let st = AppState::new(&copy).unwrap();
+        let c = st.db.lock().unwrap();
+        let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        eprintln!("schema version after migrate: {version}");
+        assert!(version >= 66, "the new migrations must have run");
+
+        let subjects = repo::list_subjects(&c).unwrap();
+        let mut total_nodes = 0usize;
+        for s in subjects.iter().take(8) {
+            // Sync first — a library that never opened the subject overview
+            // has no nodes at all (same precondition as the MOC e2e).
+            repo::sync_knowledge_graph(&c, &s.id).unwrap();
+            let layers = compute_layers(&c, &s.id).unwrap();
+            total_nodes += layers.len();
+            // Every layer must be a small non-negative integer; a framework
+            // without prerequisite edges is all zeros.
+            for l in &layers {
+                assert!(l.layer >= 0 && l.layer < 50, "{}: layer {}", l.title, l.layer);
+            }
+        }
+        eprintln!("layers computed over {total_nodes} nodes in {} subjects", subjects.len().min(8));
+        assert!(total_nodes > 0, "sync must have produced nodes on the real library");
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
