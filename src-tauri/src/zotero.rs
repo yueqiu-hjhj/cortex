@@ -228,7 +228,7 @@ fn read_items(conn: &Connection, since: &str) -> Result<Vec<RawItem>> {
     let mut cstmt = conn.prepare(
         "SELECT ic.itemID, TRIM(cd.lastName || ', ' || cd.firstName) AS name
            FROM itemCreators ic
-           JOIN creatorData cd ON cd.creatorID = ic.creatorID
+           JOIN creators cd ON cd.creatorID = ic.creatorID
           ORDER BY ic.itemID, ic.orderIndex",
     )?;
     let mut by_item: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
@@ -600,7 +600,7 @@ mod tests {
                                  dateModified TEXT DEFAULT '2000-01-01 00:00:00', version INTEGER DEFAULT 0);
              CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
              CREATE TABLE itemData (itemID INTEGER, fieldID INTEGER, valueID INTEGER);
-             CREATE TABLE creatorData (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT);
+             CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT, fieldID INTEGER);
              CREATE TABLE itemCreators (itemID INTEGER, creatorID INTEGER, creatorType TEXT, orderIndex INTEGER);
              CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY);
              INSERT INTO itemTypes VALUES (1,'journalArticle'),(2,'attachment'),(3,'note');
@@ -613,7 +613,7 @@ mod tests {
                (9,'An Attachment Title'),
                (10,'Second Real Paper'),(11,'10.2222/second'),(12,'Second abstract.'),(13,'2021-05-05'),(14,'ICML'),(15,'https://arxiv.org/abs/2105.05');
              INSERT INTO itemData VALUES (1,1,1),(1,2,2),(1,3,3),(1,4,4),(1,5,5),(1,6,6),(2,1,7),(2,2,8),(3,1,9);
-             INSERT INTO creatorData VALUES (1,'Ashish','Vaswani'),(2,'Noam','Shazeer'),(3,'Ada','Lovelace');
+             INSERT INTO creators VALUES (1,'Ashish','Vaswani',1),(2,'Noam','Shazeer',1),(3,'Ada','Lovelace',1);
              INSERT INTO itemCreators VALUES (1,1,'author',0),(1,2,'author',1),(10,3,'author',0);
              INSERT INTO deletedItems VALUES (2);
              -- seeded but unused until the incremental test turns item 10 real
