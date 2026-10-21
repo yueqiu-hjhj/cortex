@@ -195,41 +195,50 @@ fn download_with_progress<F: FnMut(u64, u64)>(
 }
 
 /// Embedder that loads the local ONNX model on first embed and reuses it.
+///
+/// The environment/session/tokenizer live in PROCESS-wide statics, not in the
+/// struct: `ort` allows exactly one `Environment` per process, so a
+/// per-instance `OnceLock` (the previous design) made every embedder after the
+/// first fail with "only one environment is allowed per process" — which
+/// silently degraded all later chat queries to keyword-only retrieval after
+/// any re-ingest had already built a session.
 pub struct OnnxEmbedder {
     data_dir: PathBuf,
-    session: OnceLock<std::result::Result<Arc<Mutex<ort::session::Session>>, String>>,
-    tokenizer: OnceLock<std::result::Result<Arc<tokenizers::Tokenizer>, String>>,
 }
+
+static SHARED_SESSION: OnceLock<std::result::Result<Arc<Mutex<ort::session::Session>>, String>> =
+    OnceLock::new();
+static SHARED_TOKENIZER: OnceLock<std::result::Result<Arc<tokenizers::Tokenizer>, String>> =
+    OnceLock::new();
 
 impl OnnxEmbedder {
     pub fn new(data_dir: PathBuf) -> Self {
-        Self {
-            data_dir,
-            session: OnceLock::new(),
-            tokenizer: OnceLock::new(),
-        }
+        Self { data_dir }
     }
 
     fn session(&self) -> Result<&Arc<Mutex<ort::session::Session>>> {
-        self.session.get_or_init(|| {
-            let (mp, _tp) = ensure_model(&self.data_dir, |_, _| {}).map_err(|e| e.to_string())?;
-            let env = ort::init().build().map_err(|e| e.to_string())?;
-            let mut builder = ort::session::Session::builder(&env).map_err(|e| e.to_string())?;
-            let s = builder.commit_from_file(&mp).map_err(|e| e.to_string())?;
-            Ok(Arc::new(Mutex::new(s)))
-        })
-        .as_ref()
-        .map_err(|e| Error::Other(format!("onnx session: {e}")))
+        SHARED_SESSION
+            .get_or_init(|| {
+                let (mp, _tp) = ensure_model(&self.data_dir, |_, _| {}).map_err(|e| e.to_string())?;
+                let env = ort::init().build().map_err(|e| e.to_string())?;
+                let mut builder = ort::session::Session::builder(&env).map_err(|e| e.to_string())?;
+                let s = builder.commit_from_file(&mp).map_err(|e| e.to_string())?;
+                Ok(Arc::new(Mutex::new(s)))
+            })
+            .as_ref()
+            .map_err(|e| Error::Other(format!("onnx session: {e}")))
     }
 
     fn tokenizer(&self) -> Result<&Arc<tokenizers::Tokenizer>> {
-        self.tokenizer.get_or_init(|| {
-            let (_mp, tp_path) = ensure_model(&self.data_dir, |_, _| {}).map_err(|e| e.to_string())?;
-            let t = tokenizers::Tokenizer::from_file(&tp_path).map_err(|e| e.to_string())?;
-            Ok(Arc::new(t))
-        })
-        .as_ref()
-        .map_err(|e| Error::Other(format!("onnx tokenizer: {e}")))
+        SHARED_TOKENIZER
+            .get_or_init(|| {
+                let (_mp, tp_path) =
+                    ensure_model(&self.data_dir, |_, _| {}).map_err(|e| e.to_string())?;
+                let t = tokenizers::Tokenizer::from_file(&tp_path).map_err(|e| e.to_string())?;
+                Ok(Arc::new(t))
+            })
+            .as_ref()
+            .map_err(|e| Error::Other(format!("onnx tokenizer: {e}")))
     }
 }
 
