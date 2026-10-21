@@ -6,9 +6,33 @@
 use crate::error::{Error, Result};
 use crate::models::CardDraft;
 
+/// What a provider actually sent back, before Cortex cleans it up.
+///
+/// `text` is what the pipeline consumes (reasoning blocks stripped); `content`
+/// is the untouched string, because a prompt lab that only ever shows the
+/// cleaned output cannot explain why an answer came out empty or truncated.
+#[derive(Debug, Clone, Default)]
+pub struct RawReply {
+    /// Content exactly as the provider returned it (may include `<think>`).
+    pub content: String,
+    /// The cleaned text the rest of Cortex uses.
+    pub text: String,
+    /// Why generation stopped, when the provider says (`stop` / `length` / …).
+    pub finish_reason: Option<String>,
+    /// Provider-reported usage, verbatim — token counts differ per provider and
+    /// inventing a normalized shape would hide exactly that.
+    pub usage: Option<serde_json::Value>,
+}
+
 pub trait Llm: Send + Sync {
     fn complete(&self, system: &str, user: &str) -> Result<String>;
     fn name(&self) -> String;
+    /// One completion with the raw payload attached. Default: no extra metadata
+    /// — only providers that expose it (OpenAI-compatible endpoints) override.
+    fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
+        let text = self.complete(system, user)?;
+        Ok(RawReply { content: text.clone(), text, finish_reason: None, usage: None })
+    }
     /// Cap output tokens for this provider's request. Wiring the per-task token
     /// budget here is what stops OpenRouter from defaulting to a huge max_tokens
     /// (its model default) and 402-ing when the key's credit limit can't cover it.
@@ -386,8 +410,8 @@ fn strip_think(s: &str) -> String {
 }
 
 impl OpenAiCompatLlm {
-    /// One chat/completions attempt with an explicit max_tokens (or none).
-    fn complete_once(&self, system: &str, user: &str, max_tokens: Option<u32>) -> Result<String> {
+    /// One raw chat/completions attempt — the JSON, not just the text.
+    fn chat_json(&self, system: &str, user: &str, max_tokens: Option<u32>) -> Result<serde_json::Value> {
         let key = self.api_key.trim();
         let client = llm_client();
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -402,7 +426,7 @@ impl OpenAiCompatLlm {
         if let Some(n) = max_tokens {
             body["max_tokens"] = serde_json::json!(n);
         }
-        let json = send_json(
+        send_json(
             self.label,
             client
                 .post(&url)
@@ -411,7 +435,12 @@ impl OpenAiCompatLlm {
                 .header("HTTP-Referer", "https://cortex.study")
                 .header("X-Title", "Cortex")
                 .json(&body),
-        )?;
+        )
+    }
+
+    /// One chat/completions attempt with an explicit max_tokens (or none).
+    fn complete_once(&self, system: &str, user: &str, max_tokens: Option<u32>) -> Result<String> {
+        let json = self.chat_json(system, user, max_tokens)?;
         json["choices"][0]["message"]["content"]
             .as_str()
             .map(strip_think)
@@ -449,6 +478,30 @@ impl Llm for OpenAiCompatLlm {
     }
     fn name(&self) -> String {
         format!("{}:{}", self.label, self.model)
+    }
+    fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
+        if self.api_key.trim().is_empty() {
+            return Err(Error::Other(format!(
+                "{}: API key is empty — paste it in Settings → API keys and click Save keys.",
+                self.label
+            )));
+        }
+        let json = self.chat_json(system, user, self.max_tokens)?;
+        let choice = &json["choices"][0];
+        let content = choice["message"]["content"].as_str().unwrap_or("").to_string();
+        // Reasoning models put their chain-of-thought inside `reasoning`, not
+        // `content`; surface it rather than reporting an empty raw string.
+        let raw = if content.trim().is_empty() {
+            choice["message"]["reasoning"].as_str().unwrap_or("").to_string()
+        } else {
+            content
+        };
+        Ok(RawReply {
+            text: strip_think(&raw),
+            finish_reason: choice["finish_reason"].as_str().map(str::to_string),
+            usage: if json["usage"].is_null() { None } else { Some(json["usage"].clone()) },
+            content: raw,
+        })
     }
     fn ocr(&self, images: &[(String, String)]) -> Result<String> {
         let key = self.api_key.trim();

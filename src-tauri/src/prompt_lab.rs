@@ -389,7 +389,15 @@ pub fn history(conn: &Connection, key: &str, limit: usize) -> Result<Vec<EvalRun
 /// beyond token accounting.
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptRun {
+    /// Cleaned text — what a real call would consume.
     pub text: String,
+    /// Untouched provider content (reasoning blocks intact). Showing only the
+    /// cleaned text is how "why is the answer empty?" becomes unanswerable.
+    pub raw: String,
+    /// `true` when cleaning changed something — i.e. a think block was removed.
+    pub cleaned: bool,
+    pub finish_reason: Option<String>,
+    pub usage: Option<serde_json::Value>,
     pub ms: i64,
     pub chars: usize,
     pub model: String,
@@ -403,10 +411,14 @@ pub fn run_once(model: &dyn Llm, body: &str, input: &str) -> Result<PromptRun> {
         return Err(Error::Other("没有输入，模型无从下手".into()));
     }
     let started = std::time::Instant::now();
-    let text = model.complete(body, input)?;
+    let reply = model.complete_raw(body, input)?;
     Ok(PromptRun {
-        chars: text.chars().count(),
-        text,
+        chars: reply.text.chars().count(),
+        cleaned: reply.content != reply.text,
+        raw: reply.content,
+        text: reply.text,
+        finish_reason: reply.finish_reason,
+        usage: reply.usage,
         ms: started.elapsed().as_millis() as i64,
         model: model.name(),
     })

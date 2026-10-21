@@ -7,11 +7,14 @@
   // 评测: fixtures (input + deterministic rules) scored for both versions. No
   // LLM grading its own homework — a rubric that can be talked into a pass is
   // not a rubric.
+  // 检索: what RAG actually did with the question — tokenization, both channels,
+  // rank fusion, the final cut — plus the 4-mode retrieval evaluation. Same
+  // page because "why was this answer wrong" has one answer chain, not four.
   import { app } from "../lib/store.svelte";
   import Icon from "../components/Icon.svelte";
   import * as api from "../lib/api";
 
-  type Tab = "bench" | "eval";
+  type Tab = "bench" | "eval" | "retrieval";
   let tab = $state<Tab>("bench");
 
   let infos = $state<api.PromptInfo[]>([]);
@@ -46,6 +49,58 @@
     { label: "A · 草稿", res: runA },
     { label: "B · 内置默认", res: runB },
   ]);
+
+  // ---- transparency: retrieval trace + 4-mode eval ----
+  let traceQuery = $state("");
+  let trace = $state<api.RetrievalTrace | null>(null);
+  let traceErr = $state<string | null>(null);
+  let traceBusy = $state(false);
+  let modes = $state<api.EvalReport[] | null>(null);
+  let modesKind = $state<"synthetic" | "real" | null>(null);
+  let modesErr = $state<string | null>(null);
+
+  const channels = $derived<{ name: string; hits: api.TraceHit[] }[]>(
+    trace
+      ? [
+          { name: "向量", hits: trace.vector },
+          { name: "关键词", hits: trace.keyword },
+          { name: "融合", hits: trace.fused },
+          { name: "最终", hits: trace.final_hits },
+        ]
+      : [],
+  );
+
+  async function runTrace() {
+    if (!traceQuery.trim() || traceBusy) return;
+    traceBusy = true;
+    traceErr = null;
+    try {
+      trace = await api.retrievalTrace(traceQuery.trim(), app.activeSubject?.id ?? null, 6);
+    } catch (e) {
+      traceErr = String(e);
+      trace = null;
+    } finally {
+      traceBusy = false;
+    }
+  }
+
+  async function runModes(kind: "synthetic" | "real") {
+    if (busy === "modes") return;
+    busy = "modes";
+    modesErr = null;
+    modesKind = kind;
+    try {
+      modes =
+        kind === "synthetic"
+          ? await api.retrievalEval(5)
+          : await api.retrievalEvalReal(app.activeSubject?.id ? [app.activeSubject.id] : null, 5);
+    } catch (e) {
+      modesErr = String(e);
+      modes = null;
+    } finally {
+      busy = null;
+    }
+  }
 
   let evals = $state<api.PromptEval[]>([]);
   let historyRows = $state<api.PromptEvalRunSummary[]>([]);
@@ -217,6 +272,9 @@
         <Icon name="check" size={12} /> 评测
         {#if evals.length}<span class="seg-count">{evals.length}</span>{/if}
       </button>
+      <button class="seg-btn" class:on={tab === "retrieval"} onclick={() => (tab = "retrieval")} role="tab" aria-selected={tab === "retrieval"}>
+        <Icon name="search" size={12} /> 检索
+      </button>
     </div>
   </header>
 
@@ -226,6 +284,113 @@
     <div class="lab-empty">正在读取提示词…</div>
   {:else if !infos.length}
     <div class="lab-empty">还没有可编辑的提示词。</div>
+  {:else if tab === "retrieval"}
+    <section class="lab-main lab-wide">
+      <div class="lab-sec first">
+        <div class="lab-sec-h">
+          <h3 class="lab-sec-t">检索元数据</h3>
+          <span class="lab-hint">
+            问一句，看它在库里怎么走：切词 → 向量 → 关键词 → 排序融合 → 最终交给模型的那几段
+          </span>
+        </div>
+        <div class="lab-trace-form">
+          <input
+            class="ipt"
+            bind:value={traceQuery}
+            placeholder="例如：扩散模型的采样加速 / TCP 三次握手为什么不用四次"
+            onkeydown={(e) => e.key === "Enter" && void runTrace()}
+          />
+          <button class="btn btn--primary btn--sm" disabled={traceBusy || !traceQuery.trim()} onclick={() => void runTrace()}>
+            {traceBusy ? "检索中…" : "跑一次"}
+          </button>
+        </div>
+        {#if traceErr}<div class="lab-err">{traceErr}</div>{/if}
+
+        {#if trace}
+          <div class="lab-trace-meta mono faint">
+            <span>{trace.ms} ms</span>
+            <span>{trace.subject_name ?? "整个库"}</span>
+            <span>向量 {trace.embed_provider} {trace.embed_ok ? "✓" : "✗"}</span>
+            <span>重排 {trace.rerank ? "开" : "关"}</span>
+          </div>
+          {#if trace.embed_error}
+            <div class="lab-trace-warn">{trace.embed_error}</div>
+          {/if}
+          <div class="lab-chips">
+            {#each trace.terms as t (t)}<span class="lab-chip mono">{t}</span>{/each}
+          </div>
+
+          <div class="lab-cols">
+            {#each channels as ch (ch.name)}
+              <div class="lab-col">
+                <div class="lab-col-h">
+                  {ch.name}<span class="mono faint">{ch.hits.length}</span>
+                </div>
+                {#if !ch.hits.length}
+                  <p class="lab-col-none">没有命中</p>
+                {/if}
+                {#each ch.hits as h, i (h.chunk_id + i)}
+                  <div class="lab-hit">
+                    <div class="lab-hit-h">
+                      <span class="mono faint">#{i + 1}</span>
+                      <span class="lab-hit-n">{h.source_name}</span>
+                      <span style="flex:1"></span>
+                      <span class="mono faint">{h.score.toFixed(3)}</span>
+                    </div>
+                    {#if h.loc}<span class="lab-hit-l mono">{h.loc}</span>{/if}
+                    <p class="lab-hit-p">{h.preview}</p>
+                  </div>
+                {/each}
+              </div>
+            {/each}
+          </div>
+          <p class="lab-hint">
+            「最终」是真正塞进提示词的那几段。前三列没有的，模型也没看到。
+          </p>
+        {/if}
+      </div>
+
+      <div class="lab-sec">
+        <div class="lab-sec-h">
+          <h3 class="lab-sec-t">4 模式评测</h3>
+          <span class="lab-hint">
+            vector / rerank / hybrid / hybrid+rerank —— 同一批问题，哪种配置在这台机器上更准
+          </span>
+        </div>
+        <div class="lab-actions">
+          <button class="btn btn--sm" disabled={busy === "modes"} onclick={() => void runModes("synthetic")}>
+            跑合成语料
+          </button>
+          <button class="btn btn--sm" disabled={busy === "modes"} onclick={() => void runModes("real")}>
+            跑我的库
+          </button>
+          <span class="lab-hint">合成语料量的是管道本身；我的库量的是你这些文档的真实召回。</span>
+        </div>
+        {#if modesErr}<div class="lab-err">{modesErr}</div>{/if}
+        {#if modes}
+          {#if !modes.length}
+            <p class="lab-empty-inline">这一档没有可评测的问题——库里还没索引出足够的段落。</p>
+          {:else}
+            <div class="lab-table">
+              <div class="lab-tr lab-th">
+                <span>模式</span><span>Recall@5</span><span>MRR</span><span>问题数</span>
+              </div>
+              {#each modes as m (m.mode)}
+                <div class="lab-tr">
+                  <span class="mono">{m.mode}</span>
+                  <span class="mono">{(m.recall_at_k * 100).toFixed(1)}%</span>
+                  <span class="mono">{m.mrr.toFixed(3)}</span>
+                  <span class="mono faint">{m.evaluated}</span>
+                </div>
+              {/each}
+            </div>
+            <p class="lab-hint">
+              {modesKind === "synthetic" ? "合成语料" : "你的库"} · k = {modes[0].k} · 只看召回与名次，不看生成的文字。
+            </p>
+          {/if}
+        {/if}
+      </div>
+    </section>
   {:else}
     <div class="lab-grid">
       <nav class="lab-rail" aria-label="提示词列表">
@@ -307,6 +472,17 @@
                       </div>
                       {#if pane.res}
                         <pre class="lab-run-body">{pane.res.text}</pre>
+                        <details class="lab-raw">
+                          <summary>
+                            原始响应
+                            {#if pane.res.cleaned}· 含被剥离的推理块{/if}
+                            {#if pane.res.finish_reason}· {pane.res.finish_reason}{/if}
+                          </summary>
+                          <pre class="lab-raw-body">{pane.res.raw || "（空）"}</pre>
+                          {#if pane.res.usage}
+                            <div class="lab-raw-usage mono">{JSON.stringify(pane.res.usage)}</div>
+                          {/if}
+                        </details>
                       {:else}
                         <p class="lab-run-none">还没跑。</p>
                       {/if}
@@ -588,7 +764,7 @@
   .lab-fix-r { font-size: var(--t-2xs); color: var(--accent); margin-top: 2px; white-space: pre-wrap; }
   .lab-fix-i {
     font-size: var(--t-2xs); color: var(--fg-muted); margin-top: 4px; line-height: 1.5;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .lab-fix-add {
     margin-top: 10px; padding: 10px; border: 1px dashed var(--border-strong); border-radius: 10px;
@@ -615,6 +791,55 @@
   .lab-hist { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
   .lab-hist-h { font-size: var(--t-2xs); color: var(--fg-faint); }
   .lab-hist-row { font-size: var(--t-2xs); color: var(--fg-muted); }
+  /* ---- retrieval transparency ---- */
+  .lab-wide { max-width: 100%; }
+  .lab-trace-form { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; }
+  .lab-trace-form .ipt { flex: 1; }
+  .lab-trace-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--t-2xs); margin: 0 0 8px; }
+  .lab-trace-warn {
+    margin: 0 0 10px; padding: 7px 10px; border-radius: 8px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-size: var(--t-2xs); color: var(--fg-muted);
+  }
+  .lab-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 0 0 12px; }
+  .lab-chip {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--fg-muted);
+  }
+  .lab-cols {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+  }
+  @media (max-width: 1100px) { .lab-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .lab-col { border: 1px solid var(--border); border-radius: 10px; padding: 8px; min-width: 0; }
+  .lab-col-h {
+    display: flex; align-items: baseline; justify-content: space-between;
+    font-size: var(--t-2xs); color: var(--fg-bright); font-weight: 600; margin-bottom: 6px;
+  }
+  .lab-col-none { font-size: var(--t-2xs); color: var(--fg-faint); margin: 0; }
+  .lab-hit { padding: 6px 0; border-top: 1px dashed var(--border); }
+  .lab-hit:first-of-type { border-top: 0; }
+  .lab-hit-h { display: flex; align-items: baseline; gap: 6px; font-size: 10px; }
+  .lab-hit-n { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+  .lab-hit-l { font-size: 9px; color: var(--fg-faint); }
+  .lab-hit-p {
+    margin: 3px 0 0; font-size: 10.5px; line-height: 1.45; color: var(--fg-muted);
+    display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+
+  /* ---- raw provider response ---- */
+  .lab-raw { border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 6px; }
+  .lab-raw summary {
+    cursor: pointer; font-size: var(--t-2xs); color: var(--fg-faint);
+  }
+  .lab-raw summary:hover { color: var(--fg-muted); }
+  .lab-raw-body {
+    margin: 6px 0 0; padding: 8px; max-height: 220px; overflow: auto;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; color: var(--fg-muted);
+  }
+  .lab-raw-usage { margin-top: 6px; font-size: 10px; color: var(--fg-faint); word-break: break-all; }
+
   .lab-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .lab-tr {
     display: grid; grid-template-columns: minmax(0, 1.4fr) 110px 110px;

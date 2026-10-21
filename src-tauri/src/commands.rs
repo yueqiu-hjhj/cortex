@@ -7156,6 +7156,184 @@ pub fn plan_vs_actual(
     crate::planner::plan_vs_actual(&c, &start_day, days)
 }
 
+/// One hit as the retrieval pipeline actually ranked it, trimmed to what fits
+/// on screen — the point is to see WHY this chunk ranked here, not to read it.
+#[derive(serde::Serialize)]
+pub struct TraceHit {
+    pub chunk_id: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub loc: Option<String>,
+    pub score: f32,
+    pub preview: String,
+}
+
+/// Everything that happened between a question and what the model was told.
+///
+/// RAG used to be a black box with a `[retr]` eprintln: the answer was wrong and
+/// there was no way to tell whether the query terms were bad, the embedding
+/// failed, or reranking reordered the one correct chunk out of the window. This
+/// returns each stage separately so the transparency page can show them.
+#[derive(serde::Serialize)]
+pub struct RetrievalTrace {
+    pub query: String,
+    /// How the question was tokenized (CJK runs become character bigrams).
+    pub terms: Vec<String>,
+    pub embed_provider: String,
+    pub embed_ok: bool,
+    pub embed_error: Option<String>,
+    /// Vector channel, keyword channel, their rank-fusion, and the final cut.
+    pub vector: Vec<TraceHit>,
+    pub keyword: Vec<TraceHit>,
+    pub fused: Vec<TraceHit>,
+    pub final_hits: Vec<TraceHit>,
+    pub rerank: bool,
+    pub subject_name: Option<String>,
+    pub ms: i64,
+}
+
+fn trace_hits(hits: &[crate::models::ChunkHit]) -> Vec<TraceHit> {
+    hits.iter()
+        .map(|h| {
+            let text = h.text.replace(char::is_whitespace, " ");
+            let preview: String = text.chars().take(160).collect();
+            TraceHit {
+                chunk_id: h.id.clone(),
+                source_id: h.source_id.clone(),
+                source_name: h.source_name.clone(),
+                loc: h.loc.clone(),
+                score: h.score,
+                preview,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::trace_hits;
+    use crate::models::ChunkHit;
+
+    fn hit(id: &str, text: &str) -> ChunkHit {
+        ChunkHit {
+            id: id.into(),
+            source_id: "s1".into(),
+            source_name: "源".into(),
+            text: text.into(),
+            loc: Some("p12".into()),
+            char_start: Some(0),
+            char_end: Some(1),
+            score: 0.5,
+        }
+    }
+
+    /// A preview is one line: newlines from a PDF's hard wrapping would
+    /// otherwise leak into a 10px cell and break the grid.
+    #[test]
+    fn preview_is_flattened_and_capped() {
+        let long = "甲\n乙\t丙 ".to_string() + &"长".repeat(400);
+        let hits = trace_hits(&[hit("c1", &long)]);
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].preview.contains('\n'), "newline survived");
+        assert!(!hits[0].preview.contains('\t'), "tab survived");
+        assert_eq!(hits[0].preview.chars().count(), 160);
+        // Order is preserved: rank 1 stays first.
+        let two = trace_hits(&[hit("a", "x"), hit("b", "y")]);
+        assert_eq!(two[0].chunk_id, "a");
+        assert_eq!(two[1].chunk_id, "b");
+    }
+}
+
+/// Run the same retrieval path `chat_answer` uses, but return the intermediate
+/// stages instead of a prompt. Read-only: this never writes a chunk or a token.
+#[tauri::command]
+pub async fn retrieval_trace(
+    state: State<'_, AppState>,
+    query: String,
+    subject_id: Option<String>,
+    k: Option<i64>,
+) -> Result<RetrievalTrace> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err(Error::Other("先输入一个问题，再跑检索".into()));
+    }
+    let want = k.unwrap_or(6).clamp(1, 20) as usize;
+    let started = std::time::Instant::now();
+    let (provider, keys, ollama_url, data_dir, embed_model, rerank_on, subject_name) = {
+        let c = state.db.lock().unwrap();
+        let name: Option<String> = match subject_id.as_deref() {
+            Some(id) if !id.is_empty() => c
+                .query_row("SELECT name FROM subjects WHERE id = ?1", [id], |r| r.get(0))
+                .ok(),
+            _ => None,
+        };
+        (
+            effective_embed_provider(&c),
+            read_keys(&c)?,
+            crate::homelab::resolved_setting(&c, "ollama_url"),
+            state.data_dir.clone(),
+            embed_model_override(&c),
+            rerank_enabled(&c),
+            name,
+        )
+    };
+    let provider_label = provider.clone();
+    // The stub provider returns meaningless vectors: say so instead of showing
+    // a cosine ranking over noise as if it were meaningful.
+    let embed_ok_provider = !provider.is_empty() && provider != "stub";
+    let scoped = subject_id.clone().filter(|s| !s.is_empty());
+
+    let (qvec, embed_error) = if embed_ok_provider {
+        let qc = q.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let embedder = embed::from_settings(
+                &provider,
+                &keys,
+                ollama_url.as_deref(),
+                data_dir.as_deref(),
+                embed_model.as_deref(),
+            );
+            match embedder.embed(std::slice::from_ref(&qc)) {
+                Ok(mut v) => (v.pop().unwrap_or_default(), None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| Error::Other(format!("embed task failed: {e}")))?
+    } else {
+        (Vec::new(), Some("未配置可用的向量模型（当前为 stub），只跑了关键词通道".to_string()))
+    };
+
+    let c = state.db.lock().unwrap();
+    let vector = if qvec.is_empty() {
+        Vec::new()
+    } else {
+        repo::search_chunks(&c, scoped.as_deref(), &qvec, want * 2)?
+    };
+    let keyword = repo::keyword_search_chunks(&c, scoped.as_deref(), None, &q, want * 2)?;
+    // Cosine and keyword scores are not comparable; rank-fuse exactly like chat.
+    let fused = repo::rrf_merge(&[vector.clone(), keyword.clone()], want * 2);
+    let final_hits = if rerank_on {
+        crate::rerank::rerank(&q, &fused, want)
+    } else {
+        fused.iter().take(want).cloned().collect()
+    };
+    Ok(RetrievalTrace {
+        terms: repo::query_terms(&q),
+        query: q,
+        embed_provider: provider_label,
+        embed_ok: !qvec.is_empty(),
+        embed_error,
+        vector: trace_hits(&vector),
+        keyword: trace_hits(&keyword),
+        fused: trace_hits(&fused),
+        final_hits: trace_hits(&final_hits),
+        rerank: rerank_on,
+        subject_name,
+        ms: started.elapsed().as_millis() as i64,
+    })
+}
+
 /// Run the retrieval evaluation over a synthetic corpus and return all four
 /// configurations (vector / rerank / hybrid / hybrid+rerank) so the UI can show
 /// whether reranking actually helps on THIS machine's configured embedder.

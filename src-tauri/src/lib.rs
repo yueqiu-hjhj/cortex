@@ -793,6 +793,7 @@ pub fn run() {
             commands::paper_build_matrix,
             commands::plan_vs_actual,
             commands::retrieval_eval,
+            commands::retrieval_trace,
             commands::plan_calibration,
             // office: materials/drafts -> real Office files + docx/pdf edit-back
             commands::export_material_docx,

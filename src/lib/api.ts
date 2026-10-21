@@ -3072,7 +3072,14 @@ export interface PromptInfo {
 }
 
 export interface PromptRun {
+  /** Cleaned text — what a real call would consume. */
   text: string;
+  /** Untouched provider content (reasoning blocks intact). */
+  raw: string;
+  /** True when cleaning changed something (a `<think>` block was removed). */
+  cleaned: boolean;
+  finish_reason: string | null;
+  usage: unknown | null;
   ms: number;
   chars: number;
   model: string;
@@ -3142,3 +3149,38 @@ export interface PromptEvalRunSummary {
 /** Past comparisons for one prompt — "it scored better last week" needs data. */
 export const promptEvalHistory = (key: string, limit = 8) =>
   invoke<PromptEvalRunSummary[]>("prompt_eval_history", { key, limit });
+
+// ---- transparency: what retrieval actually did ----
+export interface TraceHit {
+  chunk_id: string;
+  source_id: string;
+  source_name: string;
+  loc: string | null;
+  score: number;
+  preview: string;
+}
+
+export interface RetrievalTrace {
+  query: string;
+  /** How the question was tokenized (CJK becomes character bigrams). */
+  terms: string[];
+  embed_provider: string;
+  embed_ok: boolean;
+  embed_error: string | null;
+  vector: TraceHit[];
+  keyword: TraceHit[];
+  fused: TraceHit[];
+  final_hits: TraceHit[];
+  rerank: boolean;
+  subject_name: string | null;
+  ms: number;
+}
+
+/** Read-only replay of the retrieval path: terms → vector → keyword → fusion →
+ *  final cut. `subjectId` null/empty searches the whole library. */
+export const retrievalTrace = (query: string, subjectId?: string | null, k?: number) =>
+  invoke<RetrievalTrace>("retrieval_trace", {
+    query,
+    subjectId: subjectId ?? null,
+    k: k ?? null,
+  });
