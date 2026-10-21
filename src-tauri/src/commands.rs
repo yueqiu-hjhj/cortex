@@ -145,8 +145,9 @@ pub(crate) fn apply_budget(model: &mut Box<dyn llm::Llm>, c: &Connection, task: 
 ///
 /// 1. an explicitly-set `model_<slot>` setting wins (Settings → Models rows);
 /// 2. otherwise every TEXT slot inherits `model_cheatsheet` — the de-facto
-///    primary. Set one good model there and every unset task follows it,
-///    instead of each silently reverting to a hardcoded default;
+///    primary — and then `model_chat`, so a user whose only configured key is
+///    the chat model (e.g. a custom MiniMax gateway) does not have writing /
+///    flashcard / quiz generation die on an unkeyed openrouter default;
 /// 3. `vision` never inherits: the primary may be text-only (DeepSeek V4
 ///    Flash), which would silently break OCR / figure explanation — it keeps
 ///    its own multimodal default;
@@ -183,10 +184,11 @@ pub(crate) fn model_spec_for(c: &Connection, slot: &str) -> String {
     }
     match slot {
         "vision" => DEFAULT_VISION_MODEL.to_string(),
-        "cheatsheet" => DEFAULT_CHAT_MODEL.to_string(),
-        // Unassigned text slots ride the chat model: with a custom gateway
-        // (e.g. MiniMax) as the only key, falling through to the openrouter
-        // default 400s — the user HAS a model, it's just not openrouter.
+        // Every other text slot — including `cheatsheet`, which also backs
+        // generate_draft and the other writing paths — inherits the user's
+        // chat model. Returning DEFAULT_CHAT_MODEL (openrouter) here instead
+        // made draft generation fail with NO_MODEL for users whose only key is
+        // a custom gateway (MiniMax), even though chat itself worked.
         _ => want("model_cheatsheet")
             .or_else(|| want("model_chat"))
             .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
