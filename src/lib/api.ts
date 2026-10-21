@@ -2836,6 +2836,55 @@ export const draftRewriteSentence = (
 export const draftUpdate = (draftId: string, payload: DraftPayload) =>
   invoke<void>("draft_update", { draftId, payload });
 
+// ---- writing toolbox + the upgrade ledger (0071) ---------------------------
+
+export interface KitEntry {
+  id: string;
+  category: string;
+  title: string;
+  content: string;
+  /** builtin | user | harvest */
+  source: string;
+  created_at: number;
+  updated_at: number;
+}
+export interface UpgradeRecord {
+  id: string;
+  draft_id: string;
+  /** upgrade | rewrite */
+  kind: string;
+  before_text: string;
+  after_text: string;
+  reason: string | null;
+  accepted: boolean;
+  created_at: number;
+}
+export const writingKitList = (category?: string) =>
+  invoke<KitEntry[]>("writing_kit_list", { category: category ?? null });
+export const writingKitSave = (category: string, title: string, content: string) =>
+  invoke<string>("writing_kit_save", { category, title, content });
+export const writingKitDelete = (id: string) =>
+  invoke<void>("writing_kit_delete", { id });
+export const upgradeHistoryList = (draftId: string) =>
+  invoke<UpgradeRecord[]>("upgrade_history_list", { draftId });
+/** Record an acted-on suggestion; an accepted one is harvested into the toolbox. */
+export const upgradeOutcomeRecord = (
+  draftId: string,
+  kind: "upgrade" | "rewrite",
+  before: string,
+  after: string,
+  reason: string | null,
+  accepted: boolean,
+) =>
+  invoke<string | null>("upgrade_outcome_record", {
+    draftId,
+    kind,
+    before,
+    after,
+    reason,
+    accepted,
+  });
+
 // ---- office export + edit-back (A2/A3) --------------------------------------
 
 /** Material → Word (.docx) at `dest`, rendered from the stored payload. */

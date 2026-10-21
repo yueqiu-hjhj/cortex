@@ -177,6 +177,17 @@
   let upgradeBusy = $state(false);
   let pendingRewrite = $state<(api.DraftUpgrade & { busy?: boolean }) | null>(null);
   let rewriteBusy = $state(false);
+  // 写作工具箱 + 升格账本（0071）：批改面板的三个页签。
+  let revTab = $state<"review" | "kit" | "history">("review");
+  let kitEntries = $state<api.KitEntry[]>([]);
+  let kitCat = $state<string | null>(null);
+  let kitBusy = $state(false);
+  let kitNewCat = $state("替换词库");
+  let kitNewTitle = $state("");
+  let kitNewContent = $state("");
+  let upgHistory = $state<api.UpgradeRecord[]>([]);
+
+  const KIT_CATEGORIES = ["模板句型", "替换词库", "过渡词", "中式英语对照", "评分标准", "升格实录"];
 
   function closeReview() {
     reviewOpen = false;
@@ -187,6 +198,10 @@
     upgradeBusy = false;
     pendingRewrite = null;
     rewriteBusy = false;
+    revTab = "review";
+    kitEntries = [];
+    kitCat = null;
+    upgHistory = [];
   }
 
   async function openReview() {
@@ -252,13 +267,32 @@
     }
   }
 
+  /** 采纳一条升格建议：写回句子 + 记进升格账本；被采纳的对自动回填工具箱。 */
   function acceptUpgrade(u: api.DraftUpgrade) {
     if (applySentenceChange(u)) {
       upgrades = upgrades.filter((x) => x !== u);
+      recordUpgradeOutcome(u, true);
     }
   }
   function ignoreUpgrade(u: api.DraftUpgrade) {
     upgrades = upgrades.filter((x) => x !== u);
+    recordUpgradeOutcome(u, false);
+  }
+  /** Fire-and-forget ledger write: the draft edit already succeeded, so a
+   *  ledger failure must never surface as a批改 failure — it only loses the
+   *  harvest, and the next accept re-creates it. */
+  function recordUpgradeOutcome(
+    u: { original: string; revised: string; reason?: string },
+    accepted: boolean,
+    kind: "upgrade" | "rewrite" = "upgrade",
+  ) {
+    if (!showingDraft) return;
+    api
+      .upgradeOutcomeRecord(showingDraft.id, kind, u.original, u.revised, u.reason ?? null, accepted)
+      .then((entry) => {
+        if (accepted && entry) say("已回填工具箱（升格实录）");
+      })
+      .catch(() => {});
   }
 
   async function askRewrite(section: number | null, para: number, sentence: number) {
@@ -281,10 +315,48 @@
     }
   }
   function acceptPending() {
-    if (pendingRewrite && applySentenceChange(pendingRewrite)) pendingRewrite = null;
+    if (pendingRewrite && applySentenceChange(pendingRewrite)) {
+      recordUpgradeOutcome(pendingRewrite, true, "rewrite");
+      pendingRewrite = null;
+    }
   }
   function cancelPending() {
+    if (pendingRewrite) recordUpgradeOutcome(pendingRewrite, false, "rewrite");
     pendingRewrite = null;
+  }
+
+  // ---- 工具箱 + 升格账本（0071）----
+  async function loadKit(cat: string | null) {
+    kitBusy = true;
+    try {
+      kitEntries = await api.writingKitList(cat ?? undefined);
+      kitCat = cat;
+    } catch (e) { reviewError = String(e); }
+    finally { kitBusy = false; }
+  }
+  async function loadUpgHistory() {
+    if (!showingDraft) return;
+    try { upgHistory = await api.upgradeHistoryList(showingDraft.id); }
+    catch (e) { reviewError = String(e); }
+  }
+  async function addKitEntry() {
+    if (!kitNewTitle.trim() || !kitNewContent.trim()) return;
+    try {
+      await api.writingKitSave(kitNewCat, kitNewTitle.trim(), kitNewContent.trim());
+      kitNewTitle = "";
+      kitNewContent = "";
+      await loadKit(kitCat);
+      say("已加入工具箱");
+    } catch (e) { reviewError = String(e); }
+  }
+  async function delKitEntry(id: string) {
+    await api.writingKitDelete(id).catch(() => {});
+    await loadKit(kitCat);
+  }
+  function switchRevTab(t: "review" | "kit" | "history") {
+    revTab = t;
+    if (t === "kit" && !kitEntries.length) void loadKit(null);
+    if (t === "history") void loadUpgHistory();
   }
 
   const findingLabels: Record<string, string> = {
@@ -1686,50 +1758,109 @@
         {#if reviewOpen && reviewText}
           <div class="rev-panel">
             <div class="rev-head">
-              <span class="rev-mode">批改模式</span>
+              <span class="rev-tabs" role="tablist">
+                <button class="rev-tab" class:on={revTab === "review"} onclick={() => switchRevTab("review")}>批改</button>
+                <button class="rev-tab" class:on={revTab === "kit"} onclick={() => switchRevTab("kit")}>工具箱</button>
+                <button class="rev-tab" class:on={revTab === "history"} onclick={() => switchRevTab("history")}>升格历史</button>
+              </span>
               <span class="n">{reviewText.lang === "zh" ? "中文学术体" : "English academic"} · {reviewText.findings.length} 处规则提示</span>
               <span style="flex:1"></span>
-              <button class="btn" disabled={upgradeBusy || rewriteBusy}
-                      onclick={runUpgrade}>{upgradeBusy ? "升格分析中…" : "AI 升格建议"}</button>
+              {#if revTab === "review"}
+                <button class="btn" disabled={upgradeBusy || rewriteBusy}
+                        onclick={runUpgrade}>{upgradeBusy ? "升格分析中…" : "AI 升格建议"}</button>
+              {/if}
             </div>
             {#if reviewError}<p class="dhint" style="color:var(--err)">{reviewError}</p>{/if}
-            {#if reviewText.findings.length}
-              <div class="rev-findings">
-                {#each reviewText.findings as f}
-                  <div class="rev-f {f.severity}">
-                    <span class="fk">{findingLabels[f.kind] ?? f.kind}</span>
-                    <span class="fq">「{f.excerpt}」</span>
-                    <span class="fh">{f.hint}</span>
+            {#if revTab === "review"}
+              {#if reviewText.findings.length}
+                <div class="rev-findings">
+                  {#each reviewText.findings as f}
+                    <div class="rev-f {f.severity}">
+                      <span class="fk">{findingLabels[f.kind] ?? f.kind}</span>
+                      <span class="fq">「{f.excerpt}」</span>
+                      <span class="fh">{f.hint}</span>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="dhint">规则体检通过：没有发现明显问题。</p>
+              {/if}
+              {#if upgradeOverall}<p class="rev-overall">{upgradeOverall}</p>{/if}
+              {#if pendingRewrite}
+                <div class="rev-up">
+                  <div class="uo">「{pendingRewrite.original}」</div>
+                  <div class="ur">→ {pendingRewrite.revised}</div>
+                  {#if pendingRewrite.reason}<div class="uwhy">{pendingRewrite.reason}</div>{/if}
+                  <div class="rev-ops">
+                    <button class="btn primary" onclick={acceptPending}>采纳</button>
+                    <button class="btn" onclick={cancelPending}>取消</button>
                   </div>
+                </div>
+              {/if}
+              {#each upgrades as u (u.section + "\u0000" + u.para + "\u0000" + u.sentence)}
+                <div class="rev-up">
+                  <div class="uo">「{u.original}」</div>
+                  <div class="ur">→ {u.revised}</div>
+                  {#if u.reason}<div class="uwhy">{u.reason}</div>{/if}
+                  <div class="rev-ops">
+                    <button class="btn primary" onclick={() => acceptUpgrade(u)}>采纳</button>
+                    <button class="btn" onclick={() => ignoreUpgrade(u)}>忽略</button>
+                  </div>
+                </div>
+              {/each}
+              <p class="dhint">批改模式下点击任意句子即可逐句改写（可附指令）；改写在「采纳」后写入成稿，并记入升格历史——采纳过的对会自动回填工具箱。</p>
+            {:else if revTab === "kit"}
+              <div class="kit-cats">
+                <button class="kit-cat" class:on={kitCat === null} onclick={() => loadKit(null)}>全部</button>
+                {#each KIT_CATEGORIES as c}
+                  <button class="kit-cat" class:on={kitCat === c} onclick={() => loadKit(c)}>{c}</button>
                 {/each}
               </div>
-            {:else}
-              <p class="dhint">规则体检通过：没有发现明显问题。</p>
-            {/if}
-            {#if upgradeOverall}<p class="rev-overall">{upgradeOverall}</p>{/if}
-            {#if pendingRewrite}
-              <div class="rev-up">
-                <div class="uo">「{pendingRewrite.original}」</div>
-                <div class="ur">→ {pendingRewrite.revised}</div>
-                {#if pendingRewrite.reason}<div class="uwhy">{pendingRewrite.reason}</div>{/if}
-                <div class="rev-ops">
-                  <button class="btn primary" onclick={acceptPending}>采纳</button>
-                  <button class="btn" onclick={cancelPending}>取消</button>
+              {#if kitBusy}
+                <p class="dhint">加载中…</p>
+              {:else if !kitEntries.length}
+                <p class="dhint">这个分类还没有条目。</p>
+              {:else}
+                <div class="kit-list">
+                  {#each kitEntries as e (e.id)}
+                    <div class="kit-item src-{e.source}">
+                      <div class="kit-i-h">
+                        <span class="kit-i-t">{e.title}</span>
+                        <span class="kit-i-s">{e.source === "builtin" ? "内置" : e.source === "harvest" ? "回填" : "自建"}</span>
+                        <button class="x" title="删除" onclick={() => delKitEntry(e.id)}><Icon name="x" size={11} /></button>
+                      </div>
+                      <div class="kit-i-c">{e.content}</div>
+                    </div>
+                  {/each}
                 </div>
+              {/if}
+              <div class="kit-add">
+                <input class="dt" bind:value={kitNewCat} placeholder="分类" list="kit-cat-list" />
+                <datalist id="kit-cat-list">
+                  {#each KIT_CATEGORIES as c}<option value={c}></option>{/each}
+                </datalist>
+                <input class="dt" bind:value={kitNewTitle} placeholder="条目标题" />
+                <textarea class="dp" bind:value={kitNewContent} placeholder="内容：句型、替换、过渡词、评分标准……"></textarea>
+                <button class="btn primary" disabled={!kitNewTitle.trim() || !kitNewContent.trim()} onclick={addKitEntry}>加入工具箱</button>
               </div>
-            {/if}
-            {#each upgrades as u (u.section + "\u0000" + u.para + "\u0000" + u.sentence)}
-              <div class="rev-up">
-                <div class="uo">「{u.original}」</div>
-                <div class="ur">→ {u.revised}</div>
-                {#if u.reason}<div class="uwhy">{u.reason}</div>{/if}
-                <div class="rev-ops">
-                  <button class="btn primary" onclick={() => acceptUpgrade(u)}>采纳</button>
-                  <button class="btn" onclick={() => ignoreUpgrade(u)}>忽略</button>
+            {:else if revTab === "history"}
+              {#if !upgHistory.length}
+                <p class="dhint">还没有升格记录。采纳或忽略一条建议后，这里会留下记录。</p>
+              {:else}
+                <div class="kit-list">
+                  {#each upgHistory as h (h.id)}
+                    <div class="kit-item src-{h.accepted ? "harvest" : "user"}">
+                      <div class="kit-i-h">
+                        <span class="kit-i-s">{h.kind === "rewrite" ? "逐句改写" : "整稿升格"}</span>
+                        <span class="kit-i-s">{h.accepted ? "采纳" : "忽略"}</span>
+                        <span class="mut mono" style="margin-left:auto">{new Date(h.created_at).toLocaleString("zh-CN")}</span>
+                      </div>
+                      <div class="kit-i-c">「{h.before_text}」<br />→ 「{h.after_text}」{#if h.reason}<br /><span class="mut">理由：{h.reason}</span>{/if}</div>
+                    </div>
+                  {/each}
                 </div>
-              </div>
-            {/each}
-            <p class="dhint">批改模式下点击任意句子即可逐句改写（可附指令）；改写在「采纳」后写入成稿。</p>
+              {/if}
+            {/if}
           </div>
         {/if}
         {#each showingDraft.payload?.sections ?? [] as sec, si (sec.heading)}
@@ -2826,12 +2957,39 @@
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
+    flex-wrap: wrap;
   }
+  .rev-tabs { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 999px; padding: 2px; }
+  .rev-tab {
+    border: 0; background: transparent; color: var(--fg-muted);
+    font-size: var(--t-xs); padding: 3px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .rev-tab.on { background: var(--accent); color: var(--accent-fg, #04120c); }
   .rev-mode {
     font-size: var(--t-xs);
     font-weight: 600;
     color: var(--accent);
   }
+  /* 工具箱 */
+  .kit-cats { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .kit-cat {
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--fg-muted);
+    font-size: var(--t-xs); padding: 2px 10px; border-radius: 999px; cursor: pointer;
+  }
+  .kit-cat.on { border-color: var(--accent); color: var(--accent); }
+  .kit-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; margin-bottom: 8px; }
+  .kit-item { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 7px 10px; background: var(--surface); }
+  .kit-item.src-builtin { border-left-color: var(--fg-faint); }
+  .kit-item.src-user { border-left-color: var(--accent); }
+  .kit-item.src-harvest { border-left-color: var(--ok); }
+  .kit-i-h { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
+  .kit-i-t { font-size: var(--t-s); font-weight: 600; color: var(--fg-bright); }
+  .kit-i-s { font-size: 10px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; }
+  .kit-i-c { font-size: var(--t-xs); color: var(--fg); line-height: 1.6; white-space: pre-wrap; }
+  .kit-add { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+  .kit-add .dt { max-width: 220px; }
+  .kit-add .dp { min-height: 54px; }
+  .kit-add .btn { align-self: flex-start; }
   .rev-head .n { font-size: var(--t-xs); color: var(--fg-3, var(--muted)); }
   .rev-findings {
     max-height: 180px;

@@ -64,6 +64,7 @@ pub mod node_docs;
 pub mod tutor;
 pub mod provenance;
 pub mod redteam;
+pub mod writing_kit;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -191,6 +192,13 @@ pub fn run() {
                 let c = state.db.lock().unwrap();
                 if let Err(e) = crate::agents::seed_bundled_skills(&c) {
                     eprintln!("[agents] bundled skill seed failed: {e}");
+                }
+                // Writing toolbox built-ins (0071): seeded by (category,
+                // title), never overwriting an edited copy. Same rule as the
+                // skills above — a seed that reverts user edits is a bug that
+                // looks like a feature.
+                if let Err(e) = crate::writing_kit::seed_builtins(&c) {
+                    eprintln!("[writing_kit] builtin seed failed: {e}");
                 }
                 // Prompt overrides (lab): load once so a model call several
                 // layers below any command can resolve a prompt without a Conn.
@@ -695,6 +703,12 @@ pub fn run() {
             redteam::redteam_run_execute,
             redteam::redteam_export_md,
             redteam::redteam_md_file,
+            // writing toolbox + the upgrade ledger (harvest on accept)
+            writing_kit::writing_kit_list,
+            writing_kit::writing_kit_save,
+            writing_kit::writing_kit_delete,
+            writing_kit::upgrade_history_list,
+            writing_kit::upgrade_outcome_record,
             // tutor bench — a scaffold ladder that moves both ways
             tutor::tutor_start,
             tutor::tutor_reply,
