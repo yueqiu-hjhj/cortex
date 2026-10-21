@@ -138,6 +138,9 @@ fn compose_local(inv: &Inventory) -> String {
     out.push('\n');
 
     out.push_str("## 分支\n\n");
+    if inv.topics().is_empty() {
+        out.push_str("- 还没有主题节点 —— 到学科页加主题，或导入材料让框架自动生成\n\n");
+    }
     let mut placed: HashSet<String> = HashSet::new();
     if let Some(id) = &review_id {
         placed.insert(id.clone());
@@ -189,7 +192,9 @@ fn compose_local(inv: &Inventory) -> String {
 
     let gaps = inv.gaps();
     out.push_str("## 缺口\n\n");
-    if gaps.is_empty() {
+    if inv.nodes.iter().all(|n| n.kind == "subject") {
+        out.push_str("- 这个学科还没有知识点（主题/概念），缺口暂时算不出来\n");
+    } else if gaps.is_empty() {
         out.push_str("- 每个知识点都有笔记覆盖。往下可以开始横向比较、写综述。\n");
     } else {
         for node in gaps.iter().take(12) {
@@ -518,6 +523,93 @@ mod tests {
         // The map is a note, so its links must be live for backlinks.
         let back = crate::note_links::backlinks(&c, "BBR 综述").unwrap();
         assert!(back.iter().any(|b| b.title == "MOC · 网络"));
+    }
+
+    /// Manual end-to-end run against a COPY of the real library. This is the
+    /// check that the 0063/0064 migrations apply to a 60-migration database and
+    /// that all three 回流 legs work on real notes, not just fixtures:
+    ///
+    /// ```text
+    /// CORTEX_REAL_DB="$APPDATA/app.study.cortex/cortex.db" \
+    ///   cargo test --lib moc::tests::real_library_map -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "manual: set CORTEX_REAL_DB to the real cortex.db"]
+    fn real_library_map() {
+        let Ok(src) = std::env::var("CORTEX_REAL_DB") else {
+            eprintln!("CORTEX_REAL_DB not set — skipping");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("cortex-moc-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("cortex.db");
+        std::fs::copy(&src, &copy).unwrap();
+        for ext in ["-wal", "-shm"] {
+            let from = std::path::PathBuf::from(format!("{src}{ext}"));
+            if from.exists() {
+                std::fs::copy(&from, dir.join(format!("cortex.db{ext}"))).unwrap();
+            }
+        }
+        let st = AppState::new(&copy).unwrap();
+        let c = st.db.lock().unwrap();
+        let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        eprintln!("schema version after migrate: {version}");
+
+        // Pick the subject with the most notes — the hardest map to build.
+        let subjects = repo::list_subjects(&c).unwrap();
+        let picked = subjects
+            .iter()
+            .max_by_key(|s| repo::list_notes(&c, Some(&s.id)).map(|n| n.len()).unwrap_or(0))
+            .expect("library has no subjects");
+        let notes = repo::list_notes(&c, Some(&picked.id)).unwrap();
+        eprintln!("subject: {} ({} notes)", picked.name, notes.len());
+
+        // 回流 2: notes → coverage on real prose. Sync first — this is exactly
+        // what the Subject Overview does on mount, and without it a library that
+        // never opened that page has no nodes to attach notes to.
+        let nodes = repo::sync_knowledge_graph(&c, &picked.id).unwrap();
+        eprintln!("nodes after sync: {nodes}");
+        let links = crate::note_knowledge::rebuild_all(&c, Some(&picked.id)).unwrap();
+        let nodes = repo::list_knowledge_nodes(&c, &picked.id).unwrap();
+        let touched: Vec<_> = nodes.iter().filter(|n| n.note_count > 0).take(6).collect();
+        eprintln!("coverage links written: {links}");
+        for n in &touched {
+            eprintln!(
+                "  {} [{}] coverage {:.0}% · {} 笔记",
+                n.title,
+                n.kind,
+                n.coverage * 100.0,
+                n.note_count
+            );
+        }
+
+        // 回流 1: a real note's passage → a card in the real subject.
+        let source_note = notes.iter().max_by_key(|n| n.body.chars().count()).unwrap();
+        let quote: String = source_note.body.chars().take(160).collect();
+        if quote.trim().chars().count() >= 20 {
+            let clip = crate::clips::add(&c, &quote, crate::clips::KIND_NOTE, None, Some("e2e"), None).unwrap();
+            let llm = Canned("{\"cards\":[{\"front\":\"这段在讲什么机制？\",\"back\":\"e2e 卡\"}]}");
+            let drafts = crate::clips::draft_cards(&llm, &clip).unwrap();
+            let saved = crate::clips::save_cards(&c, &clip.id, Some(&picked.id), None, &drafts).unwrap();
+            eprintln!("clip → {} card(s), seeded {}", saved.cards, saved.seeded);
+            assert!(saved.seeded >= 1);
+            crate::clips::discard(&c, &clip.id).unwrap();
+        }
+
+        // 回流 3: the map itself, offline composer (no model in this run).
+        let inv = Inventory::load(&c, &picked.id).unwrap();
+        let prep = prepare(&inv, None);
+        eprintln!("map: {} notes · {} gaps", prep.notes, prep.gaps);
+        eprintln!("----- map preview -----\n{}\n----- end -----", prep.body.chars().take(900).collect::<String>());
+        let out = save_prepared(&c, None, &picked.id, None, prep).unwrap();
+        eprintln!("map gaps reported: {}", out.gaps);
+        let note = repo::get_note(&c, &out.note_id).unwrap();
+        assert!(note.body.contains("[["));
+        assert!(note.body.contains("## 缺口"));
+        eprintln!("saved map note: {} ({})", out.title, note.body.chars().count());
+
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

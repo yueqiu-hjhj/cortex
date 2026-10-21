@@ -68,11 +68,7 @@ pub fn rebuild(conn: &Connection, note_id: &str) -> Result<usize> {
     let now = now_ms();
     let mut linked = 0;
     for (node_id, title) in candidates {
-        let needle = title.trim().to_lowercase();
-        if !matchable(&needle) {
-            continue;
-        }
-        let hits = count_hits(&hay, &needle);
+        let hits = match_hits(&hay, &title);
         if hits == 0 {
             continue;
         }
@@ -86,6 +82,52 @@ pub fn rebuild(conn: &Connection, note_id: &str) -> Result<usize> {
     }
     apply_coverage(conn, &subject_id)?;
     Ok(linked)
+}
+
+/// How strongly a node title applies to a note. The full title wins; failing
+/// that, any *segment* of it counts — real topic names are compounds
+/// ("TCP/IP 协议", "路由与交换"), and a note that says "TCP 三次握手" is about
+/// that topic even though it never repeats the whole label. Segments go through
+/// the same length/boundary rules as titles, so "IP" alone is still not
+/// evidence.
+fn match_hits(hay: &str, title: &str) -> usize {
+    let full = title.trim().to_lowercase();
+    if matchable(&full) {
+        let hits = count_hits(hay, &full);
+        if hits > 0 {
+            return hits;
+        }
+    }
+    let mut best = 0;
+    for seg in segments(title) {
+        let seg = seg.to_lowercase();
+        if !matchable(&seg) {
+            continue;
+        }
+        best = best.max(count_hits(hay, &seg));
+    }
+    best
+}
+
+/// Split a compound title into its parts. CJK conjunctions are separators here
+/// (`与`/`和`/`及`) because a topic named "路由与交换" is two ideas.
+fn segments(title: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in title.chars() {
+        let is_joiner = matches!(ch, '与' | '和' | '及') || (!ch.is_alphanumeric() && !ch.is_whitespace());
+        if is_joiner || ch.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 fn matchable(needle: &str) -> bool {
@@ -294,6 +336,24 @@ mod tests {
         assert_eq!(count_hits("he said nothing", "ai"), 0);
         assert_eq!(count_hits("an ai model, ai again", "ai"), 2);
         assert_eq!(count_hits("bbr 与 bbr", "bbr"), 2);
+    }
+
+    #[test]
+    fn a_compound_topic_matches_on_its_head_segment() {
+        let (st, sid, node) = seeded("TCP/IP 协议");
+        let c = st.db.lock().unwrap();
+        // The real library's case: topic "TCP/IP 协议", note "TCP 三次握手".
+        let nid = repo::insert_note(&c, Some(&sid), None, "TCP 三次握手", "TCP 的三次握手与状态机。").unwrap();
+        assert_eq!(rebuild(&c, &nid).unwrap(), 1);
+        assert!(coverage(&c, &node) > 0.3);
+    }
+
+    #[test]
+    fn a_two_letter_segment_is_not_evidence() {
+        let (st, sid, _node) = seeded("TCP/IP 协议");
+        let c = st.db.lock().unwrap();
+        let nid = repo::insert_note(&c, Some(&sid), None, "IP 层转发", "IP 层只做尽力而为的转发。").unwrap();
+        assert_eq!(rebuild(&c, &nid).unwrap(), 0);
     }
 
     #[test]
