@@ -673,6 +673,8 @@ pub fn run() {
             clips::clip_to_note,
             clips::clip_to_new_note,
             clips::clip_discard,
+            clips::clip_draft_cards,
+            clips::clip_save_cards,
 
             // research chat — a conversation with the literature (L4)
             research_agent::research_threads,

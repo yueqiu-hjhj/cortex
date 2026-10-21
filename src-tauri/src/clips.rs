@@ -9,12 +9,19 @@
 //! The whole point is one gesture: select text anywhere → pick a note → the
 //! passage lands under that note's `## 摘录` heading, attributed. Nothing else
 //! in the app touches the note body, so an aborted clip never leaves a trace.
+//!
+//! The second half of the loop lives at the bottom of this file: a clip can also
+//! become a flashcard batch. A passage you deliberately kept is the cleanest
+//! possible input for a self-test question — better than any auto-extraction,
+//! because a human already decided this sentence mattered.
 
 use crate::db::{new_id, now_ms, AppState};
 use crate::error::{Error, Result};
+use crate::llm::Llm;
+use crate::models::CardDraft;
 use crate::repo;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Where a clip came from. Kept as plain strings so a future source (a Zotero
@@ -48,6 +55,8 @@ pub struct Clip {
     pub created_at: i64,
     /// Joined for display: which note this landed in.
     pub note_title: Option<String>,
+    /// How many flashcards this passage has already produced (0 = not carded).
+    pub card_count: i64,
 }
 
 /// Whether discarding a filed clip could also take the passage back out of the
@@ -59,7 +68,8 @@ pub struct DiscardOutcome {
 }
 
 const SELECT: &str = "SELECT c.id, c.quote, c.source_kind, c.source_id, c.source_label, \
-     c.page, c.note_id, c.block, c.created_at, n.title \
+     c.page, c.note_id, c.block, c.created_at, n.title, \
+     (SELECT COALESCE(SUM(cc.cards), 0) FROM clip_cards cc WHERE cc.clip_id = c.id) \
      FROM clips c LEFT JOIN notes n ON n.id = c.note_id";
 
 fn row_to_clip(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
@@ -74,6 +84,7 @@ fn row_to_clip(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
         block: row.get(7)?,
         created_at: row.get(8)?,
         note_title: row.get(9)?,
+        card_count: row.get(10)?,
     })
 }
 
@@ -353,6 +364,197 @@ fn drop_empty_section(body: &str) -> String {
     out.join("\n")
 }
 
+// ---- clip → flashcards -----------------------------------------------
+//
+// Filing a clip ends at the note. That is only half a loop: the sentence you
+// kept is exactly the kind of thing you will forget, and a note you never
+// re-read does not help you remember it. So a clip can also become review
+// material — the question is generated from the passage, you edit it, and the
+// cards land in the subject's existing SRS queue (no second scheduler).
+
+/// What a carding run produced. `material_id` points at the flashcards
+/// material, so the batch can be found (and deleted) from 材料 as a unit.
+#[derive(Debug, Clone, Serialize)]
+pub struct CardsSaved {
+    pub material_id: String,
+    pub subject_id: String,
+    pub cards: u32,
+    /// Cards actually inserted into the schedule. Below `cards` when the same
+    /// front was already scheduled — the unique key keeps the user's progress.
+    pub seeded: usize,
+}
+
+/// The subject a clip's cards belong to: what the caller picked, else the
+/// subject of the note it was filed under. A clip with neither is refused
+/// rather than defaulted — cards in the wrong subject are worse than an error.
+fn subject_for(conn: &Connection, clip: &Clip, given: Option<&str>) -> Result<String> {
+    if let Some(s) = given.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(s.to_string());
+    }
+    if let Some(nid) = clip.note_id.as_deref() {
+        if let Ok(note) = repo::get_note(conn, nid) {
+            if let Some(sid) = note.subject_id {
+                return Ok(sid);
+            }
+        }
+    }
+    Err(Error::Other(
+        "这条摘录还没有学科 —— 选一个，卡片才有地方复习".into(),
+    ))
+}
+
+/// Trim, drop empties, drop duplicate fronts (the SRS key is the front, so two
+/// identical fronts would silently collapse into one card anyway).
+fn clean_cards(cards: &[CardDraft]) -> Vec<CardDraft> {
+    let mut out: Vec<CardDraft> = Vec::new();
+    for card in cards {
+        let front = card.front.trim();
+        let back = card.back.trim();
+        if front.is_empty() || back.is_empty() {
+            continue;
+        }
+        if out.iter().any(|c| c.front == front) {
+            continue;
+        }
+        out.push(CardDraft {
+            front: front.chars().take(300).collect(),
+            back: back.chars().take(2000).collect(),
+        });
+        if out.len() == 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Turn `cards` into a flashcards material and seed them into the SRS queue.
+pub fn save_cards(
+    conn: &Connection,
+    clip_id: &str,
+    subject_id: Option<&str>,
+    topic_id: Option<&str>,
+    cards: &[CardDraft],
+) -> Result<CardsSaved> {
+    let clip = get(conn, clip_id)?;
+    let sid = subject_for(conn, &clip, subject_id)?;
+    repo::get_subject(conn, &sid)?;
+    if let Some(tid) = topic_id {
+        let belongs: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM topics WHERE id=?1 AND subject_id=?2)",
+            params![tid, sid],
+            |r| r.get(0),
+        )?;
+        if !belongs {
+            return Err(Error::Other("所选主题不属于该学科".into()));
+        }
+    }
+    let clean = clean_cards(cards);
+    if clean.is_empty() {
+        return Err(Error::Other("需要至少一张完整的卡片（正面和背面）".into()));
+    }
+    let label = attribution(&clip.source_kind, clip.source_label.as_deref(), clip.page);
+    let short: String = label.chars().take(48).collect();
+    let title = format!("摘录 · {short} · {} 张", clean.len());
+    let payload = serde_json::Value::Array(
+        clean
+            .iter()
+            .map(|c| serde_json::json!({ "q": c.front, "a": c.back }))
+            .collect(),
+    );
+    let material_id = repo::save_material(
+        conn,
+        &sid,
+        topic_id,
+        "flashcards",
+        &title,
+        &format!("{} cards · 摘录", clean.len()),
+        &payload,
+    )?;
+    let fronts: Vec<(i64, String)> = clean
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i as i64, c.front.clone()))
+        .collect();
+    let seeded = repo::srs_seed_due(conn, &sid, &material_id, &fronts)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO clip_cards (clip_id, material_id, cards, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![clip_id, material_id, clean.len() as i64, now_ms()],
+    )?;
+    Ok(CardsSaved {
+        material_id,
+        subject_id: sid,
+        cards: clean.len() as u32,
+        seeded,
+    })
+}
+
+/// Ask the model for self-test questions from this passage. No DB writes — the
+/// UI shows the drafts for editing, and only `save_cards` persists.
+pub fn draft_cards(llm: &dyn Llm, clip: &Clip) -> Result<Vec<CardDraft>> {
+    let label = attribution(&clip.source_kind, clip.source_label.as_deref(), clip.page);
+    let page = clip
+        .page
+        .filter(|p| *p > 0)
+        .map(|p| format!("（第 {p} 页）"))
+        .unwrap_or_default();
+    let prompt = format!(
+        "下面是我从「{label}」{page}里摘出来的一段话。\n\n---\n{}\n---\n\n\
+         把它变成 1–3 张自测卡：front 是一个能凭这段话回答出来的问题，back 是答案。\n\
+         要求：\n\
+         - 用原文的语言\n\
+         - 问题要具体：问机制、因果、条件、数值、区别，不要「这段话讲了什么」\n\
+         - 答案尽量沿用原文措辞，80 字以内\n\
+         - 宁少勿滥：只有一段话确实承载了多个知识点时才出多张\n\
+         只输出 JSON：{{\"cards\":[{{\"front\":\"...\",\"back\":\"...\"}}]}}，不要解释、不要围栏",
+        clip.quote.trim()
+    );
+    let raw = llm.complete("你是学习卡片编辑，输出必须是严格 JSON。", &prompt)?;
+    parse_cards(&raw)
+}
+
+#[derive(Deserialize)]
+struct RawCard {
+    front: String,
+    back: String,
+}
+
+/// Tolerant JSON: models add fences, prose, and sometimes drop the wrapper.
+/// Anything unusable is a clear error, not an empty list — an empty result would
+/// look like "this passage has nothing to test".
+fn parse_cards(raw: &str) -> Result<Vec<CardDraft>> {
+    let mut s = raw.trim();
+    if let Some(start) = s.find('{').or_else(|| s.find('[')) {
+        if let Some(end) = s.rfind('}').or_else(|| s.rfind(']')).filter(|e| *e > start) {
+            s = &s[start..=end];
+        }
+    }
+    let value: serde_json::Value = serde_json::from_str(s)
+        .map_err(|e| Error::Other(format!("模型没返回可用的卡片 JSON：{e}")))?;
+    let arr = value
+        .get("cards")
+        .and_then(|v| v.as_array())
+        .or_else(|| value.as_array())
+        .ok_or_else(|| Error::Other("模型返回的 JSON 里没有 cards 数组".into()))?;
+    let mut out = Vec::new();
+    for item in arr {
+        match serde_json::from_value::<RawCard>(item.clone()) {
+            Ok(c) => out.push(CardDraft {
+                front: c.front.trim().to_string(),
+                back: c.back.trim().to_string(),
+            }),
+            Err(_) => continue,
+        }
+    }
+    let clean = clean_cards(&out);
+    if clean.is_empty() {
+        return Err(Error::Other(
+            "模型没有给出完整的问答 —— 再试一次，或自己写一张".into(),
+        ));
+    }
+    Ok(clean)
+}
+
 // ---- command surface --------------------------------------------------
 
 #[tauri::command]
@@ -421,6 +623,49 @@ pub fn clip_discard(state: State<AppState>, clip_id: String) -> Result<DiscardOu
         }
     }
     Ok(out)
+}
+
+/// Draft flashcards from a clip. Returns editable pairs; nothing is written, so
+/// a bad draft costs one model call instead of a queue full of junk.
+#[tauri::command]
+pub async fn clip_draft_cards(state: State<'_, AppState>, clip_id: String) -> Result<Vec<CardDraft>> {
+    let (model, clip) = {
+        let c = state.db.lock().unwrap();
+        let clip = get(&c, &clip_id)?;
+        let keys = crate::commands::read_keys(&c)?;
+        if keys.offline {
+            return Err(Error::Other(
+                "离线模式下不能生成卡片 —— 先写一张，或到设置里连上模型".into(),
+            ));
+        }
+        let mut m = crate::commands::load_model(&c, &keys, "chat")
+            .map_err(|_| Error::Other(crate::commands::NO_MODEL.into()))?;
+        crate::commands::apply_budget(&mut m, &c, "chat");
+        (m, clip)
+    };
+    tauri::async_runtime::spawn_blocking(move || draft_cards(model.as_ref(), &clip))
+        .await
+        .map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+/// Persist the cards the user approved. They join the subject's normal review
+/// queue (due now), so 今日复习 picks them up without a second system.
+#[tauri::command]
+pub fn clip_save_cards(
+    state: State<AppState>,
+    clip_id: String,
+    subject_id: Option<String>,
+    topic_id: Option<String>,
+    cards: Vec<CardDraft>,
+) -> Result<CardsSaved> {
+    let c = state.db.lock().unwrap();
+    save_cards(
+        &c,
+        &clip_id,
+        subject_id.as_deref(),
+        topic_id.as_deref(),
+        &cards,
+    )
 }
 
 #[cfg(test)]
@@ -643,5 +888,163 @@ mod tests {
         let huge = "字".repeat(20_001);
         let err = add(&c, &huge, KIND_CHAT, None, None, None).unwrap_err();
         assert!(err.to_string().contains("20000"));
+    }
+
+    // ---- clip → flashcards ------------------------------------------
+
+    /// One fixed reply, no queue — enough to prove the parsing contract.
+    struct Canned(&'static str);
+
+    impl Llm for Canned {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String> {
+            Ok(self.0.to_string())
+        }
+        fn name(&self) -> String {
+            "canned".into()
+        }
+    }
+
+    fn card(front: &str, back: &str) -> CardDraft {
+        CardDraft {
+            front: front.into(),
+            back: back.into(),
+        }
+    }
+
+    #[test]
+    fn draft_cards_survives_fences_and_small_talk() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let clip = add(&c, "BBR 靠拥塞窗口探测带宽", KIND_CHAT, None, None, None).unwrap();
+        let llm = Canned(
+            "好的，这是卡片：\n```json\n{\"cards\":[{\"front\":\"BBR 如何估计带宽？\",\"back\":\"靠拥塞窗口探测\"},\
+             {\"front\":\"BBR 属于哪类算法？\",\"back\":\"基于模型的拥塞控制\"}]}\n```",
+        );
+        let cards = draft_cards(&llm, &clip).unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].front, "BBR 如何估计带宽？");
+        assert_eq!(cards[1].back, "基于模型的拥塞控制");
+    }
+
+    #[test]
+    fn draft_cards_with_broken_json_is_an_error_not_an_empty_list() {
+        let llm = Canned("抱歉，我无法把这段话变成问题。");
+        let err = draft_cards(
+            &llm,
+            &Clip {
+                id: "x".into(),
+                quote: "q".into(),
+                source_kind: KIND_CHAT.into(),
+                source_id: None,
+                source_label: None,
+                page: None,
+                note_id: None,
+                block: None,
+                created_at: 0,
+                note_title: None,
+                card_count: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("JSON"));
+    }
+
+    #[test]
+    fn saving_cards_creates_a_material_and_a_due_review() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "网络", None, None, None).unwrap();
+        let clip = add(
+            &c,
+            "BBR 靠拥塞窗口探测带宽",
+            KIND_CHAT,
+            None,
+            Some("AI 回答 · deepseek"),
+            None,
+        )
+        .unwrap();
+        let out = save_cards(&c, &clip.id, Some(&sid), None, &[
+            card("BBR 如何估计带宽？", "靠拥塞窗口探测"),
+            card("BBR 属于哪类算法？", "基于模型"),
+        ])
+        .unwrap();
+        assert_eq!(out.cards, 2);
+        assert_eq!(out.seeded, 2, "both cards join the queue right away");
+        assert_eq!(out.subject_id, sid);
+
+        let due = repo::srs_due(&c, &sid, "flashcard").unwrap();
+        assert_eq!(due.len(), 2);
+        let title: String = c
+            .query_row(
+                "SELECT title FROM materials WHERE id=?1",
+                params![&out.material_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(title.contains("摘录") && title.contains("deepseek"), "{title}");
+        assert_eq!(get(&c, &clip.id).unwrap().card_count, 2);
+    }
+
+    #[test]
+    fn cards_inherit_the_subject_of_the_note_they_were_filed_under() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "系统", None, None, None).unwrap();
+        let nid = repo::insert_note(&c, Some(&sid), None, "调度", "").unwrap();
+        let clip = add(&c, "CFS 用红黑树维护 vruntime", KIND_NOTE, None, None, None).unwrap();
+        to_note(&c, &clip.id, &nid).unwrap();
+        let out = save_cards(&c, &clip.id, None, None, &[card("CFS 用什么结构？", "红黑树")]).unwrap();
+        assert_eq!(out.subject_id, sid, "no picker needed when the note knows");
+    }
+
+    #[test]
+    fn a_clip_without_a_subject_is_refused_instead_of_guessed() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let clip = add(&c, "无主的一句", KIND_WEB, None, None, None).unwrap();
+        let err = save_cards(&c, &clip.id, None, None, &[card("问", "答")]).unwrap_err();
+        assert!(err.to_string().contains("学科"));
+    }
+
+    #[test]
+    fn duplicate_fronts_collapse_instead_of_fighting_the_unique_key() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "网络", None, None, None).unwrap();
+        let clip = add(&c, "重复正面", KIND_CHAT, None, None, None).unwrap();
+        let out = save_cards(&c, &clip.id, Some(&sid), None, &[
+            card("同一个问题？", "答案一"),
+            card("同一个问题？", "答案二"),
+        ])
+        .unwrap();
+        assert_eq!(out.cards, 1);
+        assert_eq!(repo::srs_due(&c, &sid, "flashcard").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn carding_the_same_passage_twice_adds_cards_without_resetting_progress() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "网络", None, None, None).unwrap();
+        let clip = add(&c, "同一段话", KIND_CHAT, None, None, None).unwrap();
+        save_cards(&c, &clip.id, Some(&sid), None, &[card("Q1", "A1")]).unwrap();
+        let again = save_cards(&c, &clip.id, Some(&sid), None, &[card("Q1", "A1")]).unwrap();
+        assert_eq!(again.seeded, 0, "existing schedule is left alone");
+        assert_eq!(get(&c, &clip.id).unwrap().card_count, 2, "history keeps both batches");
+    }
+
+    #[test]
+    fn discarding_a_clip_keeps_the_cards_it_produced() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "网络", None, None, None).unwrap();
+        let clip = add(&c, "会留下卡片的一段", KIND_CHAT, None, None, None).unwrap();
+        save_cards(&c, &clip.id, Some(&sid), None, &[card("Q", "A")]).unwrap();
+        discard(&c, &clip.id).unwrap();
+        assert_eq!(
+            repo::srs_due(&c, &sid, "flashcard").unwrap().len(),
+            1,
+            "the receipt goes, the cards stay"
+        );
     }
 }

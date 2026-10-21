@@ -185,6 +185,69 @@
   let clipsOpen = $state(true);
   let clipBusy = $state<string | null>(null);
 
+  // ── clip → flashcards (the other half of L3: 摘录 → 闪卡) ────────────────
+  // A passage you kept is the cleanest input for a self-test question — you
+  // already decided it mattered. Drafts stay editable, and only "存进复习"
+  // schedules anything, so a bad generation costs one model call.
+  let cardClip = $state<api.Clip | null>(null);
+  let cardDrafts = $state<api.ClipCardDraft[]>([]);
+  let cardSubject = $state("");
+  let cardBusy = $state(false);
+  let cardErr = $state<string | null>(null);
+
+  async function makeCards(c: api.Clip) {
+    cardClip = c;
+    cardDrafts = [];
+    cardErr = null;
+    cardBusy = true;
+    const note = notes.find((n) => n.id === c.note_id);
+    cardSubject = note?.subject_id ?? app.activeSubjectId ?? "";
+    try {
+      cardDrafts = await api.clipDraftCards(c.id);
+      if (cardDrafts.length === 0) throw new Error("模型没有给出可用的问答");
+    } catch (e) {
+      cardErr = String(e);
+    } finally {
+      cardBusy = false;
+    }
+  }
+
+  function closeCards() {
+    cardClip = null;
+    cardDrafts = [];
+    cardErr = null;
+    cardBusy = false;
+  }
+
+  function addDraft() {
+    cardDrafts = [...cardDrafts, { front: "", back: "" }];
+  }
+
+  async function saveCards() {
+    if (!cardClip) return;
+    const cards = cardDrafts.filter((d) => d.front.trim() && d.back.trim());
+    if (cards.length === 0) {
+      cardErr = "至少填一张完整的卡（正面 + 背面）";
+      return;
+    }
+    cardBusy = true;
+    cardErr = null;
+    try {
+      const out = await api.clipSaveCards(cardClip.id, cards, cardSubject || null);
+      app.pushToast({
+        kind: "success",
+        title: `${out.cards} 张卡已进复习`,
+        body: out.seeded < out.cards ? "重复的正面没有重置进度" : "今天就到期，去「今日复习」看看",
+      });
+      closeCards();
+      await loadClips();
+    } catch (e) {
+      cardErr = String(e);
+    } finally {
+      cardBusy = false;
+    }
+  }
+
   async function loadClips() {
     try {
       clips = await api.clipsList(true);
@@ -762,10 +825,16 @@
                     <div class="clip-quote">{c.quote}</div>
                     <div class="clip-meta mono">
                       {c.source_label || clipKind(c.source_kind)}{c.page ? ` · p.${c.page}` : ""} · {relTime(c.created_at)}
+                      {#if c.card_count > 0}
+                        <span class="clip-carded"> · 已变 {c.card_count} 张卡</span>
+                      {/if}
                     </div>
                     <div class="clip-acts">
                       <button class="btn btn--primary btn--sm" type="button" disabled={clipBusy === c.id} onclick={() => fileClip(c)}>
                         归位
+                      </button>
+                      <button class="btn btn--ghost btn--sm" type="button" disabled={clipBusy === c.id} onclick={() => void makeCards(c)}>
+                        变卡片
                       </button>
                       <button class="btn btn--ghost btn--sm" type="button" disabled={clipBusy === c.id} onclick={() => void dropClip(c)}>
                         丢弃
@@ -775,6 +844,56 @@
                 {/each}
               </ul>
             {/if}
+          </div>
+        {/if}
+
+        <!-- 摘录 → 闪卡：确认过的问答才会进复习队列 -->
+        {#if cardClip}
+          <div class="card-modal" role="dialog" aria-modal="true" aria-label="摘录变卡片">
+            <div class="card-panel">
+              <div class="card-head">
+                <strong>把这段变成卡片</strong>
+                <button class="btn btn--ghost btn--sm" type="button" onclick={closeCards}>关闭</button>
+              </div>
+              <blockquote class="card-src">{cardClip.quote}</blockquote>
+              {#if cardBusy && cardDrafts.length === 0}
+                <div class="card-mut">正在出题…</div>
+              {/if}
+              {#if cardErr}<div class="card-err">{cardErr}</div>{/if}
+              {#if cardDrafts.length > 0}
+                {#each cardDrafts as d, i (i)}
+                  <div class="card-draft">
+                    <input class="card-input" bind:value={d.front} placeholder="正面：一个问题" />
+                    <textarea class="card-input" rows="2" bind:value={d.back} placeholder="背面：答案"></textarea>
+                  </div>
+                {/each}
+                <div class="card-row">
+                  <label class="card-lbl" for="card-subject">学科</label>
+                  <select id="card-subject" class="card-input" bind:value={cardSubject}>
+                    <option value="">选择一个学科</option>
+                    {#each app.subjects as s (s.id)}
+                      <option value={s.id}>{s.name}</option>
+                    {/each}
+                  </select>
+                </div>
+                <div class="card-acts">
+                  <button class="btn btn--ghost btn--sm" type="button" disabled={cardBusy} onclick={addDraft}>
+                    + 再加一张
+                  </button>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    disabled={cardBusy}
+                    onclick={() => cardClip && void makeCards(cardClip)}
+                  >
+                    重新生成
+                  </button>
+                  <button class="btn btn--primary btn--sm" type="button" disabled={cardBusy} onclick={() => void saveCards()}>
+                    {cardBusy ? "保存中…" : "存进复习"}
+                  </button>
+                </div>
+              {/if}
+            </div>
           </div>
         {/if}
 
@@ -1456,6 +1575,62 @@
   }
   .clip-meta { margin-top: 4px; font-size: 10px; color: var(--fg-faint); }
   .clip-acts { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+  .clip-carded { color: var(--fg-faint); }
+
+  /* 摘录 → 卡片 的确认层：模型起草，人改，人存 */
+  .card-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: color-mix(in oklab, #000 42%, transparent);
+  }
+  .card-panel {
+    width: min(620px, 100%);
+    max-height: 82vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md, 10px);
+  }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .card-src {
+    margin: 0;
+    padding: 8px 10px;
+    max-height: 120px;
+    overflow-y: auto;
+    border-left: 2px solid var(--border);
+    background: var(--bg-sunken);
+    color: var(--fg-muted);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .card-draft { display: flex; flex-direction: column; gap: 6px; }
+  .card-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    resize: vertical;
+  }
+  .card-row { display: flex; align-items: center; gap: 8px; }
+  .card-lbl { font-size: 11px; color: var(--fg-faint); }
+  .card-acts { display: flex; gap: 8px; justify-content: flex-end; }
+  .card-mut { font-size: 12px; color: var(--fg-faint); }
+  .card-err { font-size: 12px; color: var(--danger, #e06c75); }
 
   /* [[double links]] strip — outlinks (missing = dashed) + backlinks */
   .notes-links {

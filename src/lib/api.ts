@@ -1472,6 +1472,8 @@ export interface Clip {
   block: string | null;
   created_at: number;
   note_title: string | null;
+  /** How many flashcards this passage already produced (0 = not carded yet). */
+  card_count: number;
 }
 
 export interface ClipDiscardOutcome {
@@ -1497,6 +1499,36 @@ export const clipToNewNote = (clipId: string, title: string, subjectId?: string 
 /** Forget it. When the note still holds the block verbatim, it is removed too. */
 export const clipDiscard = (clipId: string) =>
   invoke<ClipDiscardOutcome>("clip_discard", { clipId });
+
+
+/** A passage → self-test questions. Drafts only; nothing is scheduled until
+ *  `clipSaveCards`, so a bad guess costs one call instead of review clutter. */
+export interface ClipCardDraft {
+  front: string;
+  back: string;
+}
+export interface ClipCardsSaved {
+  material_id: string;
+  subject_id: string;
+  cards: number;
+  /** Cards actually added to the queue — less than `cards` when that front was
+   *  already scheduled (the scheduler keeps your progress). */
+  seeded: number;
+}
+export const clipDraftCards = (clipId: string) =>
+  invoke<ClipCardDraft[]>("clip_draft_cards", { clipId });
+export const clipSaveCards = (
+  clipId: string,
+  cards: ClipCardDraft[],
+  subjectId?: string | null,
+  topicId?: string | null,
+) =>
+  invoke<ClipCardsSaved>("clip_save_cards", {
+    clipId,
+    cards,
+    subjectId: subjectId ?? null,
+    topicId: topicId ?? null,
+  });
 
 
 
