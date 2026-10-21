@@ -34,6 +34,7 @@ pub const SKILL_DISTILL: &str = "skill.distill";
 pub const TENSION_ANALYZE: &str = "tension.analyze";
 pub const NODE_DOC: &str = "node.doc";
 pub const TUTOR_TURN: &str = "tutor.turn";
+pub const VOCAB_MINE: &str = "vocab.mine";
 
 const PREFIX: &str = "prompt.";
 
@@ -141,6 +142,13 @@ static SPECS: &[Spec] = &[
         group: "陪练",
         default: crate::tutor::SYSTEM,
         sample: "陪练对象：TCP 握手\n当前档位：第 3 档「提问引导」\n学生信心：4 / 5\n\n最近的对话：\n教练：第一题：SYN 在握手里做什么？\n学生：同步序列号吧\n\n学生这一轮的回答：同步序列号吧\n\n按规则输出 VERDICT 行和你的回复。",
+    },
+    Spec {
+        key: VOCAB_MINE,
+        label: "语料采词",
+        group: "卡片与笔记",
+        default: crate::vocab::MINE_SYS,
+        sample: "材料：\nSpaced repetition exploits the spacing effect: distributing study over time improves long-term retention compared with massed practice. The scheduler adjusts each interval from the learner's recall difficulty.\n\n返回 JSON。",
     },
 ];
 
@@ -269,6 +277,7 @@ mod tests {
         TENSION_ANALYZE,
         NODE_DOC,
         TUTOR_TURN,
+        VOCAB_MINE,
     ];
 
     #[test]
@@ -304,6 +313,7 @@ mod tests {
                 "skill.distill",
                 "tension.analyze",
                 "tutor.turn",
+                "vocab.mine",
             ]
         );
     }

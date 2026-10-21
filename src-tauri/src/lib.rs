@@ -697,6 +697,10 @@ pub fn run() {
             proposals::accept_proposal,
             proposals::reject_proposal,
             proposals::pending_proposals,
+            // vocab: frequency extraction + corpus mining
+            // vocab: frequency extraction + corpus mining
+            vocab::vocab_mine,
+            vocab::vocab_save_mined,
             // clips: select a passage anywhere → file it under a note
             clips::clip_add,
             clips::clips_list,

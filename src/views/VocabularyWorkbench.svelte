@@ -16,13 +16,24 @@
 
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
-  import type { VocabTerm } from "../lib/api";
+  import type { VocabTerm, MineCandidate } from "../lib/api";
   import Icon from "../components/Icon.svelte";
 
   let terms = $state<VocabTerm[]>([]);
   let loaded = $state(false);
   let loading = $state(false);
   let error = $state<string | null>(null);
+
+  // ── 语料采词：模型挑词，原句逐字校验，保存即进复习轮转 ──
+  let mineKind = $state<"text" | "source" | "note">("text");
+  let mineId = $state("");
+  let mineText = $state("");
+  let candidates = $state<MineCandidate[]>([]);
+  let dropped = $state(0);
+  let picked = $state<Record<string, boolean>>({});
+  let mining = $state(false);
+  let sources = $state<api.Source[]>([]);
+  let notes = $state<api.Note[]>([]);
 
   const sid = $derived(app.activeSubjectId);
 
@@ -33,6 +44,70 @@
   let editStatus = $state<"new" | "learning" | "known">("new");
 
   $effect(() => { void loadTerms(); });
+  $effect(() => { void loadMaterial(); });
+
+  async function loadMaterial() {
+    if (!sid) { sources = []; notes = []; return; }
+    const s = sid;
+    try {
+      const [ss, ns] = await Promise.all([api.listSources(s), api.listNotes(s)]);
+      if (s !== sid) return;
+      sources = ss.filter((x) => (x.content ?? "").trim().length > 40);
+      notes = ns.filter((n) => n.body.trim().length > 40);
+      if (mineKind === "source" && sources.length && !mineId) mineId = sources[0].id;
+      if (mineKind === "note" && notes.length && !mineId) mineId = notes[0].id;
+    } catch { /* pickers just stay empty */ }
+  }
+
+  async function runMine() {
+    if (!sid || mining) return;
+    let text = mineText;
+    if (mineKind === "source") {
+      const src = sources.find((x) => x.id === mineId);
+      if (!src) return;
+      text = src.content ?? "";
+      // 大源只取前 6000 字——和后端采词窗口一致
+      text = text.slice(0, 6000);
+    } else if (mineKind === "note") {
+      const note = notes.find((n) => n.id === mineId);
+      if (!note) return;
+      text = note.body.slice(0, 6000);
+    }
+    if (text.trim().length < 40) { error = "材料太短，采不出东西"; return; }
+    mining = true; error = null;
+    try {
+      const out = await api.vocabMine(text);
+      candidates = out.candidates;
+      dropped = out.dropped;
+      picked = {};
+      for (const c of out.candidates) picked[c.normalized] = true;
+      if (out.candidates.length === 0) {
+        error = out.dropped > 0
+          ? `模型给了 ${out.dropped} 个词，但原句都对不上材料——逐字校验全挡掉了，换段材料或换个模型`
+          : "没采到值得学的词";
+      }
+    } catch (e) { error = String(e); }
+    finally { mining = false; }
+  }
+
+  async function saveMined() {
+    if (!sid || candidates.length === 0) return;
+    loading = true; error = null;
+    try {
+      const chosen = candidates.filter((c) => picked[c.normalized]);
+      if (chosen.length === 0) { error = "一个都没选"; loading = false; return; }
+      const out = await api.vocabSaveMined(sid, chosen);
+      app.pushToast({
+        kind: "success",
+        title: `已保存 ${out.saved} 个词`,
+      });
+      candidates = [];
+      await loadTerms();
+    } catch (e) { error = String(e); }
+    finally { loading = false; }
+  }
+
+  const pickedCount = $derived(Object.values(picked).filter(Boolean).length);
 
   async function loadTerms() {
     if (!sid) { terms = []; loaded = true; return; }
@@ -154,6 +229,66 @@
       <div class="kpi"><i>学习中</i><b>{counts.learning}</b></div>
       <div class="kpi"><i>未学</i><b>{counts.new}</b></div>
     </div>
+
+    {#if sid}
+      <section class="vw-mine">
+        <div class="vw-mine-head">
+          <h2 class="vw-h2">从材料采词</h2>
+          <span class="vw-hint">模型挑词、写释义；原句必须逐字来自材料——对不上的会被挡掉</span>
+        </div>
+        <div class="vw-mine-row">
+          <select class="ipt sel" bind:value={mineKind}>
+            <option value="text">粘贴文本</option>
+            <option value="source">来源全文</option>
+            <option value="note">笔记</option>
+          </select>
+          {#if mineKind === "source"}
+            <select class="ipt sel grow" bind:value={mineId}>
+              {#each sources as s (s.id)}
+                <option value={s.id}>{s.name}</option>
+              {/each}
+            </select>
+          {:else if mineKind === "note"}
+            <select class="ipt sel grow" bind:value={mineId}>
+              {#each notes as n (n.id)}
+                <option value={n.id}>{n.title}</option>
+              {/each}
+            </select>
+          {:else}
+            <textarea
+              class="ipt area grow"
+              placeholder="粘一段英文材料（≥40 字）…"
+              bind:value={mineText}
+            ></textarea>
+          {/if}
+          <button class="btn primary" disabled={mining || !sid} onclick={() => void runMine()}>
+            <Icon name="bolt" size={12} /> {mining ? "采词中…" : "采词"}
+          </button>
+        </div>
+
+        {#if candidates.length > 0}
+          <div class="vw-cands">
+            <div class="vw-cands-head">
+              <span class="mono">
+                {candidates.length} 个候选 · 已选 {pickedCount}
+                {#if dropped > 0}<span title="模型给的原句不在材料里，已挡掉"> · 挡掉 {dropped} 个对不上原句的</span>{/if}
+              </span>
+              <button class="btn primary" disabled={loading || pickedCount === 0} onclick={() => void saveMined()}>
+                保存 {pickedCount} 个为闪卡
+              </button>
+            </div>
+            {#each candidates as c (c.normalized)}
+              <label class="vw-cand">
+                <input type="checkbox" bind:checked={picked[c.normalized]} />
+                <span class="vw-cand-word">{c.word}</span>
+                <span class="vw-cand-def">{c.definition}</span>
+                <span class="vw-cand-sent" title={c.sentence}>{c.sentence}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
 
     {#if terms.length === 0}
       <div class="vw-empty">
@@ -288,6 +423,52 @@
     border: 1px dashed var(--border); border-radius: 8px;
     background: var(--surface);
     padding: 48px 24px; text-align: center;
+  }
+  .vw-h2 {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px; font-weight: 500;
+    color: var(--fg-faint);
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .vw-hint { font-size: 10.5px; color: var(--fg-faint); }
+  .vw-mine {
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .vw-mine-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .vw-mine-row { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+  .vw-mine-row .grow { flex: 1; min-width: 220px; }
+  .vw-cands {
+    border-top: 1px dashed var(--border);
+    padding-top: 10px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .vw-cands-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 10.5px; color: var(--fg-faint);
+  }
+  .vw-cand {
+    display: grid;
+    grid-template-columns: 18px 130px minmax(120px, 1fr) minmax(160px, 1.4fr);
+    align-items: baseline; gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .vw-cand:hover { background: var(--surface-2); }
+  .vw-cand input { accent-color: var(--accent); margin: 0; }
+  .vw-cand-word { font-size: 12.5px; color: var(--fg-bright); }
+  .vw-cand-def { font-size: 11.5px; color: var(--fg-muted); }
+  .vw-cand-sent {
+    font-size: 11px; color: var(--fg-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  @media (max-width: 760px) {
+    .vw-cand { grid-template-columns: 18px 1fr; }
+    .vw-cand-sent { grid-column: 2; white-space: normal; }
   }
   .vw-empty-big {
     font-family: var(--font-display); font-size: 18px; font-weight: 600;

@@ -922,6 +922,27 @@ export const vocabDelete = (id: string) =>
 export const vocabExtract = (subjectId: string, limit?: number) =>
   invoke<number>("vocab_extract", { subjectId, limit: limit ?? null });
 
+// ---- corpus mining — the model picks, the sentence is checked verbatim -----
+
+export interface MineCandidate {
+  word: string;
+  normalized: string;
+  definition: string;
+  /** A verbatim sentence from the material (backend-checked substring). */
+  sentence: string;
+}
+
+/** Ask the model which words in this text are worth learning. */
+export const vocabMine = (text: string) =>
+  invoke<{ candidates: MineCandidate[]; dropped: number }>("vocab_mine", { text });
+
+/** Save picked words as terms + flashcards seeded into the review queue. */
+export const vocabSaveMined = (subjectId: string, candidates: MineCandidate[]) =>
+  invoke<{ saved: number; seeded: number }>("vocab_save_mined", {
+    subjectId,
+    candidates,
+  });
+
 export type LiteratureSort = "relevance" | "newest" | "cited";
 
 export const literatureSearch = (
