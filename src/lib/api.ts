@@ -2935,3 +2935,44 @@ export const researchConnectorFetch = (
     topicId: topicId ?? null,
     withPdf,
   });
+
+// ---- L4: research chat — a conversation with the literature -----------------
+// Distinct from `literatureAiSearch` (one question → one ranked list). A thread
+// remembers what was asked, and every answer carries the tool calls behind it.
+
+export interface ResearchThread {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  turns: number;
+}
+
+export interface ResearchMessage {
+  id: string;
+  thread_id: string;
+  /** user | agent | tool */
+  role: string;
+  text: string;
+  tool: string | null;
+  created_at: number;
+}
+
+export interface ResearchAskOutcome {
+  thread_id: string;
+  title: string;
+  reply: string;
+  steps: number;
+  took_ms: number;
+}
+
+export const researchThreads = () => invoke<ResearchThread[]>("research_threads");
+
+export const researchThreadMessages = (threadId: string, limit = 300) =>
+  invoke<ResearchMessage[]>("research_thread_messages", { threadId, limit });
+
+export const researchThreadDelete = (threadId: string) =>
+  invoke<void>("research_thread_delete", { threadId });
+
+export const researchAsk = (input: string, threadId?: string | null) =>
+  invoke<ResearchAskOutcome>("research_ask", { threadId: threadId ?? null, input });

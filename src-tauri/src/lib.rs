@@ -68,6 +68,7 @@ pub mod providers;
 pub mod connectors;
 pub mod draft_review;
 pub mod research_connectors;
+pub mod research_agent;
 pub mod slides;
 pub mod drafts;
 pub mod extraction;
@@ -672,6 +673,12 @@ pub fn run() {
             clips::clip_to_note,
             clips::clip_to_new_note,
             clips::clip_discard,
+
+            // research chat — a conversation with the literature (L4)
+            research_agent::research_threads,
+            research_agent::research_thread_messages,
+            research_agent::research_thread_delete,
+            research_agent::research_ask,
             // calendar
             calendar::create_event,
             calendar::list_events,
