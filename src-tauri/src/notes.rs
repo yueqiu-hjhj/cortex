@@ -30,6 +30,7 @@ pub fn create_note(
     )?;
     // [[double links]] index — rebuilt on every save (0045).
     crate::note_links::rebuild(&c, &id, &body)?;
+    index_coverage(&c, &id);
     let note = repo::get_note(&c, &id)?;
     mirror_to_vault(&state, &c, &note);
     Ok(note)
@@ -57,9 +58,20 @@ pub fn update_note(
     let c = state.db.lock().unwrap();
     repo::update_note(&c, &id, &title, &body)?;
     crate::note_links::rebuild(&c, &id, &body)?;
+    index_coverage(&c, &id);
     let note = repo::get_note(&c, &id)?;
     mirror_to_vault(&state, &c, &note);
     Ok(note)
+}
+
+/// Which knowledge points this note now covers. Best-effort on purpose: the
+/// note row is already committed, and coverage is a derived view — a matching
+/// failure must never turn a successful save into an error the user has to
+/// react to.
+fn index_coverage(c: &rusqlite::Connection, note_id: &str) {
+    if let Err(e) = crate::note_knowledge::rebuild(c, note_id) {
+        eprintln!("[coverage] could not index note {note_id}: {e}");
+    }
 }
 
 /// Push a saved note out to its Markdown file (vault layer, P1). Deliberately
@@ -93,6 +105,14 @@ pub fn note_resolve_link(state: State<AppState>, target: String) -> Result<Optio
 pub fn delete_note(state: State<AppState>, id: String) -> Result<()> {
     let c = state.db.lock().unwrap();
     use rusqlite::OptionalExtension;
+    let subject: Option<String> = c
+        .query_row(
+            "SELECT subject_id FROM notes WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
     let rel: Option<String> = c
         .query_row(
             "SELECT vault_path FROM notes WHERE id=?1",
@@ -102,6 +122,9 @@ pub fn delete_note(state: State<AppState>, id: String) -> Result<()> {
         .optional()?
         .flatten();
     repo::delete_note(&c, &id)?;
+    if let Err(e) = crate::note_knowledge::note_removed(&c, &id, subject.as_deref()) {
+        eprintln!("[coverage] could not unindex deleted note {id}: {e}");
+    }
     // Only remove the file after the row is gone, so a failed delete never
     // leaves a note whose DB row points at a missing file.
     if let (Some(root), Some(rel)) = (

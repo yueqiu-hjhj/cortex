@@ -217,6 +217,9 @@ pub struct KnowledgeNode {
     pub importance: f64,
     pub confidence: f64,
     pub observations: i64,
+    /// How many of your notes mention this point. Coverage counts distinct
+    /// notes; this is the raw evidence behind that number.
+    pub note_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }

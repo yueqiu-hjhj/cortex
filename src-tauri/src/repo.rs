@@ -3592,7 +3592,7 @@ pub fn upsert_knowledge_node(
         conn.execute(
             "UPDATE knowledge_nodes
                 SET title=?2, summary=?3, topic_id=?4, source_id=?5, parent_id=?6,
-                    position=?7, coverage=?8, updated_at=?9
+                    position=?7, source_coverage=?8, coverage=?8, updated_at=?9
               WHERE id=?1",
             params![id, title, summary, topic_id, source_id, parent_id, position, coverage, now_ms()],
         )?;
@@ -3603,9 +3603,9 @@ pub fn upsert_knowledge_node(
     conn.execute(
         "INSERT INTO knowledge_nodes
             (id, subject_id, topic_id, source_id, parent_id, node_key, kind, title,
-             summary, position, coverage, mastery, importance, confidence,
-             observations, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0.5,0.3,0,?13,?13)",
+             summary, position, source_coverage, coverage, mastery, importance,
+             confidence, observations, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,0.5,0.3,0,?13,?13)",
         params![
             id, subject_id, topic_id, source_id, parent_id, node_key, kind, title,
             summary, position, coverage, BKT_PRIOR, ts
@@ -3702,18 +3702,25 @@ pub fn sync_knowledge_graph(conn: &Connection, subject_id: &str) -> Result<i64> 
         }
     }
 
-    // Propagate coverage upward: a topic is as covered as its weakest half of
-    // sources, a subject as covered as its average topic.
+    // Propagate the library's half upward: a topic is as covered as its weakest
+    // half of sources, a subject as covered as its average topic. This writes
+    // `source_coverage` — the displayed `coverage` is recomputed below from
+    // sources AND notes, so this pass can neither average notes away nor wipe
+    // them.
     conn.execute(
         "UPDATE knowledge_nodes
-            SET coverage = COALESCE((
-                SELECT AVG(child.coverage) FROM knowledge_nodes child
+            SET source_coverage = COALESCE((
+                SELECT AVG(child.source_coverage) FROM knowledge_nodes child
                  WHERE child.parent_id = knowledge_nodes.id
-            ), coverage),
+            ), source_coverage),
             updated_at=?2
           WHERE subject_id=?1 AND kind IN ('subject','topic')",
         params![subject_id, now_ms()],
     )?;
+    // Your own writing is the second input. Running it here (not only on note
+    // save) makes the tree self-correcting: any sync, including the one every
+    // Subject Overview mount triggers, restores note-driven coverage.
+    crate::note_knowledge::apply_coverage(conn, subject_id)?;
 
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM knowledge_nodes WHERE subject_id=?1",
@@ -3742,12 +3749,14 @@ fn map_knowledge_node(r: &rusqlite::Row) -> rusqlite::Result<KnowledgeNode> {
         observations: r.get(14)?,
         created_at: r.get(15)?,
         updated_at: r.get(16)?,
+        note_count: r.get(17)?,
     })
 }
 
 const KNOWLEDGE_NODE_COLS: &str = "id, subject_id, topic_id, source_id, parent_id, node_key, \
     kind, title, summary, position, coverage, mastery, importance, confidence, observations, \
-    created_at, updated_at";
+    created_at, updated_at, \
+    (SELECT COUNT(*) FROM note_concepts nc WHERE nc.node_id = knowledge_nodes.id)";
 
 pub fn list_knowledge_nodes(conn: &Connection, subject_id: &str) -> Result<Vec<KnowledgeNode>> {
     let sql =

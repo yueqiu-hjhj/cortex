@@ -78,7 +78,13 @@ pub fn apply_cross_links(conn: &Connection) -> Result<usize> {
         let count = (concept.nodes.len() - 1) as i64;
         for node in &concept.nodes {
             tx.execute(
-                "UPDATE knowledge_nodes SET coverage = MIN(1.0, coverage + ?1 * 0.05) WHERE id=?2",
+                // Bump the *source* half too: `coverage` is now derived from
+                // source_coverage ∪ notes on every sync, so raising only the
+                // displayed number would be undone at the next mount.
+                "UPDATE knowledge_nodes
+                    SET source_coverage = MIN(1.0, source_coverage + ?1 * 0.05),
+                        coverage = MIN(1.0, coverage + ?1 * 0.05)
+                  WHERE id=?2",
                 params![count, node.node_id],
             )?;
         }

@@ -146,6 +146,7 @@ mod tests {
             importance: 1.0,
             confidence: 1.0,
             observations: if mastery > 0.0 { 3 } else { 0 },
+            note_count: 0,
             created_at: 0,
             updated_at: 0,
         }

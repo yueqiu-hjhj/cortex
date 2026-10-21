@@ -1927,6 +1927,8 @@ export interface KnowledgeNode {
   importance: number;    // 0..1
   confidence: number;    // 0..1
   observations: number;
+  /** How many of your own notes mention this point (coverage counts these). */
+  note_count: number;
   created_at: number;
   updated_at: number;
 }
@@ -1983,6 +1985,11 @@ export const syncKnowledgeGraph = (subjectId: string) =>
 
 export const listKnowledgeNodes = (subjectId: string) =>
   invoke<KnowledgeNode[]>("list_knowledge_nodes", { subjectId });
+
+/** Re-scan notes → knowledge nodes (after an upgrade, or if the tree looks
+ *  stale). Omit the subject to rebuild every note in the library. */
+export const noteKnowledgeResync = (subjectId?: string | null) =>
+  invoke<number>("note_knowledge_resync", { subjectId: subjectId ?? null });
 
 export const getKnowledgeGraph = (subjectId: string) =>
   invoke<KnowledgeGraph>("get_knowledge_graph", { subjectId });

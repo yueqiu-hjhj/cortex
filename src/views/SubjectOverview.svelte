@@ -125,33 +125,38 @@
       for (const s of stats) m[s.topic_id] = s.accuracy ?? null;
       return m;
     });
+    // Sync is also what recomputes coverage from BOTH inputs (imported sources
+    // and your notes), so this function is the single refresh path — the button
+    // below reuses it instead of duplicating the two calls.
+    let knRun = 0;
+    async function refreshKn(id: string, resyncNotes = false) {
+      const run = ++knRun;
+      knLoading = true;
+      knErr = null;
+      try {
+        if (resyncNotes) await api.noteKnowledgeResync(id);
+        const n = await api.syncKnowledgeGraph(id);
+        const nodes = await api.listKnowledgeNodes(id);
+        if (run !== knRun) return;
+        knTree = buildTree(nodes);
+        // Auto-expand the subject root + topics with sources, collapse the rest.
+        const exp: Record<string, boolean> = {};
+        for (const t of knTree) {
+          exp[t.node.id] = true;
+          for (const c of t.children) exp[c.node.id] = (c.children.length > 0);
+        }
+        knExpanded = exp;
+        knSyncNote = `${n} 个节点已同步`;
+      } catch (e) {
+        if (run === knRun) knErr = String(e);
+      } finally {
+        if (run === knRun) knLoading = false;
+      }
+    }
     $effect(() => {
       const id = subj?.id;
       if (!id) { knTree = []; knErr = null; knLoading = false; return; }
-      let cancelled = false;
-      knLoading = true;
-      knErr = null;
-      (async () => {
-        try {
-          const n = await api.syncKnowledgeGraph(id);
-          const nodes = await api.listKnowledgeNodes(id);
-          if (cancelled) return;
-          knTree = buildTree(nodes);
-          // Auto-expand the subject root + topics with sources, collapse the rest.
-          const exp: Record<string, boolean> = {};
-          for (const t of knTree) {
-            exp[t.node.id] = true;
-            for (const c of t.children) exp[c.node.id] = (c.children.length > 0);
-          }
-          knExpanded = exp;
-          knSyncNote = `${n} 个节点已同步`;
-        } catch (e) {
-          if (!cancelled) knErr = String(e);
-        } finally {
-          if (!cancelled) knLoading = false;
-        }
-      })();
-      return () => { cancelled = true; };
+      void refreshKn(id);
     });
     function buildTree(nodes: api.KnowledgeNode[]): TreeNode[] {
       const byId = new Map<string, TreeNode>();
@@ -466,7 +471,20 @@
               {@render knRow(root)}
             {/each}
           </ul>
-          {#if knSyncNote}<div class="ov-tree-foot mono">{knSyncNote}</div>{/if}
+          {#if knSyncNote}
+            <div class="ov-tree-foot mono">
+              {knSyncNote}
+              <button
+                class="ov-tree-resync"
+                type="button"
+                disabled={knLoading}
+                title="重新扫一遍笔记，更新每个知识点被哪些笔记覆盖"
+                onclick={() => subj && void refreshKn(subj.id, true)}
+              >
+                {knLoading ? "重算中…" : "重算笔记覆盖"}
+              </button>
+            </div>
+          {/if}
         {/if}
       </div>
     </section>
@@ -625,6 +643,9 @@
       <span class="ov-tree-m mono" style:color={bktColor(band)}>{Math.round(effectiveMastery(t.node) * 100)}%</span>
       {#if t.node.observations > 0}
         <span class="ov-tree-n mono">{t.node.observations} obs</span>
+      {/if}
+      {#if t.node.note_count > 0}
+        <span class="ov-tree-n mono" title="你有 {t.node.note_count} 篇笔记提到这个知识点">{t.node.note_count} 笔记</span>
       {/if}
       {#if hasKids}
         <Icon name={open ? "x" : "arrowR"} size={11} />
@@ -865,7 +886,22 @@
     padding: 4px 12px 6px;
     color: var(--fg-faint);
     font-size: 10.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
+  .ov-tree-resync {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-muted);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .ov-tree-resync:hover:not(:disabled) { color: var(--fg-bright); border-color: var(--fg-faint); }
+  .ov-tree-resync:disabled { opacity: 0.5; cursor: default; }
   .ov-tree-list { list-style: none; margin: 0; padding: 0; }
   .ov-tree-row { margin: 0; }
   .ov-tree-row-h {
