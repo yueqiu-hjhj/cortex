@@ -9,6 +9,7 @@
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
   import MindMapView from "../components/MindMapView.svelte";
+  import SourceBipartite from "../components/SourceBipartite.svelte";
   import { loadGlossary } from "../lib/glossary";
 
   type Band = "solid" | "steady" | "shaky" | "cold";
@@ -125,6 +126,8 @@
     let knDoc = $state<Record<string, api.NodeDoc | null>>({});
     let knDocOpen = $state<Record<string, boolean>>({});
     let knDocBusy = $state<string | null>(null);
+    // 来源视图：材料 × 知识点二部图，孤证概念提示补来源（纯本地计算，随开随算）
+    let srcvOpen = $state(false);
     async function toggleDoc(n: api.KnowledgeNode) {
       if (knDocOpen[n.id]) { knDocOpen[n.id] = false; return; }
       knDocOpen[n.id] = true;
@@ -422,8 +425,22 @@
         <button class="btn btn--sm" onclick={openMap} title="把主题、来源、术语表整理成一张知识脑图">
           <Icon name="link" size={13} /> 知识脑图
         </button>
+        <button
+          class="btn btn--sm"
+          class:btn--on={srcvOpen}
+          onclick={() => (srcvOpen = !srcvOpen)}
+          title="材料 × 知识点的支撑关系：孤证概念会被标出来，提示补来源"
+        >
+          <Icon name="link" size={13} /> 来源视图
+        </button>
       </div>
     </header>
+
+    {#if srcvOpen && subj}
+      <section class="ov-srcv">
+        <SourceBipartite subjectId={subj.id} />
+      </section>
+    {/if}
 
     <section class="ov-band">
       <div class="ov-band-l">
@@ -1068,6 +1085,12 @@
   }
   .ov-tree-act:hover { opacity: 1; background: var(--surface-2); color: var(--accent); }
   .ov-tree-act.on { opacity: 1; color: var(--accent); }
+  /* 来源视图：开着的按钮要有「开着」的样子，否则用户不知道再点一次是关 */
+  .btn--on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .ov-srcv { margin: 0 0 4px; }
   .ov-doc {
     margin: 4px 0 8px 10px;
     padding: 10px 12px;

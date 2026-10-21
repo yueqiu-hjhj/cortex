@@ -2094,6 +2094,47 @@ export const nodeDocGenerate = (nodeId: string) =>
 export const nodeDocDelete = (nodeId: string) =>
   invoke<void>("node_doc_delete", { nodeId });
 
+// ---- source view — the materials × points bipartite, with 孤证 called out --
+
+export interface ProvenanceMaterial {
+  id: string;
+  name: string;
+  /** "source" | "note" */
+  kind: string;
+  /** For sources: whether it parsed into chunks (null for notes). */
+  parsed: boolean | null;
+  /** How many points this material supports. */
+  supports: number;
+}
+
+export interface ProvenancePoint {
+  id: string;
+  title: string;
+  /** "topic" | "concept" */
+  kind: string;
+  source_count: number;
+  note_count: number;
+  /** cross | single | notes_only | orphan */
+  verdict: string;
+}
+
+export interface ProvenanceEdge {
+  material_id: string;
+  point_id: string;
+  hits: number;
+  /** "topic" | "text" | "mention" */
+  via: string;
+}
+
+export interface Bipartite {
+  materials: ProvenanceMaterial[];
+  points: ProvenancePoint[];
+  edges: ProvenanceEdge[];
+}
+
+export const provenanceBipartite = (subjectId: string) =>
+  invoke<Bipartite>("provenance_bipartite", { subjectId });
+
 // ---- tutor bench — a scaffold ladder that moves both ways ------------------
 
 export interface TutorSession {

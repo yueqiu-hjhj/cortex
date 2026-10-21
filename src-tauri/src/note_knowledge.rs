@@ -90,7 +90,11 @@ pub fn rebuild(conn: &Connection, note_id: &str) -> Result<usize> {
 /// that topic even though it never repeats the whole label. Segments go through
 /// the same length/boundary rules as titles, so "IP" alone is still not
 /// evidence.
-fn match_hits(hay: &str, title: &str) -> usize {
+///
+/// `pub(crate)` because the source view (provenance.rs) grounds concepts in
+/// library text with the SAME matcher — two different matchers would let the
+/// same sentence count as evidence in one panel and not the other.
+pub(crate) fn match_hits(hay: &str, title: &str) -> usize {
     let full = title.trim().to_lowercase();
     if matchable(&full) {
         let hits = count_hits(hay, &full);

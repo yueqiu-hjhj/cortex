@@ -62,6 +62,7 @@ pub mod clips;
 pub mod note_knowledge;
 pub mod node_docs;
 pub mod tutor;
+pub mod provenance;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -683,6 +684,8 @@ pub fn run() {
             node_docs::node_doc_get,
             node_docs::node_doc_generate,
             node_docs::node_doc_delete,
+            // source view — the materials × points bipartite, with 孤证 called out
+            provenance::provenance_bipartite,
             // tutor bench — a scaffold ladder that moves both ways
             tutor::tutor_start,
             tutor::tutor_reply,
