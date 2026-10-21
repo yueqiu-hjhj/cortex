@@ -284,6 +284,72 @@
     }
   }
 
+  // ---- 精读：划词翻译/解释 + 中英对照 ----------------------------------
+  // Both used to live in 文献阅读, which had its own reading surface for the
+  // same paper. Reading happens here now (PDF pages, highlights, citations);
+  // leaving the精读 actions behind would have made "one reader" a downgrade.
+  let aiSel = $state<{ text: string; mode: string; busy: boolean; out: string; err: string | null } | null>(null);
+  const AI_MODE_LABEL: Record<string, string> = {
+    "translate:zh": "翻译",
+    explain: "讲解",
+    summarize: "摘要",
+  };
+  async function explainSelection(mode: "translate:zh" | "explain" | "summarize") {
+    if (!pdfSel) return;
+    const text = pdfSel.text;
+    aiSel = { text, mode, busy: true, out: "", err: null };
+    pdfSel = null; // the toolbar would otherwise sit on top of the answer
+    try {
+      const out = await api.literatureExplain(text, mode);
+      aiSel = { ...aiSel, busy: false, out };
+    } catch (e) {
+      aiSel = { ...aiSel, busy: false, out: "", err: String(e) };
+    }
+  }
+
+  // 中英对照: paragraph-aligned translation of a text source. Capped at 24
+  // paragraphs — each one is a model call, and an unbounded book is a bill the
+  // user did not ask for.
+  const BI_CAP = 24;
+  let biMode = $state(false);
+  let biTrans = $state<Record<number, string>>({});
+  let biPending = $state<Set<number>>(new Set());
+  let biKey = $state("");
+  const biParas = $derived.by(() =>
+    (src?.content ?? "")
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0),
+  );
+  function biDirection(text: string): "zh" | "en" {
+    const head = text.slice(0, 400);
+    const ascii = [...head].filter((c) => c.charCodeAt(0) < 128).length;
+    return ascii > [...head].length * 0.6 ? "zh" : "en";
+  }
+  async function toggleBilingual() {
+    if (biMode) { biMode = false; return; }
+    const paras = biParas.slice(0, BI_CAP);
+    if (!paras.length) return;
+    const key = `${paras.length}:${paras[0]}`;
+    if (biKey !== key) { biKey = key; biTrans = {}; }
+    const target = biDirection(paras.join(" "));
+    biMode = true;
+    for (let i = 0; i < paras.length; i++) {
+      if (biTrans[i] !== undefined || biPending.has(i)) continue;
+      biPending = new Set([...biPending, i]);
+      try {
+        const t = await api.literatureExplain(paras[i], `translate:${target}`);
+        biTrans = { ...biTrans, [i]: t.trim() };
+      } catch {
+        biTrans = { ...biTrans, [i]: "（翻译失败 — 检查模型配置）" };
+      } finally {
+        const next = new Set(biPending);
+        next.delete(i);
+        biPending = next;
+      }
+    }
+  }
+
   // ---- 2.6 图表自动解释 ------------------------------------------------
   // 选中的文字（通常是图表题注 "Figure 3: …"）作为定位线索，整页 150dpi 渲染
   // 后交给 vision 模型解释。结果展示在右侧浮层，可关闭。
@@ -522,6 +588,16 @@
         </button>
       {/if}
       {#if src}
+        {#if isText && src?.content}
+          <button
+            class="btn btn--sm btn--ghost"
+            class:sv-on={biMode}
+            onclick={() => void toggleBilingual()}
+            title="逐段对照：原文在左，模型译文在右（最多 {BI_CAP} 段）"
+          >
+            <Icon name="globe" size={13} /> {biMode ? "关闭对照" : "中英对照"}
+          </button>
+        {/if}
         <button
           class="btn btn--icon btn--sm btn--ghost"
           onclick={editSource}
@@ -566,6 +642,14 @@
               <Icon name="book" size={11} /> 摘录
             </button>
             <button class="fb" onclick={copyPdfSelection}><Icon name="check" size={11} /> 复制</button>
+            <button class="fb" onclick={() => void explainSelection("translate:zh")}
+                    title="把选中段落翻成中文">
+              <Icon name="globe" size={11} /> 翻译
+            </button>
+            <button class="fb" onclick={() => void explainSelection("explain")}
+                    title="让模型讲解这段在说什么">
+              <Icon name="chat" size={11} /> 讲解
+            </button>
             <button class="fb" onclick={explainFigure} disabled={figBusy}
                     title="用视觉模型解释本页图表（以选中文字为题注线索）">
               <Icon name="chart" size={11} /> {figBusy ? "解读中…" : "图解"}
@@ -596,6 +680,31 @@
         {#if excerptFlash}
           <div class="float" style="position:fixed;left:50%;top:64px;transform:translateX(-50%)">
             <span class="fb mono">{excerptFlash}</span>
+          </div>
+        {/if}
+        {#if aiSel}
+          <div class="float sv-ai" role="status">
+            {#if aiSel.busy}
+              <span class="fb mono">{AI_MODE_LABEL[aiSel.mode]}中…</span>
+            {:else if aiSel.err}
+              <div class="fb" style="color:var(--err,var(--warn))">{AI_MODE_LABEL[aiSel.mode]}失败：{aiSel.err}</div>
+            {:else}
+              <div class="fb sv-ai-body">
+                <div class="sv-ai-head">
+                  <Icon name={aiSel.mode === "explain" ? "chat" : "globe"} size={11} />
+                  <strong>{AI_MODE_LABEL[aiSel.mode]}</strong>
+                  <span style="flex:1"></span>
+                  <button class="fb" onclick={() => (aiSel = null)} title="关闭"><Icon name="x" size={11} /></button>
+                </div>
+                <p class="sv-ai-q mono">{aiSel.text.slice(0, 120)}{aiSel.text.length > 120 ? "…" : ""}</p>
+                <div class="sv-ai-out"><RichText text={aiSel.out} /></div>
+              </div>
+            {/if}
+            {#if aiSel && !aiSel.busy}
+              <button class="fb sv-ai-close" onclick={() => (aiSel = null)} title="关闭">
+                <Icon name="x" size={11} />
+              </button>
+            {/if}
           </div>
         {/if}
         {#if annotsOpen}
@@ -668,7 +777,29 @@
       {:else if isText && src?.content}
         <!-- Readable extracted text (txt / md / web / url, or content-only sources) -->
         <div class="pdf-page" style="width:100%;max-width:680px">
-          <p class="read pdf-note sv-text">{src.content}</p>
+          {#if biMode}
+            {#each biParas.slice(0, BI_CAP) as para, i (i)}
+              <div class="bi-row">
+                <p class="read bi-orig">{para}</p>
+                <p class="read bi-trans">
+                  {#if biTrans[i] !== undefined}
+                    {biTrans[i]}
+                  {:else if biPending.has(i)}
+                    <span class="bi-wait mono">翻译中…</span>
+                  {:else}
+                    <span class="bi-wait mono">—</span>
+                  {/if}
+                </p>
+              </div>
+            {/each}
+            {#if biParas.length > BI_CAP}
+              <p class="pdf-note mono" style="font-size:var(--t-xs);color:var(--fg-muted);margin-top:12px">
+                只对照了前 {BI_CAP} 段（共 {biParas.length} 段）—— 每段一次模型调用，长文请分段读。
+              </p>
+            {/if}
+          {:else}
+            <p class="read pdf-note sv-text">{src.content}</p>
+          {/if}
         </div>
       {:else if loading}
         <div class="pdf-page" style="width:100%;max-width:560px">
@@ -732,6 +863,45 @@
 
 <style>
   /* Selection toolbar + flash — the LiteratureReader float look, scoped here. */
+  /* 划词 AI 面板：固定在右上，避开阅读区正文 */
+  .sv-ai {
+    right: 18px; top: 76px;
+    max-width: min(420px, 42vw); max-height: 68vh;
+    overflow-y: auto; text-align: left;
+    flex-direction: column; align-items: stretch;
+  }
+  .sv-ai-body { display: block; padding: 10px 12px; }
+  .sv-ai-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .sv-ai-q {
+    margin: 0 0 8px; font-size: 10.5px; color: var(--fg-faint);
+    border-left: 2px solid var(--border-strong); padding-left: 8px;
+  }
+  .sv-ai-out { font-family: var(--font-read); font-size: 13px; line-height: 1.7; color: var(--fg); }
+  .sv-ai-close { align-self: flex-end; }
+  .btn.sv-on {
+    color: var(--accent);
+    border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+
+  /* 中英对照：每段一行两栏，段级天然对齐（来自原文献阅读面） */
+  .bi-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    padding: 10px 0; border-bottom: 1px dashed var(--border); align-items: start;
+  }
+  .bi-row:last-of-type { border-bottom: none; }
+  .bi-orig { margin: 0; }
+  .bi-trans {
+    margin: 0; color: var(--fg-muted);
+    border-left: 2px solid color-mix(in oklab, var(--accent) 40%, transparent);
+    padding-left: 12px;
+  }
+  .bi-wait { font-size: 10px; opacity: 0.6; }
+  @media (max-width: 900px) {
+    .bi-row { grid-template-columns: 1fr; gap: 6px; }
+    .bi-trans { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 6px; }
+  }
+
   .float {
     position: fixed;
     z-index: 60;
