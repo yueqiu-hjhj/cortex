@@ -599,13 +599,16 @@ class AppStore {
     images: api.WebImage[],
     sugg: string[],
     citations: api.Citation[],
-    retrieval?: api.RetrievalMeta
+    retrieval?: api.RetrievalMeta,
+    fabricatedDropped?: number
   ) {
     this.chatLastImages = images;
     this.chatSuggestions = sugg;
     // retrieval rides along so the session can show a retrieval rate and
-    // history can badge ungrounded answers (0044).
-    api.addChatMessage(subjectId, "assistant", text, citations, retrieval).catch(() => {}); // persist
+    // history can badge ungrounded answers (0044); the fabrication count
+    // rides along so history can badge "the model tried to cite sources
+    // that were never retrieved" (0069).
+    api.addChatMessage(subjectId, "assistant", text, citations, retrieval, fabricatedDropped).catch(() => {}); // persist
     this.chatMsgNonce++;
   }
 
@@ -642,7 +645,7 @@ class AppStore {
         this.#chatTypeIv = setInterval(() => {
           if (this.#chatCancelled) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations, result.retrieval);
+            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped);
             resolve();
             return;
           }
@@ -650,7 +653,7 @@ class AppStore {
           this.chatStreaming = body.slice(0, i);
           if (i >= body.length) {
             this.#clearChatIv();
-            this.#finishAssistant(subjectId, body, imgs, sugg, citations, result.retrieval);
+            this.#finishAssistant(subjectId, body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped);
             resolve();
           }
           // ~30fps (6 chars/33ms) reveals at the same speed as 3 chars/16ms but

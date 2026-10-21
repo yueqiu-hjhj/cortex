@@ -42,6 +42,37 @@
     read_paper: "读一篇论文",
   };
 
+  // 知源's 回答依据 panel, in Cortex terms: every tool call shows WHAT was
+  // asked (args) next to WHAT came back, colour-coded by what kind of
+  // evidence it is — 检索外部 / 读本地库 / 读单篇.
+  const TOOL_KIND: Record<string, { label: string; color: string }> = {
+    search_literature: { label: "外部检索", color: "var(--info, #378ADD)" },
+    find_authors: { label: "外部检索", color: "var(--info, #378ADD)" },
+    my_library: { label: "本地库", color: "var(--ok, #639922)" },
+    read_paper: { label: "读论文", color: "var(--accent)" },
+  };
+  function toolKind(name: string | null): { label: string; color: string } {
+    return TOOL_KIND[name ?? ""] ?? { label: "工具", color: "var(--fg-faint)" };
+  }
+  function prettyArgs(args: string | null): string {
+    if (!args) return "";
+    try {
+      return JSON.stringify(JSON.parse(args), null, 0);
+    } catch {
+      return args;
+    }
+  }
+  /** How many tool calls fed the answer at index i — the 知源-style
+   *  "查证比例" in its simplest honest form: a count, per answer. */
+  function toolRunSince(i: number): number {
+    let n = 0;
+    for (let j = i - 1; j >= 0; j--) {
+      if (messages[j].role === "tool") n += 1;
+      else break;
+    }
+    return n;
+  }
+
   $effect(() => {
     if (!shown || booted) return;
     booted = true;
@@ -127,6 +158,7 @@
         role: "user",
         text: question,
         tool: null,
+        args: null,
         created_at: Date.now(),
       },
     ];
@@ -209,20 +241,31 @@
         </div>
       {/if}
 
-      {#each messages as m (m.id)}
+      {#each messages as m, i (m.id)}
         {#if m.role === "user"}
           <div class="rc-row is-user">
             <div class="rc-bubble is-user">{m.text}</div>
           </div>
         {:else if m.role === "tool"}
+          {@const kind = toolKind(m.tool)}
           <details class="rc-tool">
             <summary>
+              <span class="rc-tool-kind" style:color={kind.color}>{kind.label}</span>
               <span class="rc-tool-name">{toolLabel(m.tool)}</span>
               <span class="rc-tool-hint">{toolHint(m)}</span>
             </summary>
+            {#if m.args}
+              <div class="rc-tool-args mono" title="这次调用传给工具的参数">{prettyArgs(m.args)}</div>
+            {/if}
             <pre>{m.text}</pre>
           </details>
         {:else}
+          {@const since = toolRunSince(i)}
+          {#if since > 0}
+            <div class="rc-turn-summary mono" title="这个回答之前发生的工具调用——上面每条都可以展开核对">
+              本回合 {since} 次工具调用 · 参数与返回都在上面
+            </div>
+          {/if}
           <div class="rc-row is-agent">
             <div class="rc-bubble is-agent" data-clip-scope="agent" data-clip-label="研究对话">
               {m.text}
@@ -463,11 +506,35 @@
     color: var(--accent);
     font-weight: 600;
   }
+  .rc-tool-kind {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    padding: 0 4px;
+    opacity: 0.9;
+  }
   .rc-tool-hint {
     color: var(--fg-faint);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .rc-tool-args {
+    margin: 0;
+    padding: 0 10px 6px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .rc-turn-summary {
+    align-self: flex-start;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    padding: 2px 0 0 2px;
   }
   .rc-tool pre {
     margin: 0;

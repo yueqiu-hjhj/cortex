@@ -25,6 +25,9 @@
     images?: api.WebImage[];
     /** Persisted retrieval accounting (0044) — drives the red 未检索 badge. */
     retrieval?: api.RetrievalMeta;
+    /** Fabricated citations citecheck stripped (0069) — the badge that says
+     *  "the model tried to cite sources that were never retrieved". */
+    fabricated_dropped?: number;
   }
 
   // Web mode: let the AI pull live web snippets + images (diagrams/examples).
@@ -126,6 +129,7 @@
             text: m.text,
             citations: m.citations ?? [],
             retrieval: m.retrieval ?? undefined,
+            fabricated_dropped: m.fabricated_dropped ?? undefined,
           }));
       })
       .catch(() => {});
@@ -150,6 +154,7 @@
           text: m.text,
           citations: m.citations ?? [],
           retrieval: m.retrieval ?? undefined,
+          fabricated_dropped: m.fabricated_dropped ?? undefined,
         })) as ChatMessage[];
         const imgs = app.chatLastImages;
         if (imgs.length && next.length && next[next.length - 1].role === "assistant") {
@@ -650,6 +655,7 @@
           {@const citedCount = cites.filter((c) => c.cited).length}
           {@const isUncited = cites.length > 0 && citedCount === 0}
           {@const noRetrieval = !!m.retrieval && m.retrieval.hits === 0}
+          {@const fabricated = m.fabricated_dropped ?? 0}
           <div
             class="bubble assistant"
             class:is-uncited={isUncited}
@@ -675,6 +681,13 @@
                   <span class="evidence-count mono">{citedCount}/{cites.length} cited</span>
                   {#if isUncited}
                     <span class="evidence-warning">没有行内引用</span>
+                  {/if}
+                  {#if fabricated > 0}
+                    <span
+                      class="evidence-fabricated"
+                      title="citecheck 机械校验：回答里引用了检索结果中不存在的来源，已就地剥掉。数字越大越说明这轮回答在凭空编引用。"
+                      >剥离伪造引用 {fabricated} 条</span
+                    >
                   {/if}
                   <span class="evidence-caret">{evidenceOpen[i] ? "▾" : "▸"}</span>
                 </button>
@@ -706,6 +719,7 @@
                       from {new Set(cites.map((c) => c.source_id)).size} source{new Set(cites.map((c) => c.source_id)).size === 1 ? "" : "s"}
                       · {citedCount} cited inline
                       {#if isUncited}· <span class="trace-warn">回答未关联任何来源</span>{/if}
+                      {#if fabricated > 0}· <span class="trace-warn">剥离伪造引用 {fabricated} 条</span>{/if}
                     </div>
                   </div>
                 {/if}
@@ -962,6 +976,15 @@
   .evidence-count { margin-left: 4px; color: var(--fg-faint); text-transform: none; letter-spacing: 0; }
   .evidence-caret { margin-left: auto; color: var(--fg-faint); }
   .evidence-warning { color: var(--warn); letter-spacing: 0; text-transform: none; margin-left: 4px; }
+  .evidence-fabricated {
+    color: var(--danger, #e24b4a);
+    letter-spacing: 0; text-transform: none; margin-left: 4px;
+    border: 1px solid color-mix(in oklab, var(--danger, #e24b4a) 45%, transparent);
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 10px;
+    cursor: help;
+  }
   .evidence-body { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
   .evidence-list { display: flex; flex-wrap: wrap; gap: 5px; }
   .evidence-trace {

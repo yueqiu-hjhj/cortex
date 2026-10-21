@@ -788,6 +788,8 @@ export interface ChatMsg {
   created_at: number;
   /** NULL for user/system rows and pre-0044 messages. */
   retrieval?: RetrievalMeta | null;
+  /** Fabriced citations citecheck stripped from this answer (0069). */
+  fabricated_dropped?: number | null;
 }
 export const listChatMessages = (subjectId: string) =>
   invoke<ChatMsg[]>("list_chat_messages", { subjectId });
@@ -796,8 +798,18 @@ export const addChatMessage = (
   role: string,
   text: string,
   citations?: Citation[],
-  retrieval?: RetrievalMeta
-) => invoke<void>("add_chat_message", { subjectId, role, text, citations, retrieval });
+  retrieval?: RetrievalMeta,
+  /** How many fabricated citations citecheck stripped from this answer (0069). */
+  fabricatedDropped?: number
+) =>
+  invoke<void>("add_chat_message", {
+    subjectId,
+    role,
+    text,
+    citations,
+    retrieval,
+    fabricatedDropped: fabricatedDropped ?? null,
+  });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
 
 // chat sessions (history)
@@ -3169,6 +3181,9 @@ export interface ResearchMessage {
   role: string;
   text: string;
   tool: string | null;
+  /** For tool rows: the arguments the model passed (JSON), so you can judge
+   *  what was asked, not only what came back. */
+  args: string | null;
   created_at: number;
 }
 

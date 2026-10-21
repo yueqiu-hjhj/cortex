@@ -2413,6 +2413,7 @@ pub fn add_chat_message(
     text: String,
     citations: Option<Vec<Citation>>,
     retrieval: Option<crate::models::RetrievalMeta>,
+    fabricated_dropped: Option<i64>,
 ) -> Result<()> {
     let c = state.db.lock().unwrap();
     repo::add_chat_message_full(
@@ -2422,6 +2423,7 @@ pub fn add_chat_message(
         &text,
         &citations.unwrap_or_default(),
         retrieval.as_ref(),
+        fabricated_dropped.map(|n| n.max(0) as usize),
     )
 }
 

@@ -37,6 +37,9 @@ const MAX_STEPS: usize = 6;
 /// One tool result as shown to the model. Lists stay readable; a 200 KB dump
 /// would eat the context of every following step.
 const TOOL_RESULT_CHARS: usize = 2600;
+/// Arguments are small by construction (a query, a name, an id); clip anyway
+/// so a model that pastes a paragraph into an arg cannot bloat the table.
+const TOOL_ARGS_CHARS: usize = 600;
 /// How many prior messages ride along as conversation memory.
 const HISTORY_MESSAGES: usize = 14;
 
@@ -83,6 +86,9 @@ pub struct Message {
     pub role: String,
     pub text: String,
     pub tool: Option<String>,
+    /// The arguments the model passed to the tool (JSON), clipped. Without
+    /// it the transcript shows what came back but not what was asked.
+    pub args: Option<String>,
     pub created_at: i64,
 }
 
@@ -122,7 +128,7 @@ pub fn thread_messages(c: &Connection, thread_id: &str, limit: usize) -> Result<
     // Newest N, then reversed: the transcript must read top-down, and a
     // timestamp tie must not reorder two messages written in the same ms.
     let mut st = c.prepare(
-        "SELECT id, thread_id, role, text, tool, created_at FROM research_messages \
+        "SELECT id, thread_id, role, text, tool, args, created_at FROM research_messages \
          WHERE thread_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
     )?;
     let mut rows = st
@@ -133,7 +139,8 @@ pub fn thread_messages(c: &Connection, thread_id: &str, limit: usize) -> Result<
                 role: r.get(2)?,
                 text: r.get(3)?,
                 tool: r.get(4)?,
-                created_at: r.get(5)?,
+                args: r.get(5)?,
+                created_at: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -188,11 +195,12 @@ fn append_message(
     role: &str,
     text: &str,
     tool: Option<&str>,
+    args: Option<&str>,
 ) -> Result<()> {
     c.execute(
-        "INSERT INTO research_messages (id, thread_id, role, text, tool, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![new_id(), thread_id, role, text, tool, now_ms()],
+        "INSERT INTO research_messages (id, thread_id, role, text, tool, args, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![new_id(), thread_id, role, text, tool, args, now_ms()],
     )?;
     Ok(())
 }
@@ -239,7 +247,7 @@ pub fn ask(
     // change the instructions the loop is already following.
     let sys = crate::prompts::text(crate::prompts::RESEARCH_CHAT);
     let thread = ensure_thread(c, thread_id, input)?;
-    append_message(c, &thread.id, "user", input, None)?;
+    append_message(c, &thread.id, "user", input, None, None)?;
     let history = thread_messages(c, &thread.id, HISTORY_MESSAGES)?;
 
     let mut scratch = String::new();
@@ -262,8 +270,11 @@ pub fn ask(
                 steps += 1;
                 let out = run_tool(c, &name, &args);
                 let kept = clip(&out, TOOL_RESULT_CHARS);
-                append_message(c, &thread.id, "tool", &kept, Some(&name))?;
-                scratch.push_str(&format!("{steps}. {name} → {}\n", clip(&out, 900)));
+                // Store the ask alongside the answer: judging a tool call
+                // means seeing both halves of it.
+                let asked = clip(&args.to_string(), TOOL_ARGS_CHARS);
+                append_message(c, &thread.id, "tool", &kept, Some(&name), Some(&asked))?;
+                scratch.push_str(&format!("{steps}. {name} {asked} → {}\n", clip(&out, 900)));
             }
             Action::Answer(text) => {
                 answer = Some(text);
@@ -289,7 +300,7 @@ pub fn ask(
             format!("{text}\n\n（本次最多查 {MAX_STEPS} 次，想继续可以接着问。）")
         }
     };
-    append_message(c, &thread.id, "agent", &reply, None)?;
+    append_message(c, &thread.id, "agent", &reply, None, None)?;
 
     Ok(AskOutcome {
         thread_id: thread.id,
@@ -1040,6 +1051,9 @@ mod tests {
         let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, vec!["user", "tool", "agent"]);
         assert_eq!(msgs[1].tool.as_deref(), Some("my_library"));
+        // The ask is stored next to the answer: judging a tool call means
+        // seeing what was searched, not only what came back.
+        assert!(msgs[1].args.as_deref().unwrap_or("").contains("扩散"));
         // The thread is listed and survives the turn.
         assert!(list_threads(&c, 10).unwrap().iter().any(|t| t.id == out.thread_id));
         assert_eq!(list_threads(&c, 10).unwrap()[0].turns, 1);

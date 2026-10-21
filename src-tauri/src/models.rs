@@ -196,6 +196,10 @@ pub struct ChatMsg {
     /// NULL for user/system rows and for pre-0044 messages.
     #[serde(default)]
     pub retrieval: Option<RetrievalMeta>,
+    /// Fabricated citations citecheck stripped from this answer (0069).
+    /// NULL for user/system rows and pre-0069 messages.
+    #[serde(default)]
+    pub fabricated_dropped: Option<usize>,
 }
 
 // ---- knowledge framework / mastery -----------------------------------
