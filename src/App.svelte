@@ -38,6 +38,7 @@
   import Today from "./views/Today.svelte";
   import Plan from "./views/Plan.svelte";
   import Research from "./views/Research.svelte";
+  import ResearchChatPage from "./views/ResearchChatPage.svelte";
   import Lab from "./views/Lab.svelte";
   import Agents from "./views/Agents.svelte";
   import SubjectView from "./views/SubjectView.svelte";
@@ -532,6 +533,8 @@
           <Plan />
         {:else if app.view === "research"}
           <Research />
+        {:else if app.view === "research-chat"}
+          <ResearchChatPage />
         {:else if app.view === "agents"}
           <Agents />
         {:else if app.view === "dashboard"}

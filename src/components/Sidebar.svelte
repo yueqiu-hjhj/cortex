@@ -153,6 +153,15 @@
       <Icon name="reader" size={14} /><span class="lbl"> 研究</span><span class="nav-k">␣ u</span>
     </div>
     <div
+      class="sb-nav-item{app.view === 'research-chat' ? ' on' : ''}" title="研究对话 — 问方向、问团队、问某个人；它会真的去检索再回答"
+      onclick={() => app.setView("research-chat")}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => e.key === "Enter" && app.setView("research-chat")}
+    >
+      <Icon name="chat" size={14} /><span class="lbl"> 研究对话</span>
+    </div>
+    <div
       class="sb-nav-item{app.view === 'agents' ? ' on' : ''}" title="智能体平台 — 自定义 Agent 与运行记录 (Space z)"
       onclick={() => app.setView("agents")}
       role="button"

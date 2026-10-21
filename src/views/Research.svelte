@@ -12,7 +12,6 @@
   import Icon from "../components/Icon.svelte";
   import MatrixView from "../components/MatrixView.svelte";
   import OfficeTools from "../components/OfficeTools.svelte";
-  import ResearchChat from "../components/ResearchChat.svelte";
 
   const STATUSES = [
     { id: "all", label: "全部" },
@@ -43,7 +42,6 @@
   let importOpen = $state(false);
 
   // ── 研究对话（L4）：跟文献库真的聊起来 —— 问方向 / 团队 / 某个人 ──
-  let rcOpen = $state(false);
 
   // ── Deep Research（D2）：课题 → 多源发现 → AI 筛选 → 入库 → 综述初稿 ──
   let drOpen = $state(false);
@@ -1222,7 +1220,7 @@
       <button class="btn primary" onclick={() => (drOpen = !drOpen)} title="课题 → 多源检索 → AI 筛选 → 入库 → 综述初稿">
         {drBusy ? "深度研究中…" : "深度研究"}
       </button>
-      <button class="btn" onclick={() => (rcOpen = !rcOpen)}
+      <button class="btn" onclick={() => app.setView("research-chat")}
               title="跟文献库对话：问哪个方向、哪个团队、哪个人——它会真的去检索（OpenAlex 作者/机构/年份 + 你的本地库），查完再答">
         <Icon name="chat" size={12} /> 研究对话
       </button>
@@ -1271,8 +1269,6 @@
       <OfficeTools />
     </div>
   </header>
-
-  <ResearchChat bind:open={rcOpen} />
 
   {#if flash}<div class="flash">{flash}</div>{/if}
   {#if error}<div class="err">{error}</div>{/if}

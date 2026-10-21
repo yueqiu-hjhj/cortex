@@ -11,7 +11,14 @@
   import * as api from "../lib/api";
   import { app } from "../lib/store.svelte";
 
-  let { open = $bindable(false) }: { open?: boolean } = $props();
+  // `panel` is the inline card on the 科研 page; `page` is the first-class
+  // sidebar entry, where there is nothing to collapse into.
+  let {
+    open = $bindable(false),
+    mode = "panel",
+  }: { open?: boolean; mode?: "panel" | "page" } = $props();
+
+  const shown = $derived(mode === "page" || open);
 
   let threads = $state<api.ResearchThread[]>([]);
   let messages = $state<api.ResearchMessage[]>([]);
@@ -36,7 +43,7 @@
   };
 
   $effect(() => {
-    if (!open || booted) return;
+    if (!shown || booted) return;
     booted = true;
     void boot();
   });
@@ -155,8 +162,8 @@
   }
 </script>
 
-{#if open}
-  <div class="rc">
+{#if shown}
+  <div class="rc" class:is-page={mode === "page"}>
     <div class="rc-head">
       <div class="rc-title">
         <span class="dot"></span>
@@ -179,7 +186,9 @@
         <button class="btn" disabled={!activeId || busy} onclick={() => void removeThread()} title="删除当前对话">
           删除
         </button>
-        <button class="btn" onclick={() => (open = false)} title="收起">收起</button>
+        {#if mode === "panel"}
+          <button class="btn" onclick={() => (open = false)} title="收起">收起</button>
+        {/if}
       </div>
     </div>
 
@@ -264,6 +273,18 @@
     height: clamp(360px, 62vh, 640px);
     min-height: 0;
   }
+  /* Page mode fills the workspace: the transcript is the page, so the fixed
+     panel height (and the border that separated it from 科研) has to go. */
+  .rc.is-page {
+    height: 100%;
+    flex: 1 1 auto;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .rc.is-page .rc-log { padding: 12px clamp(12px, 4vw, 48px); }
+  .rc.is-page .rc-compose { padding: 10px clamp(12px, 4vw, 48px) 14px; }
   .rc-head {
     display: flex;
     align-items: center;

@@ -13,6 +13,7 @@ export type View =
   | "today"
   | "plan"
   | "research"
+  | "research-chat"
   | "agents"
   | "dashboard"
   | "subject"
