@@ -6,6 +6,7 @@
   import Icon from "../components/Icon.svelte";
   import RichText from "../components/RichText.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
+  import EnglishBench from "../components/EnglishBench.svelte";
   import { isMobile } from "../lib/platform";
   import { tick } from "svelte";
   // pdf.js's own .textLayer styles (positioned transparent spans over the
@@ -17,6 +18,8 @@
   let loading = $state(true);
   let split = $state(58); // percent for left pane
   let dragging = $state(false);
+  // 应试精读 / 翻译训练面板（六维解析，挂在当前来源上）
+  let benchOpen = $state(false);
 
   // Citation deep-link: when a source is opened from a ⟦… · loc⟧ chip, scroll to the
   // chunk whose loc matches the cited location and flash it. Best-effort — no match just
@@ -598,6 +601,16 @@
             <Icon name="globe" size={13} /> {biMode ? "关闭对照" : "中英对照"}
           </button>
         {/if}
+        {#if src?.content}
+          <button
+            class="btn btn--sm btn--ghost"
+            class:sv-on={benchOpen}
+            onclick={() => (benchOpen = !benchOpen)}
+            title="应试精读：六维解析这一篇（精译 / 主旨态度 / 长难句 / 同义替换 / 熟词生义 / 命题陷阱）+ 翻译训练"
+          >
+            <Icon name="book" size={13} /> 应试精读
+          </button>
+        {/if}
         <button
           class="btn btn--icon btn--sm btn--ghost"
           onclick={editSource}
@@ -860,6 +873,10 @@
     </div>
   {/if}
 </div>
+
+{#if benchOpen && src?.content}
+  <EnglishBench sourceId={src.id} kind="close" onclose={() => (benchOpen = false)} />
+{/if}
 
 <style>
   /* Selection toolbar + flash — the LiteratureReader float look, scoped here. */

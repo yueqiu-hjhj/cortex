@@ -148,6 +148,7 @@
       {#each layout.materials as m, i (m.id)}
         <g
           class="srcv-node"
+          role="img"
           opacity={hover == null || hover === m.id ? 1 : 0.35}
           onmouseenter={() => (hover = m.id)}
           onmouseleave={() => (hover = null)}
@@ -164,6 +165,7 @@
       {#each layout.points as p, i (p.id)}
         <g
           class="srcv-node"
+          role="img"
           opacity={hover == null || hover === p.id ? 1 : 0.35}
           onmouseenter={() => (hover = p.id)}
           onmouseleave={() => (hover = null)}

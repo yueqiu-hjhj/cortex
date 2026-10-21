@@ -65,6 +65,7 @@ pub mod tutor;
 pub mod provenance;
 pub mod redteam;
 pub mod writing_kit;
+pub mod english_bench;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -709,6 +710,15 @@ pub fn run() {
             writing_kit::writing_kit_delete,
             writing_kit::upgrade_history_list,
             writing_kit::upgrade_outcome_record,
+            // english bench — close reading (six ways) + translation training
+            english_bench::bench_run_create,
+            english_bench::bench_run_get,
+            english_bench::bench_run_delete,
+            english_bench::bench_run_execute,
+            english_bench::bench_item_retry,
+            english_bench::bench_export_md,
+            english_bench::bench_md_file,
+            english_bench::bench_synonym_save,
             // tutor bench — a scaffold ladder that moves both ways
             tutor::tutor_start,
             tutor::tutor_reply,

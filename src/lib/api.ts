@@ -2885,6 +2885,58 @@ export const upgradeOutcomeRecord = (
     accepted,
   });
 
+// ---- english bench — close reading (six ways) + translation training -------
+
+export interface BenchRun {
+  id: string;
+  /** close | translate */
+  kind: string;
+  source_id: string;
+  source_name: string;
+  status: string;
+  error: string | null;
+  model: string | null;
+  truncated: boolean;
+  created_at: number;
+  updated_at: number;
+}
+export interface BenchItem {
+  id: string;
+  dimension: string;
+  ord: number;
+  /** pending | done | error */
+  status: string;
+  error: string | null;
+  payload: unknown | null;
+  created_at: number;
+}
+export interface BenchResult {
+  run: BenchRun;
+  items: BenchItem[];
+}
+export const benchRunCreate = (kind: "close" | "translate", sourceId: string) =>
+  invoke<string>("bench_run_create", { kind, sourceId });
+export const benchRunGet = (kind: "close" | "translate", sourceId: string) =>
+  invoke<BenchResult | null>("bench_run_get", { kind, sourceId });
+export const benchRunDelete = (runId: string) =>
+  invoke<void>("bench_run_delete", { runId });
+export const benchRunExecute = (runId: string) =>
+  invoke<void>("bench_run_execute", { runId });
+export const benchItemRetry = (runId: string, dimension: string) =>
+  invoke<void>("bench_item_retry", { runId, dimension });
+export const benchExportMd = (runId: string) =>
+  invoke<string>("bench_export_md", { runId });
+export const benchMdFile = (runId: string, dest: string) =>
+  invoke<void>("bench_md_file", { runId, dest });
+/** Push one synonym pair into the subject's vocab deck (enters the SRS queue). */
+export const benchSynonymSave = (
+  sourceId: string,
+  original: string,
+  upgrade: string,
+  context: string,
+) =>
+  invoke<void>("bench_synonym_save", { sourceId, original, upgrade, context });
+
 // ---- office export + edit-back (A2/A3) --------------------------------------
 
 /** Material → Word (.docx) at `dest`, rendered from the stored payload. */
