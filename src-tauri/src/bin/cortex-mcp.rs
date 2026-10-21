@@ -29,10 +29,13 @@ fn main() -> ExitCode {
                  Env: CORTEX_DB (exact db file) or CORTEX_DATA_DIR (dir with cortex.db).\n\
                  Default: platform app-data dir for app.study.cortex.\n\
                  \n\
-                 Tools (13, all read-only): list_notebooks, search_notebook, get_source,\n\
+                 Tools (18, all read-only): list_notebooks, search_notebook, get_source,\n\
                  read_document, search_notes, get_knowledge_tree, list_wiki, get_wiki,\n\
                  wiki_reverse_links, list_agents, agent_messages, cross_book_bridges,\n\
-                 list_provenance.\n\
+                 list_provenance, list_papers, get_paper, search_papers, list_excerpts,\n\
+                 get_note.\n\
+                 \n\
+                 Resources: cortex://note/<id>, cortex://paper/<cite_key>.\n\
                  \n\
                  Boundaries: read-only connection, no model calls, no filesystem paths\n\
                  in responses. Write tools are deliberately absent (KnowNote-grade)."
@@ -49,7 +52,7 @@ fn main() -> ExitCode {
         }
     };
     eprintln!(
-        "cortex-mcp: serving {} (read-only; 13 tools; logs on stderr)",
+        "cortex-mcp: serving {} (read-only; 18 tools; logs on stderr)",
         path.display()
     );
     match cortex_lib::mcp_server::run_stdio(&conn) {

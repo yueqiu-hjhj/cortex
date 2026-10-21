@@ -214,6 +214,70 @@ fn tool_defs() -> Value {
                 "properties": { "source_id": { "type": "string" } },
                 "required": ["source_id"]
             }
+        },
+        {
+            "name": "list_papers",
+            "description": "List the user's paper library (Zotero imports and saved search results). Every row carries a stable cite_key: quote that key when citing, and never invent one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["to_read", "reading", "read", "cited", "dropped", "all"]
+                    },
+                    "notebook_id": { "type": "string", "description": "Only papers filed under this subject" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+                }
+            }
+        },
+        {
+            "name": "get_paper",
+            "description": "One paper in full: metadata, abstract, the user's own notes, and every excerpt taken from it with page numbers. Call this before writing anything that cites the paper — excerpts are the citable evidence, not the abstract.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": { "type": "string" },
+                    "cite_key": {
+                        "type": "string",
+                        "description": "Alternative to paper_id, e.g. Vaswani2017Attention"
+                    }
+                }
+            }
+        },
+        {
+            "name": "search_papers",
+            "description": "Search the paper library across title, authors, abstract, personal notes and excerpt text. Returns paper_id and cite_key for each hit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "list_excerpts",
+            "description": "Quoted passages with page numbers, across the whole library or from one paper. Each excerpt links back to its paper, so a claim can always be traced to a page.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": { "type": "string" },
+                    "cite_key": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+                }
+            }
+        },
+        {
+            "name": "get_note",
+            "description": "Read one note in full: Markdown body, vault file path, outgoing [[wiki links]] and backlinks. Notes live as .md files, so the same content is readable directly from disk.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "note_id": { "type": "string" },
+                    "title": { "type": "string", "description": "Exact title, when the id is not known" }
+                }
+            }
         }
     ])
 }
@@ -378,6 +442,11 @@ fn call_tool(conn: &Connection, name: &str, args: &Value) -> std::result::Result
         "agent_messages" => agent_messages(conn, args),
         "cross_book_bridges" => cross_book_bridges(conn, args),
         "list_provenance" => list_provenance(conn, args),
+        "list_papers" => list_papers(conn, args),
+        "get_paper" => get_paper(conn, args),
+        "search_papers" => search_papers(conn, args),
+        "list_excerpts" => list_excerpts(conn, args),
+        "get_note" => get_note(conn, args),
         other => return Err(format!("unknown tool: {other}")),
     };
     res.map_err(|e| e.to_string())
@@ -488,6 +557,407 @@ fn list_provenance(conn: &Connection, args: &Value) -> Result<String> {
     Ok(json_text(&rows))
 }
 
+// ---- paper library ----------------------------------------------------
+//
+// Papers are the half of a research library that a generic file search cannot
+// serve: what matters is not just the PDF text but which passage on which page
+// was singled out as evidence. Every returned row therefore carries the stable
+// cite_key, so anything an agent writes can be traced back to a page.
+
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let cut: String = flat.chars().take(max).collect();
+        format!("{cut}…")
+    }
+}
+
+/// The key to show for a paper: the persisted one, or the proposal for a row
+/// that predates 0059 and has not been backfilled yet.
+fn paper_key(p: &crate::papers::Paper) -> String {
+    p.cite_key
+        .clone()
+        .unwrap_or_else(|| crate::papers::derive_cite_key(p))
+}
+
+fn resolve_paper(conn: &Connection, args: &Value) -> Result<crate::papers::Paper> {
+    if let Some(id) = args
+        .get("paper_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return crate::papers::get_paper(conn, id);
+    }
+    let key = args
+        .get("cite_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let Some(key) = key else {
+        return Err(Error::Other("paper_id or cite_key is required".into()));
+    };
+    let id: String = conn
+        .query_row("SELECT id FROM papers WHERE cite_key = ?1", [key], |r| {
+            r.get(0)
+        })
+        .map_err(|_| Error::Other(format!("no paper with cite_key {key}")))?;
+    crate::papers::get_paper(conn, &id)
+}
+
+fn list_papers(conn: &Connection, args: &Value) -> Result<String> {
+    let status = args
+        .get("status")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && *s != "all");
+    let subject = args
+        .get("notebook_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .clamp(1, 200) as usize;
+    let papers = crate::papers::list_papers(conn, status, subject, None)?;
+    if papers.is_empty() {
+        return Ok("No papers in the library yet — import from Zotero or save a \
+                   literature-search hit in the Cortex app first."
+            .into());
+    }
+    let total = papers.len();
+    let mut out = String::new();
+    for (i, p) in papers.iter().take(limit).enumerate() {
+        let venue = p
+            .venue
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| format!("{} · ", one_line(v, 40)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "[{}] {} | {} ({}) | {}\n    {venue}status={} · {} excerpt(s) · paper_id={}\n",
+            i + 1,
+            paper_key(p),
+            one_line(p.authors.as_deref().unwrap_or("unknown authors"), 40),
+            p.year.map(|y| y.to_string()).unwrap_or_else(|| "n.d.".into()),
+            one_line(&p.title, 110),
+            p.status,
+            p.excerpt_count,
+            p.id,
+        ));
+    }
+    if total > limit {
+        out.push_str(&format!("\n({total} papers total; showing {limit})\n"));
+    }
+    Ok(out.trim_end().to_string())
+}
+
+fn get_paper(conn: &Connection, args: &Value) -> Result<String> {
+    let p = resolve_paper(conn, args)?;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "title: {}\ncite_key: {}\npaper_id: {}\n",
+        p.title,
+        paper_key(&p),
+        p.id
+    ));
+    if let Some(a) = &p.authors {
+        out.push_str(&format!("authors: {a}\n"));
+    }
+    if let Some(y) = p.year {
+        out.push_str(&format!("year: {y}\n"));
+    }
+    if let Some(v) = &p.venue {
+        out.push_str(&format!("venue: {v}\n"));
+    }
+    if let Some(d) = &p.doi {
+        out.push_str(&format!("doi: {d}\n"));
+    }
+    if let Some(u) = &p.url {
+        out.push_str(&format!("url: {u}\n"));
+    }
+    out.push_str(&format!(
+        "status: {} | rating: {} | excerpts: {}\n",
+        p.status,
+        p.rating.map(|r| r.to_string()).unwrap_or_else(|| "-".into()),
+        p.excerpt_count
+    ));
+    if let Some(n) = p.notes.as_deref().filter(|n| !n.trim().is_empty()) {
+        out.push_str(&format!("\nmy notes:\n{}\n", n.trim()));
+    }
+    if let Some(a) = p
+        .abstract_text
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
+    {
+        out.push_str(&format!("\nabstract:\n{}\n", a.trim()));
+    }
+    let excerpts = excerpt_block(conn, Some(&p.id), 200)?;
+    if !excerpts.is_empty() {
+        out.push_str("\nexcerpts (quote these, and keep the page):\n");
+        out.push_str(&excerpts);
+    }
+    Ok(out.trim_end().to_string())
+}
+
+fn excerpt_block(conn: &Connection, paper_id: Option<&str>, limit: usize) -> Result<String> {
+    let mut st = conn.prepare(
+        "SELECT e.quote, e.page, COALESCE(e.note,''), COALESCE(p.cite_key,''), COALESCE(p.title,'') \
+         FROM excerpts e LEFT JOIN papers p ON p.id = e.paper_id \
+         WHERE (?1 IS NULL OR e.paper_id = ?1) \
+         ORDER BY e.created_at DESC LIMIT ?2",
+    )?;
+    let rows: Vec<String> = st
+        .query_map(rusqlite::params![paper_id, limit as i64], |r| {
+            let quote: String = r.get(0)?;
+            let page: Option<i64> = r.get(1)?;
+            let note: String = r.get(2)?;
+            let key: String = r.get(3)?;
+            let title: String = r.get(4)?;
+            let loc = page
+                .map(|p| format!("p.{p}"))
+                .unwrap_or_else(|| "p.?".to_string());
+            let annotation = if note.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" — my note: {}", one_line(&note, 120))
+            };
+            Ok(format!(
+                "- [{}] {} 「{}」{}\n  from: {}\n",
+                key,
+                loc,
+                one_line(quote.trim(), 400),
+                annotation,
+                one_line(&title, 90)
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows.join(""))
+}
+
+fn search_papers(conn: &Connection, args: &Value) -> Result<String> {
+    let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    if query.trim().is_empty() {
+        return Err(Error::Other("query is required".into()));
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 50) as i64;
+    let pattern = format!(
+        "%{}%",
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let mut st = conn.prepare(
+        "SELECT COALESCE(p.cite_key,''), p.title, COALESCE(p.authors,''), p.year, p.id, p.status, \
+            (SELECT COUNT(*) FROM excerpts e WHERE e.paper_id = p.id) \
+         FROM papers p \
+         WHERE p.title LIKE ?1 ESCAPE '\\' \
+            OR p.authors LIKE ?1 ESCAPE '\\' \
+            OR p.abstract LIKE ?1 ESCAPE '\\' \
+            OR p.notes LIKE ?1 ESCAPE '\\' \
+            OR EXISTS (SELECT 1 FROM excerpts e2 WHERE e2.paper_id = p.id AND e2.quote LIKE ?1 ESCAPE '\\') \
+         ORDER BY p.year DESC, p.updated_at DESC LIMIT ?2",
+    )?;
+    let rows: Vec<String> = st
+        .query_map(rusqlite::params![pattern, limit], |r| {
+            let key: String = r.get(0)?;
+            let title: String = r.get(1)?;
+            let authors: String = r.get(2)?;
+            let year: Option<i64> = r.get(3)?;
+            let id: String = r.get(4)?;
+            let status: String = r.get(5)?;
+            let n: i64 = r.get(6)?;
+            Ok(format!(
+                "- {} | {} ({}) | {}\n  status={} · {} excerpt(s) · paper_id={}",
+                key,
+                one_line(&authors, 40),
+                year.map(|y| y.to_string()).unwrap_or_else(|| "n.d.".into()),
+                one_line(&title, 110),
+                status,
+                n,
+                id
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if rows.is_empty() {
+        return Ok(format!(
+            "No paper matched \"{query}\" (title, authors, abstract, notes, excerpt text)."
+        ));
+    }
+    Ok(rows.join("\n"))
+}
+
+fn list_excerpts(conn: &Connection, args: &Value) -> Result<String> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .clamp(1, 200) as usize;
+    let has_scope = args
+        .get("paper_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+        || args
+            .get("cite_key")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
+    let paper_id = if has_scope {
+        Some(resolve_paper(conn, args)?.id)
+    } else {
+        None
+    };
+    let block = excerpt_block(conn, paper_id.as_deref(), limit)?;
+    if block.is_empty() {
+        return Ok("No excerpts yet — highlight a passage in the PDF reader to create one.".into());
+    }
+    Ok(block.trim_end().to_string())
+}
+
+fn get_note(conn: &Connection, args: &Value) -> Result<String> {
+    let note_id: String = if let Some(id) = args
+        .get("note_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        id.to_string()
+    } else if let Some(title) = args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        conn.query_row(
+            "SELECT id FROM notes WHERE lower(trim(title)) = lower(trim(?1)) LIMIT 1",
+            [title],
+            |r| r.get(0),
+        )
+        .map_err(|_| Error::Other(format!("no note titled \"{title}\"")))?
+    } else {
+        return Err(Error::Other("note_id or title is required".into()));
+    };
+
+    let (title, body, vault_path, updated_at): (String, String, String, i64) = conn
+        .query_row(
+            "SELECT title, COALESCE(body,''), COALESCE(vault_path,''), updated_at \
+             FROM notes WHERE id = ?1",
+            [&note_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|_| Error::Other(format!("note {note_id} not found")))?;
+
+    let mut out = format!(
+        "title: {title}\nnote_id: {note_id}\nupdated_at_ms: {updated_at}\n"
+    );
+    if vault_path.is_empty() {
+        out.push_str("vault_path: (not on disk yet)\n");
+    } else {
+        out.push_str(&format!("vault_path: {vault_path}\n"));
+    }
+
+    let mut st = conn.prepare(
+        "SELECT target_slug, COALESCE(alias,'') FROM note_links \
+         WHERE from_note_id = ?1 ORDER BY target_slug",
+    )?;
+    let links: Vec<String> = st
+        .query_map([&note_id], |r| {
+            let target: String = r.get(0)?;
+            let alias: String = r.get(1)?;
+            Ok(if alias.is_empty() {
+                format!("[[{target}]]")
+            } else {
+                format!("[[{target}|{alias}]]")
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(st);
+    if !links.is_empty() {
+        out.push_str(&format!("outgoing links: {}\n", links.join(", ")));
+    }
+
+    let backs = crate::note_links::backlinks(conn, &title)?;
+    if !backs.is_empty() {
+        let titles: Vec<String> = backs.iter().map(|b| b.title.clone()).collect();
+        out.push_str(&format!("backlinks: {}\n", titles.join(", ")));
+    }
+
+    out.push_str(&format!("\n---\n{}\n", body.trim_end()));
+    Ok(out)
+}
+
+// ---- resources --------------------------------------------------------
+//
+// Notes and papers are addressable by URI so a client can attach one directly
+// (`@cortex://note/…`) instead of spending a tool call to discover it. Notes
+// are .md files on disk, so the same content is also reachable by path — the URI
+// is just a stable handle that survives a rename.
+
+fn resource_list(conn: &Connection) -> Result<Value> {
+    let mut out: Vec<Value> = Vec::new();
+
+    let mut st = conn.prepare(
+        "SELECT id, title, COALESCE(vault_path,'') FROM notes \
+         ORDER BY updated_at DESC LIMIT 200",
+    )?;
+    let notes: Vec<(String, String, String)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(st);
+    for (id, title, path) in notes {
+        out.push(json!({
+            "uri": format!("cortex://note/{id}"),
+            "name": title,
+            "description": if path.is_empty() {
+                "note (not yet exported to disk)".to_string()
+            } else {
+                path
+            },
+            "mimeType": "text/markdown"
+        }));
+    }
+
+    let mut st = conn.prepare(
+        "SELECT cite_key, title, COALESCE(authors,''), year FROM papers \
+         WHERE cite_key IS NOT NULL AND cite_key <> '' \
+         ORDER BY updated_at DESC LIMIT 200",
+    )?;
+    let papers: Vec<(String, String, String, Option<i64>)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(st);
+    for (key, title, authors, year) in papers {
+        let who = if authors.is_empty() {
+            "unknown authors".to_string()
+        } else {
+            one_line(&authors, 60)
+        };
+        out.push(json!({
+            "uri": format!("cortex://paper/{key}"),
+            "name": title,
+            "description": format!(
+                "{who} ({}) — metadata, notes and page-anchored excerpts",
+                year.map(|y| y.to_string()).unwrap_or_else(|| "n.d.".into())
+            ),
+            "mimeType": "text/markdown"
+        }));
+    }
+
+    Ok(Value::Array(out))
+}
+
+fn resource_read(conn: &Connection, uri: &str) -> Result<String> {
+    if let Some(id) = uri.strip_prefix("cortex://note/") {
+        return get_note(conn, &json!({ "note_id": id }));
+    }
+    if let Some(key) = uri.strip_prefix("cortex://paper/") {
+        return get_paper(conn, &json!({ "cite_key": key }));
+    }
+    Err(Error::Other(format!("unsupported resource uri: {uri}")))
+}
+
 /// Handle one JSON-RPC message. Returns the response (None for notifications).
 pub fn handle_message(conn: &Connection, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
@@ -508,9 +978,18 @@ pub fn handle_message(conn: &Connection, msg: &Value) -> Option<Value> {
                 .unwrap_or(PROTOCOL_VERSION);
             ok(json!({
                 "protocolVersion": requested,
-                "capabilities": { "tools": { "listChanged": false } },
+                "capabilities": {
+                    "tools": { "listChanged": false },
+                    "resources": { "listChanged": false, "subscribe": false }
+                },
                 "serverInfo": { "name": "cortex", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Cortex local study library (read-only). Call list_notebooks first, then search_notebook / read_document. No model calls, no writes."
+                "instructions": "Cortex is the user's local study library, in three shelves. \
+(1) notes — Markdown files with [[wiki links]]: search_notes, get_note. \
+(2) sources — ingested PDFs and pages, addressable by character offset: search_notebook, get_source, read_document. \
+(3) papers — a curated library where excerpts carry page numbers: list_papers, get_paper, search_papers, list_excerpts. \
+When you cite, use the paper's cite_key and the excerpt's page — both are stable. \
+Notes and papers are also exposed as resources (cortex://note/<id>, cortex://paper/<cite_key>). \
+Read-only: no tool here writes to the library."
             }))
         }
         "ping" => ok(json!({})),
@@ -529,6 +1008,19 @@ pub fn handle_message(conn: &Connection, msg: &Value) -> Option<Value> {
                     "content": [{ "type": "text", "text": text }],
                     "isError": true
                 })),
+            }
+        }
+        "resources/list" => match resource_list(conn) {
+            Ok(list) => ok(json!({ "resources": list })),
+            Err(e) => err(-32603, &e.to_string()),
+        },
+        "resources/read" => {
+            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            match resource_read(conn, uri) {
+                Ok(text) => ok(json!({
+                    "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }]
+                })),
+                Err(e) => err(-32602, &e.to_string()),
             }
         }
         other => err(-32601, &format!("method not found: {other}")),
@@ -590,9 +1082,17 @@ mod tests {
                  INSERT INTO chunks (id, source_id, subject_id, ord, text, loc, dim, embedding, created_at)
                    VALUES ('c1', 'src1', 's1', 0, '特征值分解把矩阵拆成旋转与缩放。', 'p.3', 2, X'0000000000000000', 1);
                  INSERT INTO notes (id, subject_id, title, body, created_at, updated_at)
-                   VALUES ('n1', 's1', '特征值笔记', '相似变换保持特征值不变。', 1, 1);",
+                   VALUES ('n1', 's1', '特征值笔记', '相似变换保持特征值不变。', 1, 1);
+                 INSERT INTO papers (id, title, authors, year, venue, abstract, status, notes, added_at, updated_at)
+                   VALUES ('p1', 'Attention is all you need', 'Ashish Vaswani, Noam Shazeer',
+                           2017, 'NeurIPS', 'The dominant sequence transduction models are based on RNNs.',
+                           'read', '核心贡献是自注意力。', 1, 1);
+                 INSERT INTO excerpts (id, paper_id, quote, page, note, created_at, updated_at)
+                   VALUES ('e1', 'p1', 'We propose a new simple network architecture, the Transformer.',
+                           3, '本文核心贡献', 1, 1);",
             )
             .unwrap();
+            crate::papers::ensure_cite_keys(&c).unwrap();
             crate::wiki::upsert_page(
                 &c,
                 crate::wiki::DEFAULT_USER,
@@ -631,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_the_five_tools() {
+    fn tools_list_advertises_the_full_read_surface() {
         let (c, dir) = seeded("tools");
         let resp = handle_message(&c, &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
         let names: Vec<&str> = resp["result"]["tools"]
@@ -647,7 +1147,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
-        assert_eq!(names.len(), 13, "tool surface should be exactly 13 read-only tools");
+        assert_eq!(names.len(), 18, "tool surface should be exactly 18 read-only tools");
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -754,8 +1254,81 @@ mod tests {
     #[test]
     fn unknown_method_is_protocol_error() {
         let (c, dir) = seeded("meth");
-        let resp = handle_message(&c, &json!({ "jsonrpc": "2.0", "id": 3, "method": "resources/list" })).unwrap();
+        // prompts are not advertised, so the method must stay unknown.
+        let resp = handle_message(
+            &c,
+            &json!({ "jsonrpc": "2.0", "id": 3, "method": "prompts/list" }),
+        )
+        .unwrap();
         assert_eq!(resp["error"]["code"], -32601);
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paper_tools_carry_cite_key_and_page() {
+        let (c, dir) = seeded("papers");
+        let list = call(&c, "list_papers", json!({}));
+        let text = list["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Vaswani2017Attention"), "{text}");
+        assert!(text.contains("NeurIPS"), "{text}");
+
+        // Cited by key, not id: an agent that only saw the list can still reach
+        // the page-anchored evidence.
+        let one = call(&c, "get_paper", json!({ "cite_key": "Vaswani2017Attention" }));
+        let text = one["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("ph.), p.3") || text.contains("p.3"), "{text}");
+        assert!(text.contains("the Transformer"), "{text}");
+        assert!(text.contains("核心贡献是自注意力"), "{text}");
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_papers_matches_excerpt_text_not_just_title() {
+        let (c, dir) = seeded("psearch");
+        let hit = call(&c, "search_papers", json!({ "query": "Transformer" }));
+        let text = hit["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Vaswani2017Attention"), "{text}");
+
+        let miss = call(&c, "search_papers", json!({ "query": "diffusion" }));
+        let text = miss["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("No paper matched"), "{text}");
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resources_expose_notes_and_papers() {
+        let (c, dir) = seeded("res");
+        let resp = handle_message(
+            &c,
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/list" }),
+        )
+        .unwrap();
+        assert_eq!(resp["error"], Value::Null, "resources/list must succeed now");
+        let list = resp["result"]["resources"].as_array().unwrap();
+        assert!(list.iter().any(|r| r["uri"] == "cortex://note/n1"));
+        assert!(list
+            .iter()
+            .any(|r| r["uri"] == "cortex://paper/Vaswani2017Attention"));
+
+        let read = handle_message(
+            &c,
+            &json!({ "jsonrpc": "2.0", "id": 2, "method": "resources/read",
+                     "params": { "uri": "cortex://note/n1" } }),
+        )
+        .unwrap();
+        let text = read["result"]["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("相似变换"), "{text}");
+
+        let bad = handle_message(
+            &c,
+            &json!({ "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+                     "params": { "uri": "cortex://nope/x" } }),
+        )
+        .unwrap();
+        assert_eq!(bad["error"]["code"], -32602);
         drop(c);
         let _ = std::fs::remove_dir_all(dir);
     }

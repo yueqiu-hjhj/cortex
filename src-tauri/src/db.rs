@@ -67,6 +67,7 @@ const MIGRATIONS: &[&str] = &[
     // existing databases will migrate next.
     include_str!("../migrations/0057_excerpt_rects.sql"),
     include_str!("../migrations/0058_vault_notes.sql"),
+    include_str!("../migrations/0059_paper_cite_keys.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.

@@ -46,6 +46,10 @@ pub struct Paper {
     pub source_id: Option<String>,
     pub added_at: i64,
     pub updated_at: i64,
+    /// Stable BibTeX / citation key (`Vaswani2017Attention`). Assigned once by
+    /// `ensure_cite_keys` and never re-derived, so a \cite{} already written
+    /// into a manuscript keeps resolving after the title is edited.
+    pub cite_key: Option<String>,
     /// Derived: how many excerpts have been taken from this paper.
     pub excerpt_count: i64,
     /// Derived: open reading/writing tasks linked to it.
@@ -100,7 +104,7 @@ pub struct ImportOutcome {
 
 const PAPER_COLUMNS: &str = "p.id, p.title, p.authors, p.year, p.venue, p.doi, p.url, \
      p.abstract, p.status, p.rating, p.notes, p.subject_id, p.source_id, p.added_at, \
-     p.updated_at, \
+     p.updated_at, p.cite_key, \
      (SELECT COUNT(*) FROM excerpts e WHERE e.paper_id = p.id), \
      (SELECT COUNT(*) FROM item_links l JOIN work_items w ON w.id = l.item_id \
         WHERE l.entity_table = 'papers' AND l.entity_id = p.id \
@@ -123,8 +127,9 @@ fn row_to_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
         source_id: row.get(12)?,
         added_at: row.get(13)?,
         updated_at: row.get(14)?,
-        excerpt_count: row.get(15)?,
-        open_task_count: row.get(16)?,
+        cite_key: row.get(15)?,
+        excerpt_count: row.get(16)?,
+        open_task_count: row.get(17)?,
     })
 }
 
@@ -179,6 +184,7 @@ pub fn import_paper(conn: &Connection, input: &PaperInput) -> Result<Paper> {
             now,
         ],
     )?;
+    ensure_cite_keys(conn)?;
     get_paper(conn, &id)
 }
 
@@ -410,11 +416,12 @@ fn bibtex_escape(s: &str) -> String {
         .replace('%', "\\%")
 }
 
-/// `Ashish Vaswani, Noam Shazeer` → `Vaswani2026Attention`.
-fn cite_key(paper: &Paper) -> String {
-    let first_surname = paper
-        .authors
-        .as_deref()
+/// `Ashish Vaswani, Noam Shazeer` + 2017 + `Attention is all you need`
+/// → `Vaswani2017Attention`. This is only the *candidate* key: two papers can
+/// legitimately collide, which is why the stored value (see
+/// `ensure_cite_keys`) is what everything downstream reads.
+fn derive_key_parts(title: &str, authors: Option<&str>, year: Option<i64>) -> String {
+    let first_surname = authors
         .unwrap_or("")
         .split(',')
         .next()
@@ -425,12 +432,13 @@ fn cite_key(paper: &Paper) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>();
-    let year = paper
-        .year
-        .map(|y| y.to_string())
-        .unwrap_or_else(|| "nd".into());
-    let word = paper
-        .title
+    let first_surname = if first_surname.is_empty() {
+        "anon".to_string()
+    } else {
+        first_surname
+    };
+    let year = year.map(|y| y.to_string()).unwrap_or_else(|| "nd".into());
+    let word = title
         .split_whitespace()
         .find(|w| w.chars().any(|c| c.is_alphanumeric()) && w.len() > 3)
         .unwrap_or("paper")
@@ -440,7 +448,74 @@ fn cite_key(paper: &Paper) -> String {
     format!("{first_surname}{year}{word}")
 }
 
+/// The key this paper would get if it had none. Prefer `paper.cite_key` — this
+/// is a fallback, and it changes when the title changes.
+pub fn derive_cite_key(paper: &Paper) -> String {
+    derive_key_parts(&paper.title, paper.authors.as_deref(), paper.year)
+}
+
+/// Assign a citation key to every paper that lacks one. Idempotent, and safe to
+/// call on startup: an assigned key is never recomputed, so references from a
+/// manuscript or from an external agent stay valid forever.
+///
+/// Collisions are resolved by the unique index rather than a pre-check — two
+/// papers by the same author in the same year with similar titles is a real
+/// case, and letting SQLite arbitrate means no check-then-insert race.
+pub fn ensure_cite_keys(conn: &Connection) -> Result<usize> {
+    let mut st = conn.prepare(
+        "SELECT id, title, authors, year FROM papers \
+         WHERE cite_key IS NULL OR cite_key = ''",
+    )?;
+    let pending: Vec<(String, String, Option<String>, Option<i64>)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(st);
+
+    let mut assigned = 0;
+    for (id, title, authors, year) in pending {
+        let base = derive_key_parts(&title, authors.as_deref(), year);
+        let mut suffix = 1u32;
+        loop {
+            let candidate = if suffix == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{suffix}")
+            };
+            match conn.execute(
+                "UPDATE papers SET cite_key = ?1 WHERE id = ?2",
+                params![candidate, id],
+            ) {
+                Ok(_) => {
+                    assigned += 1;
+                    break;
+                }
+                // Someone already owns this key — try the next suffix.
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    suffix += 1;
+                    if suffix > 50 {
+                        // Pathological title; fall back to something unique.
+                        let fallback = format!("p{}-{}", &id[..id.len().min(8)], suffix);
+                        conn.execute(
+                            "UPDATE papers SET cite_key = ?1 WHERE id = ?2",
+                            params![fallback, id],
+                        )?;
+                        assigned += 1;
+                        break;
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    Ok(assigned)
+}
+
 pub fn export_bibtex(conn: &Connection, ids: &[String]) -> Result<String> {
+    // A paper imported before keys existed (or through a path that skipped the
+    // assignment) must still export a stable key, so backfill first.
+    ensure_cite_keys(conn)?;
     let papers = if ids.is_empty() {
         list_papers(conn, None, None, None)?
     } else {
@@ -471,7 +546,8 @@ pub fn export_bibtex(conn: &Connection, ids: &[String]) -> Result<String> {
             "journal"
         };
 
-        bib.push_str(&format!("@{kind}{{{},\n", cite_key(p)));
+        let key = p.cite_key.clone().unwrap_or_else(|| derive_cite_key(p));
+        bib.push_str(&format!("@{kind}{{{key},\n"));
         bib.push_str(&format!("  title     = {{{}}},\n", bibtex_escape(&p.title)));
         if let Some(a) = &p.authors {
             let joined = a
@@ -807,6 +883,57 @@ mod tests {
             subject_id: None,
             source_id: None,
         }
+    }
+
+    #[test]
+    fn cite_key_is_assigned_once_and_survives_a_title_edit() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let p = import_paper(&c, &paper("Attention Is All You Need", Some("10.1/a"))).unwrap();
+        let key = p.cite_key.clone().expect("key assigned on import");
+        assert_eq!(key, "Vaswani2017Attention");
+
+        // Correcting the title must not move the key: a \cite{} in a manuscript
+        // resolves against the key, not against the words it was built from.
+        c.execute(
+            "UPDATE papers SET title = 'Attention is all you need (v2)' WHERE id = ?1",
+            [&p.id],
+        )
+        .unwrap();
+        ensure_cite_keys(&c).unwrap();
+        assert_eq!(
+            get_paper(&c, &p.id).unwrap().cite_key.as_deref(),
+            Some(key.as_str())
+        );
+
+        // Idempotent: a second pass has nothing left to assign.
+        assert_eq!(ensure_cite_keys(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn colliding_keys_get_a_suffix() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let a = import_paper(&c, &paper("Attention Is All You Need", Some("10.1/a"))).unwrap();
+        let b = import_paper(&c, &paper("Attention Is All You Need", Some("10.1/b"))).unwrap();
+        assert_eq!(a.cite_key.as_deref(), Some("Vaswani2017Attention"));
+        assert_eq!(b.cite_key.as_deref(), Some("Vaswani2017Attention-2"));
+        assert_eq!(ensure_cite_keys(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn bibtex_export_uses_the_stored_key() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let p = import_paper(&c, &paper("Attention Is All You Need", Some("10.1/a"))).unwrap();
+        c.execute(
+            "UPDATE papers SET title = 'Totally Renamed Paper' WHERE id = ?1",
+            [&p.id],
+        )
+        .unwrap();
+        let bib = export_bibtex(&c, &[]).unwrap();
+        assert!(bib.contains("@article{Vaswani2017Attention,"), "{bib}");
+        assert!(!bib.contains("TotallyRenamed"), "{bib}");
     }
 
     #[test]

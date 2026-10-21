@@ -2203,6 +2203,8 @@ export interface Paper {
   source_id: string | null;
   added_at: number;
   updated_at: number;
+  /** Stable citation key assigned on import (`Bishop2025Attention`). */
+  cite_key: string | null;
   excerpt_count: number;
   open_task_count: number;
 }

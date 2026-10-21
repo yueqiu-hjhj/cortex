@@ -256,6 +256,20 @@ pub fn run() {
                             }
                         }
                     }
+                    // Stable citation keys (0059): a key an agent or a manuscript
+                    // has already quoted must never be re-derived, so assign the
+                    // missing ones once, before anything can cite a paper. The
+                    // MCP server opens this DB read-only and therefore cannot do
+                    // it itself — it falls back to the derived form until then.
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        if let Ok(c) = state.db.lock() {
+                            match crate::papers::ensure_cite_keys(&c) {
+                                Ok(0) => {}
+                                Ok(n) => eprintln!("[papers] assigned {n} citation key(s)"),
+                                Err(e) => eprintln!("[papers] cite_key backfill failed: {e}"),
+                            }
+                        }
+                    }
                     // Resume transcriptions interrupted by a quit/crash: any audio
                     // source still `ingesting` goes back on the background queue.
                     asr::resume_pending(&handle);
