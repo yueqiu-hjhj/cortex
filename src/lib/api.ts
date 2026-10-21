@@ -1991,6 +1991,21 @@ export const listKnowledgeNodes = (subjectId: string) =>
 export const noteKnowledgeResync = (subjectId?: string | null) =>
   invoke<number>("note_knowledge_resync", { subjectId: subjectId ?? null });
 
+/** 综述 → MOC: a map of content for one subject. The model writes the prose;
+ *  `gaps` counts knowledge points the coverage index says are still thin. */
+export interface MocOutcome {
+  note_id: string;
+  title: string;
+  /** Relative path under the vault's `moc/` folder, when a vault is set. */
+  vault_path: string | null;
+  notes: number;
+  gaps: number;
+  /** False when the deterministic composer was used (no model / unusable reply). */
+  used_model: boolean;
+}
+export const mocGenerate = (subjectId: string, title?: string | null) =>
+  invoke<MocOutcome>("moc_generate", { subjectId, title: title ?? null });
+
 export const getKnowledgeGraph = (subjectId: string) =>
   invoke<KnowledgeGraph>("get_knowledge_graph", { subjectId });
 

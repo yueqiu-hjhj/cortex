@@ -359,6 +359,21 @@ pub fn write_note(conn: &Connection, root: &Path, note: &Note) -> Result<String>
     Ok(rel)
 }
 
+/// Write a map of content under `moc/`. Its own folder on purpose: a MOC is
+/// navigation, not prose — Obsidian users expect that folder to be scannable,
+/// and regenerating a map should overwrite the same file rather than pile up
+/// copies. Returns the path relative to the vault root.
+pub fn write_moc(root: &Path, title: &str, body: &str) -> Result<String> {
+    ensure_layout(root)?;
+    let rel = format!("moc/{}.md", slugify(title));
+    let path = abs(root, &rel);
+    if let Some(parent) = path.parent() {
+        io(std::fs::create_dir_all(parent), "建 MOC 目录")?;
+    }
+    io(std::fs::write(&path, body.as_bytes()), "写 MOC 文件")?;
+    Ok(rel)
+}
+
 /// Remove the file backing a note (best effort — the DB row is already gone).
 pub fn remove_note(root: &Path, rel: &str) {
     if rel.trim().is_empty() {

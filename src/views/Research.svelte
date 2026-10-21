@@ -1018,6 +1018,23 @@
     } catch (e) { error = String(e); } finally { busy = null; }
   }
 
+  // 综述 → MOC：这份综述就是地图的主干，缺口由第二步的覆盖率算出来。
+  let mocBusy = $state(false);
+  async function makeMoc() {
+    const id = app.activeSubject?.id;
+    if (!id || mocBusy) return;
+    mocBusy = true;
+    try {
+      const out = await api.mocGenerate(id);
+      say(`MOC 已生成：${out.title} · ${out.notes} 篇笔记 · ${out.gaps} 个缺口${out.vault_path ? ` · ${out.vault_path}` : ""}`);
+      app.openNote(out.note_id);
+    } catch (e) {
+      say(String(e));
+    } finally {
+      mocBusy = false;
+    }
+  }
+
   function say(msg: string) {
     flash = msg;
     setTimeout(() => (flash = null), 2600);
@@ -1291,6 +1308,15 @@
           <div class="faint mono">
             候选 {drResult.candidates} 篇 · 命中源 {drResult.sources_succeeded.join(" / ") || "—"} · {(drResult.took_ms / 1000).toFixed(1)}s
             {#if drResult.note_id} · 综述已存笔记{/if}
+            <button
+              class="btn btn--sm"
+              style="margin-left:8px"
+              disabled={mocBusy}
+              onclick={() => void makeMoc()}
+              title="把这篇综述和本学科的笔记整理成一张主题地图，并列出还没覆盖的缺口"
+            >
+              {mocBusy ? "整理中…" : "生成 MOC"}
+            </button>
           </div>
           {#each drResult.picks as p (p.paper_id + p.title)}
             <div class="prow" style="cursor:default">

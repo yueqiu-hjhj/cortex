@@ -263,6 +263,28 @@
     if (labels.length > MAP_MAX_KIDS) out.push({ label: `…还有 ${labels.length - MAP_MAX_KIDS} 个` });
     return out;
   }
+  // 综述 → MOC：把本学科的笔记整理成一张主题地图。模型写正文，缺口由覆盖率
+  // 算出来（第二步里 note_count 的用处），所以地图会告诉你该补什么。
+  let mocBusy = $state(false);
+  async function makeMoc() {
+    const id = subj?.id;
+    if (!id || mocBusy) return;
+    mocBusy = true;
+    try {
+      const out = await api.mocGenerate(id);
+      app.pushToast({
+        kind: "success",
+        title: out.title,
+        body: `${out.notes} 篇笔记 · ${out.gaps} 个缺口${out.vault_path ? ` · 已写入 ${out.vault_path}` : ""}`,
+      });
+      app.openNote(out.note_id);
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "生成 MOC 失败", body: String(e) });
+    } finally {
+      mocBusy = false;
+    }
+  }
+
   async function openMap() {
     const s = subj;
     if (!s) return;
@@ -362,6 +384,14 @@
         {#if loaded}
           <span class="ov-head-pill">过去 90 天</span>
         {/if}
+        <button
+          class="btn btn--sm"
+          disabled={mocBusy}
+          onclick={() => void makeMoc()}
+          title="把本学科的笔记整理成一张主题地图（MOC）：主线、分支、还缺什么"
+        >
+          <Icon name="doc" size={13} /> {mocBusy ? "整理中…" : "生成 MOC"}
+        </button>
         <button class="btn btn--sm" onclick={openMap} title="把主题、来源、术语表整理成一张知识脑图">
           <Icon name="link" size={13} /> 知识脑图
         </button>

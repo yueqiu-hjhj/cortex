@@ -60,6 +60,7 @@ pub mod vault;
 pub mod proposals;
 pub mod clips;
 pub mod note_knowledge;
+pub mod moc;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
@@ -665,6 +666,8 @@ pub fn run() {
             notes::vault_reindex,
             // notes → knowledge coverage
             note_knowledge::note_knowledge_resync,
+            // 综述 → MOC: a map of content, gaps included
+            moc::moc_generate,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,
