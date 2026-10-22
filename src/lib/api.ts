@@ -140,6 +140,20 @@ export interface ChatAnswer {
   answer_state?: AnswerState;
   /** The provider's raw finishReason, verbatim (MAX_TOKENS vs SAFETY …). */
   finish_reason?: string | null;
+  /** Set when this answer triggered an auto-rollover (0082): the transcript
+   *  had outgrown its budget, was summarized, and continued in a fresh
+   *  thread. The UI shows a non-silent notice. */
+  rolled_over?: RolloverInfo | null;
+}
+/** Details of an auto-rollover that happened while answering (0082). */
+export interface RolloverInfo {
+  /** The archived thread — its history is untouched. */
+  old_thread_id: string;
+  /** The fresh thread this answer (and its question) live in. */
+  new_thread_id: string;
+  /** The inherited summary — also persisted as the new thread's first
+   *  system message, so it survives reloads. */
+  summary: string;
 }
 /** The five terminal states of one generation. */
 export type AnswerState = "completed" | "truncated" | "blocked" | "aborted" | "failed";

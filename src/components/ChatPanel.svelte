@@ -720,6 +720,22 @@
     {/if}
   </div>
 
+  {#if app.chatRollover}
+    <div class="rollover-note" role="status">
+      <span class="rn-ico"><Icon name="chat" size={12} /></span>
+      <span class="rn-body">
+        对话已达上下文预算，已自动总结并<strong>开启新对话</strong>续上——上文摘要已继承，可以直接接着说。
+        <details>
+          <summary>查看摘要</summary>
+          <p>{app.chatRollover.summary}</p>
+        </details>
+      </span>
+      <button class="btn btn--icon btn--sm btn--ghost" title="知道了" onclick={() => (app.chatRollover = null)}>
+        <Icon name="x" size={12} />
+      </button>
+    </div>
+  {/if}
+
   <!-- ── message list ───────────────────────────────────────────────────── -->
   <div class="chat-scroll" bind:this={scrollEl} onscroll={onScroll}>
     {#if !app.activeSubject}
@@ -1161,6 +1177,39 @@
     color: var(--fg-muted);
     font-size: 10px;
     cursor: help;
+  }
+
+  /* Auto-rollover notice (0082): a summary was inherited from the archived
+     thread. Deliberately loud — a rollover the user doesn't notice is a
+     conversation that silently lost its thread. */
+  .rollover-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 8px 12px 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--accent) 8%, var(--surface-2));
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  .rollover-note .rn-ico { color: var(--accent); flex: none; margin-top: 2px; }
+  .rollover-note .rn-body { flex: 1; min-width: 0; line-height: 1.5; }
+  .rollover-note strong { color: var(--fg-bright); }
+  .rollover-note details { margin-top: 4px; }
+  .rollover-note summary {
+    cursor: pointer; font-size: 11px; color: var(--fg-faint);
+    list-style: none;
+  }
+  .rollover-note summary::-webkit-details-marker { display: none; }
+  .rollover-note summary::before { content: "▸ "; }
+  .rollover-note details[open] summary::before { content: "▾ "; }
+  .rollover-note details p {
+    margin: 4px 0 0;
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    white-space: pre-wrap;
   }
 
   .evidence { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }

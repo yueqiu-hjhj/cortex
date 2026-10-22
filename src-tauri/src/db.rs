@@ -88,6 +88,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0077_answer_state.sql"),
     include_str!("../migrations/0080_eval_runs.sql"),
     include_str!("../migrations/0081_chunk_vec_space.sql"),
+    include_str!("../migrations/0082_chat_rollover.sql"),
 ];
 
 /// Shared application state: a single SQLite connection behind a Mutex.

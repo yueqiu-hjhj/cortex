@@ -2079,6 +2079,35 @@ fn moodle_grades_for_subject(c: &Connection, subject_id: &str) -> String {
     out
 }
 
+/// Summarize a transcript for rollover continuity (0082). A failed summary must
+/// never cost the user their answer, so this degrades to a mechanical one
+/// (record count + the most recent question) that is honest about being
+/// mechanical rather than pretending to be a summary.
+fn summarize_for_rollover(model: &dyn crate::llm::Llm, transcript: &str) -> String {
+    let sys = "Summarize this study conversation so a fresh session can continue it seamlessly. \
+        Keep: the topic(s) discussed, key conclusions and decisions (names, numbers, formulas \
+        matter), and any open questions or next steps. Be specific and concrete. \
+        80-200 words, plain prose, no headings, no markdown. \
+        Reply in the conversation's own language (Chinese if it is Chinese).";
+    let user = format!("CONVERSATION:\n{transcript}");
+    match model.complete(sys, &user) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            let last_user = transcript
+                .lines()
+                .rev()
+                .find(|l| l.starts_with("用户:"))
+                .map(|l| l.trim_start_matches("用户:").trim())
+                .unwrap_or("（无）");
+            let records = transcript.lines().filter(|l| !l.trim().is_empty()).count();
+            format!(
+                "（自动摘要不可用，以下为机械摘要）本对话共约 {records} 条记录；最近的问题是：「{}」",
+                last_user.chars().take(120).collect::<String>()
+            )
+        }
+    }
+}
+
 /// Scoped retrieval-augmented chat. Embeds the query, retrieves top-k chunks
 /// (optionally narrowed to a single source), and asks the configured LLM to
 /// answer from that context with inline ⟦source · loc⟧ citations.
@@ -2114,6 +2143,30 @@ pub async fn chat_answer(
     // Require a real model before doing any work.
     let mut model = llm::from_spec_or_any(&chat_spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     { let c = state.db.lock().unwrap(); apply_budget(&mut model, &c, "chat"); }
+
+    // Auto-rollover (0082): a transcript past its context budget is summarized
+    // and continued in a fresh thread BEFORE this turn is answered, so the
+    // answer — and the question the panel persisted moments ago — land in the
+    // new thread together with the inherited summary. Never silent: the summary
+    // is persisted as the new thread's first system message (visible in the
+    // transcript) and returned for the UI banner.
+    let mut rolled_over: Option<crate::models::RolloverInfo> = None;
+    {
+        let c = state.db.lock().unwrap();
+        let tid = repo::current_thread(&c, &subject_id)?;
+        if repo::rollover_due(&c, &tid)? {
+            let transcript = repo::rollover_transcript(&c, &tid, 8000)?;
+            drop(c); // never hold the DB lock across an LLM call
+            let summary = summarize_for_rollover(model.as_ref(), &transcript);
+            let c = state.db.lock().unwrap();
+            let new_tid = repo::rollover_thread(&c, &subject_id, &tid, &summary)?;
+            rolled_over = Some(crate::models::RolloverInfo {
+                old_thread_id: tid,
+                new_thread_id: new_tid,
+                summary,
+            });
+        }
+    }
 
     // Scope: source-level chats are restricted to a single source's chunks; the
     // keyword path applies this in SQL, the vector path filters its results.
@@ -2310,6 +2363,20 @@ pub async fn chat_answer(
             .flatten()
             .unwrap_or_default(),
     ));
+    // A rolled-over thread carries its predecessor's summary as a system
+    // message; feeding it to the model is what makes the rollover inherit
+    // context instead of resetting — "刚才说的那个" must still resolve across
+    // the boundary. It is context, not a source: never citable.
+    let inherited = repo::active_rollover_summary(&state.db.lock().unwrap(), &subject_id)
+        .ok()
+        .flatten();
+    if let Some(summary) = &inherited {
+        system.push_str(&format!(
+            "\n\nEARLIER CONVERSATION SUMMARY (carried over from the previous thread — context for \
+             resolving references like \"刚才 / that / 前面提到的\"; it is NOT a source and must \
+             never be cited):\n{summary}"
+        ));
+    }
     if web_on {
         // Override the strict sources-only rule above: web mode permits using the
         // WEB RESULTS block and light general knowledge, cited as ⟦web · host⟧.
@@ -2416,6 +2483,7 @@ pub async fn chat_answer(
         retrieval,
         answer_state,
         finish_reason: reply_finish,
+        rolled_over,
     })
     })
     .await

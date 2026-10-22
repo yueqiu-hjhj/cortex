@@ -1721,6 +1721,149 @@ pub fn set_active_thread(conn: &Connection, subject_id: &str, thread_id: &str) -
     set_setting(conn, &active_thread_key(subject_id), thread_id)
 }
 
+/// Default rollover budget (0082): estimated transcript tokens after which a
+/// conversation is summarized and continued in a fresh thread. ~12k tokens is
+/// roughly 60 mixed-language turns — long enough that "刚才说的那个" has stopped
+/// referring to anything the model can see.
+pub const DEFAULT_ROLLOVER_TOKENS: i64 = 12_000;
+
+/// Whether the thread has outgrown the rollover budget. Setting
+/// `chat_rollover_tokens` overrides the budget; "0" disables rollover entirely.
+pub fn rollover_due(conn: &Connection, thread_id: &str) -> Result<bool> {
+    let budget = match get_setting(conn, "chat_rollover_tokens")?.as_deref() {
+        Some(v) => v.trim().parse().unwrap_or(DEFAULT_ROLLOVER_TOKENS),
+        None => DEFAULT_ROLLOVER_TOKENS,
+    };
+    if budget <= 0 {
+        return Ok(false);
+    }
+    Ok(thread_token_total(conn, thread_id)? >= budget)
+}
+
+/// Estimated tokens a thread's transcript costs — the rollover watermark. Same
+/// CJK-aware estimate as `tokens` accounting, because the budget being guarded
+/// is the model's context, not the message count.
+pub fn thread_token_total(conn: &Connection, thread_id: &str) -> Result<i64> {
+    let mut stmt = conn.prepare("SELECT text FROM chat_messages WHERE thread_id=?1")?;
+    let rows = stmt.query_map(params![thread_id], |r| r.get::<_, String>(0))?;
+    let mut total = 0i64;
+    for t in rows {
+        total += crate::tokens::estimate(&t?);
+    }
+    Ok(total)
+}
+
+/// The transcript window fed to the rollover summarizer: a head+tail slice
+/// (recent turns dominate what "刚才/that" resolves to, the opening frames the
+/// topic), with an inherited summary system message included so summaries
+/// chain instead of resetting. Char-safe; never splits a character.
+pub fn rollover_transcript(conn: &Connection, thread_id: &str, cap_chars: usize) -> Result<String> {
+    let mut stmt = conn.prepare(
+        "SELECT role, text FROM chat_messages WHERE thread_id=?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![thread_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let rows: Vec<(String, String)> = rows.collect::<rusqlite::Result<_>>()?;
+    let lines: Vec<String> = rows
+        .into_iter()
+        .map(|(role, text)| {
+            let label = match role.as_str() {
+                "user" => "用户",
+                "assistant" => "助手",
+                _ => "系统",
+            };
+            format!("{label}: {}", text.chars().take(400).collect::<String>())
+        })
+        .collect();
+    Ok(window(&lines.join("\n"), cap_chars))
+}
+
+/// Head+tail window of `s` within `cap` chars, joined by an elision marker.
+fn window(s: &str, cap: usize) -> String {
+    let total = s.chars().count();
+    if total <= cap {
+        return s.to_string();
+    }
+    let head = cap / 4;
+    let tail = cap - head;
+    let h: String = s.chars().take(head).collect();
+    let t: String = s.chars().skip(total - tail).collect();
+    format!("{h}\n……（中间省略）……\n{t}")
+}
+
+/// Roll the conversation over (0082): the old thread keeps its full history
+/// (nothing is deleted), a fresh thread is created with `rolled_from` lineage,
+/// `summary` is persisted as its first system message, this turn's question is
+/// carried over so the Q&A pair stays intact, and the new thread becomes
+/// active. Returns the new thread id.
+pub fn rollover_thread(
+    conn: &Connection,
+    subject_id: &str,
+    old_thread_id: &str,
+    summary: &str,
+) -> Result<String> {
+    let id = new_id();
+    let ts = now_ms();
+    conn.execute(
+        "INSERT INTO chat_threads (id, subject_id, scope, rolled_from, created_at, updated_at)
+         VALUES (?1, ?2, 'subject', ?3, ?4, ?4)",
+        params![id, subject_id, old_thread_id, ts],
+    )?;
+    // Carry this turn's question over — but only when it is genuinely the
+    // newest row (the panel persists it immediately before asking). If the
+    // newest row is an assistant reply, the newest question belongs to an
+    // older turn (or a concurrent rollover already moved it) and must not be
+    // stolen into this thread. `rowid DESC` breaks created_at ties: a fast
+    // test (or two turns inside one millisecond) would otherwise let the
+    // subquery pick an arbitrary row among equals.
+    conn.execute(
+        "UPDATE chat_messages SET thread_id=?1
+         WHERE id = (SELECT id FROM chat_messages WHERE thread_id=?2
+                     ORDER BY created_at DESC, rowid DESC LIMIT 1)
+           AND role='user'",
+        params![id, old_thread_id],
+    )?;
+    // The summary is the thread's preamble — it must sort ahead of the carried
+    // question (which keeps its original, older timestamp), so stamp it just
+    // before the thread's oldest row.
+    let oldest: Option<i64> = conn.query_row(
+        "SELECT MIN(created_at) FROM chat_messages WHERE thread_id=?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    let summary_ts = oldest.map_or(ts, |t| t.saturating_sub(1));
+    conn.execute(
+        "INSERT INTO chat_messages (id, thread_id, role, text, created_at)
+         VALUES (?1, ?2, 'system', ?3, ?4)",
+        params![
+            new_id(),
+            id,
+            format!("（自动续接）以下是此前对话的摘要，仅用于衔接上下文：\n{summary}"),
+            summary_ts
+        ],
+    )?;
+    set_setting(conn, &active_thread_key(subject_id), &id)?;
+    Ok(id)
+}
+
+/// The active thread's inherited rollover summary, if it has one. chat_answer
+/// prepends it to the system prompt — that is what makes a rollover inherit
+/// context instead of resetting the conversation.
+pub fn active_rollover_summary(conn: &Connection, subject_id: &str) -> Result<Option<String>> {
+    let tid = current_thread(conn, subject_id)?;
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT text FROM chat_messages
+             WHERE thread_id=?1 AND role='system' AND text LIKE '（自动续接）%'
+             ORDER BY created_at DESC LIMIT 1",
+            params![tid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(row)
+}
+
 /// Append a message to the subject's active thread and bump its updated_at.
 pub fn add_chat_message(
     conn: &Connection,
@@ -5123,6 +5266,124 @@ mod tests {
         assert_eq!(msgs[0].answer_state.as_deref(), Some("truncated"));
         assert_eq!(msgs[1].answer_state.as_deref(), Some("completed"));
         assert!(msgs[2].answer_state.is_none(), "old rows have no state");
+    }
+
+    /// 0082: a rollover archives nothing (the old thread keeps its full
+    /// history), the fresh thread inherits the summary as its first system
+    /// message, and this turn's question travels with the answer — backrefs
+    /// pairs questions to answers within a thread, so a split pair would read
+    /// as an unanswered question.
+    #[test]
+    fn rollover_archives_nothing_and_carries_the_question_over() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        add_chat_message(&c, &sid, "assistant", "特征值是……").unwrap();
+        let old = current_thread(&c, &sid).unwrap();
+        // The panel persists the question BEFORE asking — simulate that.
+        add_chat_message(&c, &sid, "user", "那特征向量呢？").unwrap();
+
+        let new = rollover_thread(&c, &sid, &old, "讨论了特征值与特征向量。").unwrap();
+        assert_ne!(new, old);
+        assert_eq!(current_thread(&c, &sid).unwrap(), new, "the new thread is active");
+
+        // The new thread: inherited summary first, then the carried question.
+        let msgs = list_chat_messages(&c, &sid).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert!(msgs[0].text.contains("讨论了特征值与特征向量。"));
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[1].text, "那特征向量呢？");
+
+        // The old thread kept its history — everything except the question
+        // that travelled with the answer.
+        let old_count: i64 = c
+            .query_row(
+                "SELECT count(*) FROM chat_messages WHERE thread_id=?1",
+                rusqlite::params![old],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 2);
+        let rolled_from: Option<String> = c
+            .query_row(
+                "SELECT rolled_from FROM chat_threads WHERE id=?1",
+                rusqlite::params![new],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rolled_from.as_deref(), Some(old.as_str()), "lineage is recorded");
+    }
+
+    /// Only a question that is the thread's NEWEST row travels with the
+    /// rollover. When the newest row is an assistant reply, the newest user
+    /// question belongs to an older turn (or a concurrent rollover already
+    /// moved it) — stealing it would orphan a question in the archive.
+    #[test]
+    fn rollover_never_steals_an_older_question() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "第一个问题").unwrap();
+        add_chat_message(&c, &sid, "assistant", "回答").unwrap();
+        let old = current_thread(&c, &sid).unwrap();
+
+        let new = rollover_thread(&c, &sid, &old, "摘要").unwrap();
+        let carried: i64 = c
+            .query_row(
+                "SELECT count(*) FROM chat_messages WHERE thread_id=?1 AND role='user'",
+                rusqlite::params![new],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(carried, 0, "the older question stays archived");
+    }
+
+    /// The watermark honours the budget setting; "0" disables rollover.
+    #[test]
+    fn rollover_due_honors_the_budget_and_the_off_switch() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        assert!(!rollover_due(&c, &tid).unwrap(), "a short thread is nowhere near the default budget");
+        set_setting(&c, "chat_rollover_tokens", "1").unwrap();
+        assert!(rollover_due(&c, &tid).unwrap());
+        set_setting(&c, "chat_rollover_tokens", "0").unwrap();
+        assert!(!rollover_due(&c, &tid).unwrap(), "0 disables rollover entirely");
+    }
+
+    /// The summarizer input is a head+tail window: the tail is what "刚才"
+    /// resolves to, the head frames the topic, and the middle is elided.
+    #[test]
+    fn rollover_transcript_windows_head_and_tail() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", &"开头话题".repeat(30)).unwrap();
+        add_chat_message(&c, &sid, "assistant", "结尾答案").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        let t = rollover_transcript(&c, &tid, 100).unwrap();
+        assert!(t.contains("……（中间省略）……"), "the middle is elided: {t}");
+        assert!(t.contains("结尾答案"), "the tail survives — it is what \"刚才\" refers to");
+        assert!(t.chars().count() < 130, "the window is bounded: {}", t.chars().count());
+    }
+
+    /// What the next turn actually sees after a rollover: the inherited
+    /// summary — and nothing from threads that never rolled.
+    #[test]
+    fn the_inherited_summary_is_what_the_next_turn_sees() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        assert!(active_rollover_summary(&c, &sid).unwrap().is_none(), "a fresh thread inherits nothing");
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        let old = current_thread(&c, &sid).unwrap();
+        rollover_thread(&c, &sid, &old, "讨论了特征值。").unwrap();
+        let seen = active_rollover_summary(&c, &sid).unwrap();
+        assert!(seen.as_deref().is_some_and(|s| s.contains("讨论了特征值。")));
     }
 
     #[test]

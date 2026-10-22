@@ -573,6 +573,10 @@ class AppStore {
   chatMsgNonce = $state(0); // bump → open panels reload persisted history
   chatSuggestions = $state<string[]>([]); // next-step chips from the last reply
   chatLastImages = $state<api.WebImage[]>([]); // web-mode images from the last reply
+  // Auto-rollover notice (0082): set when an answer outgrew the transcript
+  // budget and the conversation continued in a fresh thread. Never silent —
+  // the panel shows it as a dismissible banner until the next send.
+  chatRollover = $state<api.RolloverInfo | null>(null);
   // Jump target (引用回流 / 问题索引): a message's created_at. The open chat
   // panel reloads history, scrolls to that bubble and flashes it, then clears.
   chatJumpTo = $state<number | null>(null);
@@ -638,6 +642,7 @@ class AppStore {
   }): Promise<void> {
     const { subjectId, level, query, sourceId, sourceIds, web } = params;
     this.#chatCancelled = false;
+    this.chatRollover = null;
     this.chatBusy = true;
     this.chatGenSubject = subjectId;
     this.chatStreaming = "";
@@ -645,6 +650,10 @@ class AppStore {
     try {
       const result = await api.chatAnswer(subjectId, level, query, sourceId, sourceIds, web);
       if (this.#chatCancelled) return;
+      // Auto-rollover (0082): the answer above already triggered it, the new
+      // thread is active, and the inherited summary is persisted as its first
+      // system message — the reload below will show it. Surface the notice.
+      if (result.rolled_over) this.chatRollover = result.rolled_over;
       const imgs = result.images ?? [];
       const citations = result.citations ?? [];
       // Zero-hit abstention (backend-verified): retrieval found nothing and web

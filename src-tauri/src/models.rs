@@ -200,6 +200,24 @@ pub struct ChatAnswer {
     /// (MAX_TOKENS vs SAFETY vs length are different problems).
     #[serde(default)]
     pub finish_reason: Option<String>,
+    /// Set when this answer triggered an auto-rollover (0082): the transcript
+    /// had outgrown its budget, was summarized, and continued in a fresh
+    /// thread. The UI shows a non-silent notice; the summary itself is
+    /// persisted as the new thread's first system message.
+    #[serde(default)]
+    pub rolled_over: Option<RolloverInfo>,
+}
+
+/// Details of an auto-rollover that happened while answering (0082).
+#[derive(Debug, Clone, Serialize)]
+pub struct RolloverInfo {
+    /// The archived thread (its history is untouched).
+    pub old_thread_id: String,
+    /// The fresh thread this answer — and the question it answers — live in.
+    pub new_thread_id: String,
+    /// The inherited summary, also persisted as the new thread's first
+    /// system message so it survives reloads.
+    pub summary: String,
 }
 
 /// A persisted chat message (belongs to one conversation thread).
