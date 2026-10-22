@@ -494,6 +494,125 @@ pub fn seed_bundled_skills(conn: &Connection) -> Result<usize> {
     Ok(seeded)
 }
 
+// ---- 预置角色库：角色 = 技能 + 提示词 + 工具集 + 权限等级 ----------------------
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetRole {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub system_prompt: String,
+    /// Bundled skill names referenced by the role (enabled on instantiate).
+    pub skills: Vec<String>,
+    pub tools: Vec<String>,
+    pub tool_tier: String,
+}
+
+/// Ready-to-instantiate roles. Each pairs one bundled skill with a fitting
+/// prompt and a minimal toolset — a role is a starting point, not a cage:
+/// the instantiated agent is a normal editable row.
+pub fn preset_roles() -> Vec<PresetRole> {
+    let read_tools = |names: &[&str]| names.iter().map(|s| s.to_string()).collect();
+    vec![
+        PresetRole {
+            id: "review-scholar".into(),
+            name: "综述学者".into(),
+            description: "文献综述写作：检索策略 → 主题地图 → 观点对比 → 缺口骨架。绑「文献综述骨架」技能。".into(),
+            system_prompt: "你是科研综述助手。先盘点用户库里已有的相关来源（用检索工具），再按「文献综述骨架」技能的结构产出综述骨架；库里没有的文献用 [作者 年份] 占位并标注待核实。回答用中文。".into(),
+            skills: vec!["文献综述骨架".into()],
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_source", "search_notes", "get_knowledge_tree"]),
+            tool_tier: "read".into(),
+        },
+        PresetRole {
+            id: "repro-engineer".into(),
+            name: "复现工程师".into(),
+            description: "从论文方法部分生成逐步复现清单：环境/数据/超参/验证/坑。绑「实验复现清单」技能。".into(),
+            system_prompt: "你是实验复现工程师。先用 get_source 读取用户指定的论文来源，再按「实验复现清单」技能输出复现清单；论文未给的细节一律标「推测」。回答用中文。".into(),
+            skills: vec!["实验复现清单".into()],
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_source", "get_knowledge_tree"]),
+            tool_tier: "read".into(),
+        },
+        PresetRole {
+            id: "chapter-writer".into(),
+            name: "章节写手".into(),
+            description: "学术语气章节草稿：段落规划 → 逐段起草 → 小结衔接。绑「章节草稿起草」技能。".into(),
+            system_prompt: "你是学术写作助手。按「章节草稿起草」技能起草章节；引用只允许用户提供的文献或用检索工具在库里查到的内容，查不到支撑的句子标 ⚠。回答用中文。".into(),
+            skills: vec!["章节草稿起草".into()],
+            tools: read_tools(&["list_notebooks", "search_notebook", "search_notes", "get_source"]),
+            tool_tier: "read".into(),
+        },
+        PresetRole {
+            id: "math-tutor".into(),
+            name: "推导陪练".into(),
+            description: "数学逐步推导：每步标依据，卡住明说。绑「公式推导逐步走」技能。".into(),
+            system_prompt: "你是数学推导陪练。按「公式推导逐步走」技能逐步推导；用户库里的讲义可以用检索工具核对记号与定理编号。回答用中文。".into(),
+            skills: vec!["公式推导逐步走".into()],
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_knowledge_tree"]),
+            tool_tier: "read".into(),
+        },
+        PresetRole {
+            id: "kb-butler".into(),
+            name: "知识库管家".into(),
+            description: "通用问答：先查用户库再回答，引用来源，查不到就明说。".into(),
+            system_prompt: "你是学习库管家。回答前先用检索工具查用户的知识库与笔记，答案引用来源（文件名+位置）；库里没有的内容要明说「库中未找到」。回答用中文。".into(),
+            skills: vec![],
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_source", "search_notes", "get_knowledge_tree"]),
+            tool_tier: "read".into(),
+        },
+        PresetRole {
+            id: "web-researcher".into(),
+            name: "外联研究员".into(),
+            description: "授予 network 权限：可调用你在 MCP 注册的外部工具（联网检索/记忆库等）。创建后把要用的 MCP 工具加进它的白名单。".into(),
+            system_prompt: "你是外联研究员。优先使用用户库内的检索工具；需要外部信息时调用已授权的 MCP 工具，回答注明信息来自库内还是外部。回答用中文。".into(),
+            skills: vec![],
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_source"]),
+            tool_tier: "network".into(),
+        },
+    ]
+}
+
+#[tauri::command]
+pub fn roles_list() -> Result<Vec<PresetRole>> {
+    Ok(preset_roles())
+}
+
+/// Instantiate a preset as a normal editable agent. Bundled skills referenced
+/// by the role get enabled (seeded disabled by default — opting in is the
+/// point of choosing a role that names one).
+#[tauri::command]
+pub fn roles_instantiate(
+    state: tauri::State<'_, crate::AppState>,
+    preset_id: String,
+    name: Option<String>,
+) -> Result<Agent> {
+    let preset = preset_roles()
+        .into_iter()
+        .find(|r| r.id == preset_id)
+        .ok_or_else(|| Error::Other(format!("没有 id 为 {preset_id} 的预置角色")))?;
+    let c = state.db.lock().unwrap();
+    for skill in &preset.skills {
+        c.execute(
+            "UPDATE agent_skills SET enabled=1 WHERE user_id=?1 AND name=?2",
+            params![DEFAULT_USER, skill],
+        )?;
+    }
+    upsert_agent(
+        &c,
+        DEFAULT_USER,
+        None,
+        name.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&preset.name),
+        Some(&preset.description),
+        &preset.system_prompt,
+        &preset.skills,
+        &preset.tools,
+        None,
+        0.3,
+        8,
+        true,
+        &preset.tool_tier,
+    )
+}
+
 pub fn list_tools(conn: &Connection, user_id: &str) -> Result<Vec<Tool>> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, name, description, kind, schema_json, enabled, built_in, created_at
@@ -571,6 +690,34 @@ fn parse_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preset_roles_are_consistent() {
+        let roles = preset_roles();
+        assert!(roles.len() >= 5);
+        let mut ids: Vec<&str> = roles.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), roles.len(), "preset ids must be unique");
+        let bundled: std::collections::HashSet<&str> =
+            BUNDLED_SKILLS.iter().map(|(n, _, _)| *n).collect();
+        for r in &roles {
+            assert!(
+                TOOL_TIERS.contains(&r.tool_tier.as_str()),
+                "{} has invalid tier {}",
+                r.id,
+                r.tool_tier
+            );
+            assert!(!r.system_prompt.trim().is_empty());
+            for sk in &r.skills {
+                assert!(bundled.contains(sk.as_str()), "{} references unknown skill {}", r.id, sk);
+            }
+        }
+        // every role only whitelists built-in (non-mcp) tools
+        for r in &roles {
+            assert!(r.tools.iter().all(|t| !t.starts_with("mcp__")), "{} has mcp tool", r.id);
+        }
+    }
+
     #[test]
     fn agent_run_isolated_by_user() {
         let st = crate::db::AppState::in_memory().unwrap();

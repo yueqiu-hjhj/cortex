@@ -3719,3 +3719,21 @@ export interface ClozeResult {
 /** Generate occlusion cards from a source; saved as a flashcards material. */
 export const clozeGenerate = (sourceId: string, count?: number) =>
   invoke<ClozeResult>("cloze_generate", { sourceId, count: count ?? null });
+
+// ---- preset agent roles (预置角色库) ------------------------------------------
+
+export interface PresetRole {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  skills: string[];
+  tools: string[];
+  tool_tier: string;
+}
+
+export const rolesList = () => invoke<PresetRole[]>("roles_list");
+
+/** Instantiate a preset as a normal editable agent (skills auto-enabled). */
+export const rolesInstantiate = (presetId: string, name?: string) =>
+  invoke<Agent>("roles_instantiate", { presetId, name: name ?? null });

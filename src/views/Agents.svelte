@@ -28,6 +28,28 @@
     } catch (e) { app.pushToast({ kind: "error", title: "智能体加载失败", body: String(e) }); }
     finally { loaded = true; }
     void loadKbs();
+    void loadPresets();
+  }
+
+  // ---- 预置角色库 ----
+  let presets = $state<api.PresetRole[]>([]);
+  let presetBusy = $state("");
+
+  async function loadPresets() {
+    try { presets = await api.rolesList(); }
+    catch { /* 角色列表加载失败不阻塞本页 */ }
+  }
+
+  async function instantiate(p: api.PresetRole) {
+    if (presetBusy) return;
+    presetBusy = p.id;
+    try {
+      const a = await api.rolesInstantiate(p.id);
+      app.pushToast({ kind: "success", title: `已创建「${a.name}」`, body: "在下方智能体列表里可以继续改提示词、白名单与权限" });
+      await load();
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "创建失败", body: String(e) });
+    } finally { presetBusy = ""; }
   }
 
   // ---- 外接知识库（KBP 式外挂大脑：Dify / FastGPT / MCP）----
@@ -396,6 +418,26 @@
   </div>
 
   <div class="card">
+    <h3>预置角色</h3>
+    <p class="mut" style="margin:0">角色 = 技能 + 提示词 + 工具集 + 权限等级。一键创建后就是普通智能体，随便改。</p>
+    <div class="preset-grid">
+      {#each presets as p (p.id)}
+        <div class="preset">
+          <div>
+            <strong>{p.name}</strong>
+            <span class="tag">{p.tool_tier}</span>
+            {#if p.skills.length}<span class="tag">技能 · {p.skills[0]}</span>{/if}
+            <div class="mut preset-desc">{p.description}</div>
+          </div>
+          <button class="btn primary" disabled={presetBusy === p.id} onclick={() => void instantiate(p)}>
+            {presetBusy === p.id ? "创建中…" : "创建"}
+          </button>
+        </div>
+      {/each}
+    </div>
+  </div>
+
+  <div class="card">
     <h3>外接知识库</h3>
     <p class="mut" style="margin:0">
       把 Dify / FastGPT 的知识库或任意 MCP 工具接成「外挂大脑」。每个库写一句
@@ -534,4 +576,10 @@
   .kb-src { font-size: 10.5px; }
   .kb-content { font-size: 12px; white-space: pre-wrap; max-height: 130px; overflow-y: auto; }
   .tag--off { opacity: 0.5; }
+  .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .preset {
+    display: flex; flex-direction: column; justify-content: space-between; gap: 8px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  }
+  .preset-desc { margin-top: 4px; font-size: 11px; line-height: 1.5; }
 </style>

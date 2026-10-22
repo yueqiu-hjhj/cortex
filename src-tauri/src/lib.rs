@@ -752,6 +752,8 @@ pub fn run() {
             kb::kb_search_all,
             kb::kb_context,
             cloze::cloze_generate,
+            agents::roles_list,
+            agents::roles_instantiate,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,
