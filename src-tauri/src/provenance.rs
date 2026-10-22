@@ -394,7 +394,7 @@ mod tests {
         // Both parsed sources mention it.
         for s in &srcs[..2] {
             repo::finalize_source(&c, s, "ready", None, None, None).unwrap();
-            repo::insert_chunk(&c, s, &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8]).unwrap();
+            repo::insert_chunk(&c, s, &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8], "").unwrap();
         }
         let b = bipartite(&c, &sid).unwrap();
         let p = b.points.iter().find(|p| p.id == bbr).unwrap();
@@ -415,7 +415,7 @@ mod tests {
         repo::sync_knowledge_graph(&c, &sid).unwrap();
         let bbr = concept(&c, &sid, "bbr", "BBR");
         repo::finalize_source(&c, &srcs[0], "ready", None, None, None).unwrap();
-        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8]).unwrap();
+        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8], "").unwrap();
         let b = bipartite(&c, &sid).unwrap();
         let p = b.points.iter().find(|p| p.id == bbr).unwrap();
         assert_eq!(p.verdict, "single", "one source is a 孤证, not consensus: {p:?}");
@@ -463,7 +463,7 @@ mod tests {
         repo::sync_knowledge_graph(&c, &sid).unwrap();
         let bbr = concept(&c, &sid, "bbr", "BBR");
         // Chunks exist but the source never finished: "draft" is not evidence.
-        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8]).unwrap();
+        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 是谷歌的拥塞控制算法。", None, 2, &[0u8; 8], "").unwrap();
         let b = bipartite(&c, &sid).unwrap();
         let p = b.points.iter().find(|p| p.id == bbr).unwrap();
         assert_eq!(p.verdict, "orphan", "a draft source must not ground anything: {p:?}");
@@ -504,7 +504,7 @@ mod tests {
         let bbr = concept(&c, &sid, "bbr", "BBR");
         let vegas = concept(&c, &sid, "vegas", "Vegas");
         repo::finalize_source(&c, &srcs[0], "ready", None, None, None).unwrap();
-        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 与 Vegas 都是拥塞控制算法。", None, 2, &[0u8; 8]).unwrap();
+        repo::insert_chunk(&c, &srcs[0], &sid, None, 0, "BBR 与 Vegas 都是拥塞控制算法。", None, 2, &[0u8; 8], "").unwrap();
         let b = bipartite(&c, &sid).unwrap();
         let m = b.materials.iter().find(|m| m.id == srcs[0]).unwrap();
         assert_eq!(m.supports, 2, "one source backing two points: {m:?}");

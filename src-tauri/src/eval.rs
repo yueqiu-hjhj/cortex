@@ -334,6 +334,9 @@ pub const MODES: [&str; 4] = ["vector", "rerank", "hybrid", "hybrid+rerank"];
 /// layer, and makes the scoring path testable without an embedder.
 pub struct Seed {
     pub sources: Vec<(String, Vec<(String, Vec<f32>)>)>,
+    /// Embedding space of the embedder that produced the vectors (0081). Scored
+    /// queries must live in the same space or retrieval silently sees nothing.
+    pub space: String,
 }
 
 /// Embed the corpus. Deterministic given the same embedder.
@@ -344,7 +347,10 @@ pub fn embed_corpus(embedder: &dyn Embedder) -> Result<Seed> {
         let vecs = embedder.embed(&texts)?;
         sources.push((name.to_string(), texts.into_iter().zip(vecs).collect()));
     }
-    Ok(Seed { sources })
+    Ok(Seed {
+        sources,
+        space: embedder.space().to_string(),
+    })
 }
 
 /// Write the corpus into the DB (replacing any previous eval rows).
@@ -378,6 +384,7 @@ pub fn seed(conn: &Connection, seed: &Seed) -> Result<()> {
                 None,
                 vec.len() as i64,
                 &crate::vector::f32s_to_blob(vec),
+                &seed.space,
             )?;
         }
         let joined = chunks
@@ -397,6 +404,8 @@ pub struct EvalQuery {
     pub vec: Vec<f32>,
     /// Stratum: factual / conceptual / unanswerable (synthetic) or real.
     pub kind: String,
+    /// Embedding space of the embedder that produced `vec` (0081).
+    pub space: String,
 }
 
 /// Embed every eval query in one call -- again so the slow part happens in the
@@ -407,10 +416,17 @@ pub fn embed_queries(embedder: &dyn Embedder) -> Result<Vec<EvalQuery>> {
         .map(|(q, e, k)| (q.to_string(), e.to_string(), k.to_string()))
         .collect();
     let vecs = embedder.embed(&queries.iter().map(|(q, _, _)| q.clone()).collect::<Vec<_>>())?;
+    let space = embedder.space().to_string();
     Ok(queries
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect, kind), vec)| EvalQuery { query, expect, vec, kind })
+        .map(|((query, expect, kind), vec)| EvalQuery {
+            query,
+            expect,
+            vec,
+            kind,
+            space: space.clone(),
+        })
         .collect())
 }
 
@@ -431,7 +447,10 @@ pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> 
     let mut rr_sum = 0.0f32;
 
     for q in queries {
-        let mut hits = repo::search_chunks(conn, None, &q.vec, k * 4)?;
+        // Search in the query's own embedding space: after a model switch the
+        // eval corpus is seeded with the new embedder, and mixing spaces would
+        // score garbage against garbage (or nothing at all).
+        let mut hits = repo::search_chunks_in_space(conn, None, &q.vec, k * 4, &q.space)?;
         if mode.starts_with("hybrid") {
             let keyword = repo::keyword_search_chunks(conn, None, None, &q.query, k * 4)?;
             hits = repo::rrf_merge(&[hits, keyword], k * 4);
@@ -744,10 +763,19 @@ pub fn real_queries(
     }
     let queries: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
     let vecs = embedder.embed(&queries)?;
+    // Query space = the embedder used right now, mirroring chat retrieval: after
+    // a model switch without re-ingest, real eval sees the same rows chat sees.
+    let space = embedder.space().to_string();
     Ok(candidates
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| EvalQuery { query, expect, vec, kind: "real".to_string() })
+        .map(|((query, expect), vec)| EvalQuery {
+            query,
+            expect,
+            vec,
+            kind: "real".to_string(),
+            space: space.clone(),
+        })
         .collect())
 }
 
@@ -957,7 +985,7 @@ mod tests {
         {
             let e = StubEmbedder;
             let v = e.embed(&[text.to_string()]).unwrap().pop().unwrap();
-            repo::insert_chunk(&c, &src1, &s1, None, i as i64, text, None, v.len() as i64, &crate::vector::f32s_to_blob(&v)).unwrap();
+            repo::insert_chunk(&c, &src1, &s1, None, i as i64, text, None, v.len() as i64, &crate::vector::f32s_to_blob(&v), "").unwrap();
         }
         let qs = real_queries(&c, None, &StubEmbedder).unwrap();
         assert_eq!(qs.len(), 2);

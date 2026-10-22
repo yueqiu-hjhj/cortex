@@ -983,7 +983,7 @@ mod pipeline_tests {
         for (i, (chunk, v)) in chunks.iter().zip(vecs.iter()).enumerate() {
             repo::insert_chunk(
                 &c, &srcid, &sid, Some(&tid), i as i64, chunk, None,
-                v.len() as i64, &f32s_to_blob(v),
+                v.len() as i64, &f32s_to_blob(v), &emb.space(),
             )
             .unwrap();
         }
@@ -992,7 +992,7 @@ mod pipeline_tests {
 
         // query retrieval: a related query should surface this source as top hit
         let qvec = &emb.embed(&["memoization overlapping subproblems".into()]).unwrap()[0];
-        let hits = repo::search_chunks(&c, Some(&sid), qvec, 5).unwrap();
+        let hits = repo::search_chunks_in_space(&c, Some(&sid), qvec, 5, &emb.space()).unwrap();
         assert!(!hits.is_empty(), "search returned hits");
         assert_eq!(hits[0].source_id, srcid, "top hit is the ingested source");
         assert!(hits[0].score > 0.0, "positive similarity");

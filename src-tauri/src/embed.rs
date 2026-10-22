@@ -12,6 +12,19 @@ pub trait Embedder: Send + Sync {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
     fn dim(&self) -> usize;
     fn name(&self) -> &'static str;
+    /// Identity of the vector SPACE this embedder produces. Two vectors are
+    /// comparable only inside one space: switching models — or a model's
+    /// revision — makes previously stored vectors meaningless, and comparing
+    /// them anyway is a silent correctness bug, because cosine scores still
+    /// look plausible. KnowNote stores one vector table per space for exactly
+    /// this reason; Cortex stamps every chunk with its space instead (0081).
+    ///
+    /// Default is name + dim. Embedders whose model is a setting (Gemini /
+    /// Ollama / OpenAI-compatible) override this to include it: two 384-dim
+    /// models produce incomparable vectors, and dim alone cannot see that.
+    fn space(&self) -> String {
+        format!("{}:{}", self.name(), self.dim())
+    }
 }
 
 /// Deterministic, dependency-free embedder. Hashes token n-grams into a fixed
@@ -128,6 +141,9 @@ impl Embedder for GeminiEmbedder {
     fn name(&self) -> &'static str {
         "gemini"
     }
+    fn space(&self) -> String {
+        format!("gemini:{}:{}", self.model, self.dim())
+    }
 }
 
 /// Ollama nomic-embed-text on localhost (offline, $0). Honors `ollama_url`.
@@ -211,6 +227,9 @@ impl Embedder for OllamaEmbedder {
     fn name(&self) -> &'static str {
         "ollama"
     }
+    fn space(&self) -> String {
+        format!("ollama:{}:{}", self.model, self.dim())
+    }
 }
 
 /// One OpenAI-compatible embedder for every provider in the registry.
@@ -289,6 +308,9 @@ impl Embedder for OpenAiCompatEmbedder {
     }
     fn name(&self) -> &'static str {
         "openai-compat"
+    }
+    fn space(&self) -> String {
+        format!("openai-compat:{}:{}", self.model, self.dim())
     }
 }
 

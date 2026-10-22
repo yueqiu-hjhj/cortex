@@ -771,8 +771,9 @@ pub fn insert_chunk(
     loc: Option<&str>,
     dim: i64,
     embedding: &[u8],
+    vec_space: &str,
 ) -> Result<()> {
-    insert_chunk_at(conn, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, None)
+    insert_chunk_at(conn, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, None, vec_space)
 }
 
 /// Like insert_chunk, with explicit char offsets (0046). Ingest computes them
@@ -788,14 +789,27 @@ pub fn insert_chunk_at(
     dim: i64,
     embedding: &[u8],
     span: Option<(i64, i64)>,
+    vec_space: &str,
 ) -> Result<()> {
     let (cs, ce) = span.map(|(a, b)| (Some(a), Some(b))).unwrap_or((None, None));
     conn.execute(
-        "INSERT INTO chunks (id, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, created_at, char_start, char_end)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![new_id(), source_id, subject_id, topic_id, ord, text, loc, dim, embedding, now_ms(), cs, ce],
+        "INSERT INTO chunks (id, source_id, subject_id, topic_id, ord, text, loc, dim, embedding, created_at, char_start, char_end, vec_space)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![new_id(), source_id, subject_id, topic_id, ord, text, loc, dim, embedding, now_ms(), cs, ce, vec_space],
     )?;
     Ok(())
+}
+
+/// Stamp every unlabeled (pre-0081) chunk with `space` — the one-time adoption
+/// that keeps an upgraded library searchable. Callers pass the space of the
+/// embedder that is about to write; on a model switch they pass the PREVIOUS
+/// space (from the `vec_space` setting) so old vectors retire instead of being
+/// compared against new ones. Returns the number of rows adopted.
+pub fn adopt_legacy_spaces(conn: &Connection, space: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE chunks SET vec_space=?1 WHERE vec_space=''",
+        params![space],
+    )?)
 }
 
 /// List a source's stored chunks (text + vector dim) — embedding proof for the UI.
@@ -833,19 +847,52 @@ pub fn clear_chunks(conn: &Connection, source_id: &str) -> Result<()> {
 /// rank in SQL (embeddings are stored as little-endian f32 BLOBs, which is exactly
 /// sqlite-vec's compact float32 format). Falls back to the Rust cosine scan if the
 /// SQL path fails for any reason (e.g. an unexpected dimension/format edge case).
+///
+/// `space` is the embedding space of `query_vec` (see [`crate::embed::Embedder::space`]):
+/// only chunks whose vector belongs to the same space are considered. The dim
+/// guard alone cannot catch a same-dimension model switch — two 384-dim models
+/// produce incomparable vectors — which is exactly the silent corruption this
+/// filter prevents. Unlabeled rows (pre-0081, not yet adopted) stay searchable
+/// so an upgraded library keeps working until its next ingest.
+pub fn search_chunks_in_space(
+    conn: &Connection,
+    subject_id: Option<&str>,
+    query_vec: &[f32],
+    k: usize,
+    space: &str,
+) -> Result<Vec<ChunkHit>> {
+    let qblob = crate::vector::f32s_to_blob(query_vec);
+    match search_chunks_vec(conn, subject_id, &qblob, k, space) {
+        Ok(hits) => Ok(hits),
+        // sqlite-vec errors (e.g. dimension mismatch across mixed embed models)
+        // shouldn't take down retrieval — fall back to the tolerant Rust scan.
+        Err(_) => search_chunks_scan(conn, subject_id, query_vec, k, space),
+    }
+}
+
+/// Space-unaware convenience wrapper: searches the space recorded by the last
+/// ingest (the `vec_space` setting). For callers that don't build an embedder
+/// themselves; callers that embed the query should pass the embedder's space
+/// explicitly, because the setting lags a model switch until the next ingest.
 pub fn search_chunks(
     conn: &Connection,
     subject_id: Option<&str>,
     query_vec: &[f32],
     k: usize,
 ) -> Result<Vec<ChunkHit>> {
-    let qblob = crate::vector::f32s_to_blob(query_vec);
-    match search_chunks_vec(conn, subject_id, &qblob, k) {
-        Ok(hits) => Ok(hits),
-        // sqlite-vec errors (e.g. dimension mismatch across mixed embed models)
-        // shouldn't take down retrieval — fall back to the tolerant Rust scan.
-        Err(_) => search_chunks_scan(conn, subject_id, query_vec, k),
-    }
+    let space = get_setting(conn, "vec_space")?.unwrap_or_default();
+    search_chunks_in_space(conn, subject_id, query_vec, k, &space)
+}
+
+/// How many chunks live in each embedding space. The selfcheck uses it to warn
+/// when the library is split across spaces (a model switch without a re-index),
+/// which silently halves retrieval until every source is re-ingested.
+pub fn chunk_space_counts(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(vec_space, ''), '(未标注)'), COUNT(*) FROM chunks GROUP BY vec_space ORDER BY COUNT(*) DESC",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// sqlite-vec path: rank entirely in SQL via `vec_distance_cosine`. The
@@ -856,16 +903,23 @@ fn search_chunks_vec(
     subject_id: Option<&str>,
     query_blob: &[u8],
     k: usize,
+    space: &str,
 ) -> Result<Vec<ChunkHit>> {
+    // Rows stamped with the query's space plus never-stamped rows (pre-0081
+    // library, or ingested before this column existed) — the latter keep the
+    // upgrade lossless. Rows stamped with a *different* space are excluded:
+    // comparing vectors across embed models is the silent correctness bug this
+    // guards against, and the `length` guard can't catch it when dims match.
     let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.char_start, c.char_end,
                       vec_distance_cosine(c.embedding, ?2) AS dist
                FROM chunks c JOIN sources s ON s.id=c.source_id
                WHERE (?1 IS NULL OR c.subject_id=?1)
                  AND length(c.embedding) = length(?2)
+                 AND (c.vec_space = ?4 OR c.vec_space = '')
                ORDER BY dist ASC
                LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![subject_id, query_blob, k as i64], |r| {
+    let rows = stmt.query_map(params![subject_id, query_blob, k as i64, space], |r| {
         let dist: f64 = r.get(7)?;
         Ok(ChunkHit {
             id: r.get(0)?,
@@ -888,12 +942,14 @@ fn search_chunks_scan(
     subject_id: Option<&str>,
     query_vec: &[f32],
     k: usize,
+    space: &str,
 ) -> Result<Vec<ChunkHit>> {
     let sql = "SELECT c.id, c.source_id, s.name, c.text, c.loc, c.char_start, c.char_end, c.embedding
                FROM chunks c JOIN sources s ON s.id=c.source_id
-               WHERE (?1 IS NULL OR c.subject_id=?1)";
+               WHERE (?1 IS NULL OR c.subject_id=?1)
+                 AND (c.vec_space = ?2 OR c.vec_space = '')";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![subject_id], |r| {
+    let rows = stmt.query_map(params![subject_id, space], |r| {
         let blob: Vec<u8> = r.get(7)?;
         Ok((
             r.get::<_, String>(0)?,
@@ -5096,7 +5152,7 @@ mod tests {
         let text = "特征值分解把矩阵拆成旋转与缩放。相似变换保持特征值。";
         let srcid = insert_source(&c, &sid, None, "讲义.md", "md", None).unwrap();
         // insert WITHOUT offsets (the pre-0046 shape).
-        insert_chunk(&c, &srcid, &sid, None, 0, "特征值分解把矩阵拆成旋转与缩放。", None, 2, &[0u8; 8]).unwrap();
+        insert_chunk(&c, &srcid, &sid, None, 0, "特征值分解把矩阵拆成旋转与缩放。", None, 2, &[0u8; 8], "").unwrap();
         c.execute("UPDATE sources SET content=?1 WHERE id=?2", rusqlite::params![text, srcid]).unwrap();
         let n = backfill_chunk_offsets(&c).unwrap();
         assert_eq!(n, 1);
@@ -5108,6 +5164,62 @@ mod tests {
         assert_eq!(sliced, "特征值分解把矩阵拆成旋转与缩放。");
         // Second run updates nothing.
         assert_eq!(backfill_chunk_offsets(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn search_only_sees_its_own_embedding_space() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "检索", None, None, None).unwrap();
+        let sa = insert_source(&c, &sid, None, "a.md", "md", None).unwrap();
+        let sb = insert_source(&c, &sid, None, "b.md", "md", None).unwrap();
+        let legacy = insert_source(&c, &sid, None, "old.md", "md", None).unwrap();
+        insert_chunk(&c, &sa, &sid, None, 0, "alpha", None, 2, &crate::vector::f32s_to_blob(&[1.0, 0.0]), "space-a").unwrap();
+        insert_chunk(&c, &sb, &sid, None, 0, "beta", None, 2, &crate::vector::f32s_to_blob(&[1.0, 0.0]), "space-b").unwrap();
+        // Unlabeled rows (pre-0081 library) stay visible from every space —
+        // that is what keeps the upgrade lossless.
+        insert_chunk(&c, &legacy, &sid, None, 0, "legacy", None, 2, &crate::vector::f32s_to_blob(&[1.0, 0.0]), "").unwrap();
+
+        let q = vec![1.0f32, 0.0];
+        let in_a: Vec<String> = search_chunks_in_space(&c, None, &q, 10, "space-a")
+            .unwrap()
+            .into_iter()
+            .map(|h| h.source_name)
+            .collect();
+        assert!(in_a.contains(&"a.md".to_string()), "own space must be visible: {in_a:?}");
+        assert!(in_a.contains(&"old.md".to_string()), "unlabeled rows stay searchable: {in_a:?}");
+        assert!(
+            !in_a.contains(&"b.md".to_string()),
+            "another space's vectors must never rank against this query: {in_a:?}"
+        );
+
+        let in_b: Vec<String> = search_chunks_in_space(&c, None, &q, 10, "space-b")
+            .unwrap()
+            .into_iter()
+            .map(|h| h.source_name)
+            .collect();
+        assert!(in_b.contains(&"b.md".to_string()) && in_b.contains(&"old.md".to_string()));
+        assert!(!in_b.contains(&"a.md".to_string()), "{in_b:?}");
+    }
+
+    #[test]
+    fn adopt_legacy_spaces_stamps_once_and_never_overwrites() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "检索", None, None, None).unwrap();
+        let s1 = insert_source(&c, &sid, None, "a.md", "md", None).unwrap();
+        let s2 = insert_source(&c, &sid, None, "b.md", "md", None).unwrap();
+        insert_chunk(&c, &s1, &sid, None, 0, "alpha", None, 2, &crate::vector::f32s_to_blob(&[1.0, 0.0]), "").unwrap();
+        insert_chunk(&c, &s2, &sid, None, 0, "beta", None, 2, &crate::vector::f32s_to_blob(&[1.0, 0.0]), "space-b").unwrap();
+
+        assert_eq!(adopt_legacy_spaces(&c, "space-a").unwrap(), 1, "only the unlabeled row is adopted");
+        // A second call adopts nothing, and never relabels a foreign space.
+        assert_eq!(adopt_legacy_spaces(&c, "space-c").unwrap(), 0);
+        let spaces: Vec<String> = chunk_space_counts(&c).unwrap().into_iter().map(|(s, _)| s).collect();
+        assert!(
+            spaces.contains(&"space-a".to_string()) && spaces.contains(&"space-b".to_string()),
+            "{spaces:?}"
+        );
     }
 
     #[test]
@@ -5456,7 +5568,7 @@ mod tests {
         let b = insert_subject(&c, "B", None, None, None).unwrap();
         let bt = insert_topic(&c, &b, "T", None, &[]).unwrap();
         let src = insert_source(&c, &a, None, "s.md", "md", None).unwrap();
-        insert_chunk(&c, &src, &a, None, 0, "text", None, 1, &[0u8, 0, 0, 0]).unwrap();
+        insert_chunk(&c, &src, &a, None, 0, "text", None, 1, &[0u8, 0, 0, 0], "").unwrap();
         move_source(&c, &src, &b, Some(&bt)).unwrap();
         assert_eq!(get_source(&c, &src).unwrap().subject_id, b);
         let scoped: i64 = c
@@ -5611,10 +5723,10 @@ mod tests {
         // Ready sources give both topics coverage; mastery still comes from quiz
         // observations, so the weak topic keeps a real gap against a 90 target.
         let s1 = insert_source(&c, &sid, Some(&strong), "cells.md", "md", None).unwrap();
-        insert_chunk(&c, &s1, &sid, Some(&strong), 0, "cells body", None, 0, &[]).unwrap();
+        insert_chunk(&c, &s1, &sid, Some(&strong), 0, "cells body", None, 0, &[], "").unwrap();
         finalize_source(&c, &s1, "ready", None, Some("cells body"), None).unwrap();
         let s2 = insert_source(&c, &sid, Some(&weak), "genetics.md", "md", None).unwrap();
-        insert_chunk(&c, &s2, &sid, Some(&weak), 0, "genetics body", None, 0, &[]).unwrap();
+        insert_chunk(&c, &s2, &sid, Some(&weak), 0, "genetics body", None, 0, &[], "").unwrap();
         finalize_source(&c, &s2, "ready", None, Some("genetics body"), None).unwrap();
 
         sync_knowledge_graph(&c, &sid).unwrap();

@@ -4,6 +4,7 @@
 
 use crate::db::AppState;
 use crate::embed;
+use crate::embed::Embedder;
 use crate::error::{Error, Result};
 use crate::ingest;
 use crate::llm;
@@ -113,6 +114,25 @@ pub(crate) fn embed_model_override(c: &Connection) -> Option<String> {
         .ok()
         .flatten()
         .filter(|s| !s.trim().is_empty())
+}
+
+/// Record which embedding space a fresh ingest belongs to (0081). Two jobs:
+/// adopt never-stamped (pre-0081) chunks so an upgraded library stays
+/// searchable, and remember the space for space-unaware callers
+/// (`repo::search_chunks`). On a model switch the still-unlabeled rows join
+/// the PREVIOUS cohort — adopting them into the new space would compare
+/// vectors from two different embed models. Rows already stamped with another
+/// space are left alone; they become unreachable until their source is
+/// re-ingested, which the selfcheck surfaces via `chunk_space_counts`.
+fn stamp_ingest_space(conn: &Connection, space: &str) -> Result<()> {
+    let prev = repo::get_setting(conn, "vec_space")?;
+    let adopt_space = match prev.as_deref() {
+        Some(p) if p != space => p,
+        _ => space,
+    };
+    repo::adopt_legacy_spaces(conn, adopt_space)?;
+    repo::set_setting(conn, "vec_space", space)?;
+    Ok(())
 }
 
 /// Whether retrieval should be reranked after the cosine/keyword pass. On by
@@ -1431,13 +1451,22 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
         };
         let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
         emit_progress(&app, &id, "embedding", &format!("{} chunks", chunks.len()), 70);
-        let vectors = ingest::embed_chunks(embedder.as_ref(), &chunks)
-            .or_else(|_| ingest::embed_chunks(&embed::StubEmbedder, &chunks))?;
+        // The space follows whichever embedder actually produced the vectors
+        // (stub fallback included) — stamping the intended embedder's space on
+        // stub vectors would hide them from stub queries.
+        let (vectors, space) = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+            Ok(v) => (v, embedder.space().to_string()),
+            Err(_) => (
+                ingest::embed_chunks(&embed::StubEmbedder, &chunks)?,
+                embed::StubEmbedder.space().to_string(),
+            ),
+        };
 
         emit_progress(&app, &id, "storing", "writing vectors", 88);
         {
             let c = state.db.lock().unwrap();
             repo::clear_chunks(&c, &id)?;
+            stamp_ingest_space(&c, &space)?;
             let spans = repo::locate_chunks(&text, &chunks);
             for (i, ((chunk, vec), span)) in chunks.iter().zip(vectors.iter()).zip(spans.iter()).enumerate() {
                 repo::insert_chunk_at(
@@ -1451,6 +1480,7 @@ pub async fn reingest_source(app: AppHandle, id: String) -> Result<IngestResult>
                     vec.len() as i64,
                     &f32s_to_blob(vec),
                     *span,
+                    &space,
                 )?;
             }
             let chunk_count = repo::count_chunks(&c, &id)?;
@@ -1738,8 +1768,8 @@ pub async fn add_source(
         &format!("{} chunks · {} embedder", chunks.len(), embedder.name()),
         60,
     );
-    let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
-        Ok(v) => v,
+    let (vectors, space) = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+        Ok(v) => (v, embedder.space().to_string()),
         Err(e) => {
             // fall back to the stub so ingestion never hard-fails on a bad key
             let stub = embed::StubEmbedder;
@@ -1751,7 +1781,7 @@ pub async fn add_source(
                 60,
             );
             let _ = e;
-            ingest::embed_chunks(&stub, &chunks)?
+            (ingest::embed_chunks(&stub, &chunks)?, stub.space().to_string())
         }
     };
     let dim = embedder.dim() as i64;
@@ -1763,6 +1793,7 @@ pub async fn add_source(
         // One transaction for all chunk inserts + finalize: a 200-chunk PDF was 200
         // separate auto-commits (one WAL fsync each) — batching cuts that to one.
         let tx = c.transaction()?;
+        stamp_ingest_space(&tx, &space)?;
         let spans = repo::locate_chunks(&text, &chunks);
         for (i, ((chunk, vec), span)) in chunks.iter().zip(vectors.iter()).zip(spans.iter()).enumerate() {
             repo::insert_chunk_at(
@@ -1776,6 +1807,7 @@ pub async fn add_source(
                 vec.len() as i64,
                 &f32s_to_blob(vec),
                 *span,
+                &space,
             )?;
         }
         let chunk_count = repo::count_chunks(&tx, &source_id)?;
@@ -1838,15 +1870,16 @@ pub async fn search_chunks(
     // sync command runs on the GTK thread (it would freeze the UI for the round-trip).
     let data_dir = state.data_dir.clone();
     let embed_text = query.clone();
-    let qvec = tauri::async_runtime::spawn_blocking(move || {
+    let (qvec, space) = tauri::async_runtime::spawn_blocking(move || {
         let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
-        embedder.embed(&[embed_text]).map(|mut v| v.pop().unwrap_or_default())
+        let space = embedder.space().to_string();
+        embedder.embed(&[embed_text]).map(|mut v| (v.pop().unwrap_or_default(), space))
     })
     .await
     .map_err(|e| Error::Other(format!("embed task failed: {e}")))??;
     let c = state.db.lock().unwrap();
     let want = k.unwrap_or(8);
-    let hits = repo::search_chunks(&c, subject_id.as_deref(), &qvec, want * 4)?;
+    let hits = repo::search_chunks_in_space(&c, subject_id.as_deref(), &qvec, want * 4, &space)?;
     // Over-fetch then rerank: cosine similarity is topical, not relevance, so the
     // top-8 by similarity is not the best 8 to hand a model.
     if rerank_enabled(&c) {
@@ -1889,19 +1922,20 @@ pub async fn global_search(state: State<'_, AppState>, query: String) -> Result<
     // embedder — its hash vectors rank essentially at random.
     let q = query.clone();
     let data_dir = state.data_dir.clone();
-    let qvec: Option<Vec<f32>> = tauri::async_runtime::spawn_blocking(move || {
+    let (qvec, space): (Option<Vec<f32>>, String) = tauri::async_runtime::spawn_blocking(move || {
         let embedder = embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
+        let space = embedder.space().to_string();
         if embedder.name() == "stub" {
-            return None;
+            return (None, space);
         }
-        embedder.embed(&[q]).ok().and_then(|mut v| v.pop())
+        (embedder.embed(&[q]).ok().and_then(|mut v| v.pop()), space)
     })
     .await
     .map_err(|e| Error::Other(format!("embed task failed: {e}")))?;
 
     if let Some(qvec) = qvec {
         let c = state.db.lock().unwrap();
-        if let Ok(mut chunks) = repo::search_chunks(&c, None, &qvec, 32) {
+        if let Ok(mut chunks) = repo::search_chunks_in_space(&c, None, &qvec, 32, &space) {
             chunks.sort_by(|a, b| b.score.total_cmp(&a.score));
             for h in chunks {
                 // Junk floor: weakly-related chunks aren't navigation targets.
@@ -2113,6 +2147,10 @@ pub async fn chat_answer(
     } else if embeddings_reliable {
         let embedder =
             embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
+        // Search in this embedder's own space (0081): after a model switch the
+        // old chunks stay in the previous space and must not be ranked against
+        // vectors from a different model.
+        let space = embedder.space().to_string();
         // Embedding is an optimization, not a requirement: a failed embed
         // (local model not downloaded yet, provider unreachable) degrades to
         // the keyword channel instead of killing the whole answer.
@@ -2130,7 +2168,7 @@ pub async fn chat_answer(
         let vec_hits = if qvec.is_empty() {
             Vec::new()
         } else {
-            let mut vh = repo::search_chunks(&c, Some(&subject_id), &qvec, 8)?;
+            let mut vh = repo::search_chunks_in_space(&c, Some(&subject_id), &qvec, 8, &space)?;
             if let Some(sid) = scoped_source {
                 vh.retain(|h| h.source_id == sid);
             }
@@ -5365,8 +5403,8 @@ pub(crate) fn run_transcription_job(app: &AppHandle, source_id: &str) {
     };
     let embedder = embed::from_settings(&embed_provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
     emit_progress(app, source_id, "embedding", &format!("{} chunks", chunks.len()), 75);
-    let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
-        Ok(v) => v,
+    let (vectors, space) = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+        Ok(v) => (v, embedder.space().to_string()),
         Err(e) => {
             fail(format!("embedding failed: {e}"));
             return;
@@ -5376,10 +5414,11 @@ pub(crate) fn run_transcription_job(app: &AppHandle, source_id: &str) {
     emit_progress(app, source_id, "storing", "writing vectors", 90);
     let stored = (|| -> Result<i64> {
         let c = state.db.lock().unwrap();
+        stamp_ingest_space(&c, &space)?;
         for (i, (chunk, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
             repo::insert_chunk(
                 &c, source_id, &src.subject_id, src.topic_id.as_deref(), i as i64, chunk, None,
-                vec.len() as i64, &f32s_to_blob(vec),
+                vec.len() as i64, &f32s_to_blob(vec), &space,
             )?;
         }
         let n = repo::count_chunks(&c, source_id)?;
@@ -6094,8 +6133,8 @@ pub(crate) fn finish_text_ingest(
         state.data_dir.as_deref(),
         embed_model.as_deref(),
     );
-    let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
-        Ok(v) => v,
+    let (vectors, space) = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+        Ok(v) => (v, embedder.space().to_string()),
         Err(_) => {
             // Never hard-fail ingestion on a bad key: fall back to the stub so
             // the source still becomes searchable (lexically) offline.
@@ -6106,7 +6145,7 @@ pub(crate) fn finish_text_ingest(
                 "provider failed → stub fallback",
                 60,
             );
-            ingest::embed_chunks(&embed::StubEmbedder, &chunks)?
+            (ingest::embed_chunks(&embed::StubEmbedder, &chunks)?, embed::StubEmbedder.space().to_string())
         }
     };
     let dim = vectors
@@ -6120,6 +6159,7 @@ pub(crate) fn finish_text_ingest(
         let tx = c.transaction()?;
         // Re-ingesting in place must not double up the old vectors.
         repo::clear_chunks(&tx, source_id)?;
+        stamp_ingest_space(&tx, &space)?;
         for (i, (chunk, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
             repo::insert_chunk(
                 &tx,
@@ -6131,6 +6171,7 @@ pub(crate) fn finish_text_ingest(
                 None,
                 dim,
                 &f32s_to_blob(vec),
+                &space,
             )?;
         }
         let n = repo::count_chunks(&tx, source_id)?;
@@ -7472,7 +7513,7 @@ pub async fn retrieval_trace(
     let embed_ok_provider = !provider.is_empty() && provider != "stub";
     let scoped = subject_id.clone().filter(|s| !s.is_empty());
 
-    let (qvec, embed_error) = if embed_ok_provider {
+    let (qvec, space, embed_error) = if embed_ok_provider {
         let qc = q.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let embedder = embed::from_settings(
@@ -7482,22 +7523,23 @@ pub async fn retrieval_trace(
                 data_dir.as_deref(),
                 embed_model.as_deref(),
             );
+            let space = embedder.space().to_string();
             match embedder.embed(std::slice::from_ref(&qc)) {
-                Ok(mut v) => (v.pop().unwrap_or_default(), None),
-                Err(e) => (Vec::new(), Some(e.to_string())),
+                Ok(mut v) => (v.pop().unwrap_or_default(), space, None),
+                Err(e) => (Vec::new(), space, Some(e.to_string())),
             }
         })
         .await
         .map_err(|e| Error::Other(format!("embed task failed: {e}")))?
     } else {
-        (Vec::new(), Some("未配置可用的向量模型（当前为 stub），只跑了关键词通道".to_string()))
+        (Vec::new(), String::new(), Some("未配置可用的向量模型（当前为 stub），只跑了关键词通道".to_string()))
     };
 
     let c = state.db.lock().unwrap();
     let vector = if qvec.is_empty() {
         Vec::new()
     } else {
-        repo::search_chunks(&c, scoped.as_deref(), &qvec, want * 2)?
+        repo::search_chunks_in_space(&c, scoped.as_deref(), &qvec, want * 2, &space)?
     };
     let keyword = repo::keyword_search_chunks(&c, scoped.as_deref(), None, &q, want * 2)?;
     // Cosine and keyword scores are not comparable; rank-fuse exactly like chat.
@@ -7617,10 +7659,11 @@ pub async fn retrieval_eval_real(
         )
     };
     let texts: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
-    let vecs = tauri::async_runtime::spawn_blocking(move || {
+    let (vecs, space) = tauri::async_runtime::spawn_blocking(move || {
         let embedder =
             embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
-        embedder.embed(&texts)
+        let space = embedder.space().to_string();
+        embedder.embed(&texts).map(|v| (v, space))
     })
     .await
     .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
@@ -7633,6 +7676,7 @@ pub async fn retrieval_eval_real(
             expect,
             vec,
             kind: "real".to_string(),
+            space: space.clone(),
         })
         .collect();
     let c = state.db.lock().unwrap();

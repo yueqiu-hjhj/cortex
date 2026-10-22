@@ -140,6 +140,40 @@ fn check_model_configured(conn: &Connection) -> Check {
     }
 }
 
+/// 向量空间一致性（0081）。一次「换了嵌入模型但不重新索引」会把库切成多个
+/// 空间，而检索只在查询自身的空间里找——其余来源静默消失（不是报错，是根本
+/// 不出现在结果里）。未标注行（0081 之前的旧数据）对任何空间都可见，是升级
+/// 兼容路径的一部分，不算分裂。
+fn check_embedding_spaces(conn: &Connection) -> Check {
+    let counts = match crate::repo::chunk_space_counts(conn) {
+        Ok(c) => c,
+        Err(e) => return Check { name: "Embedding spaces", ok: false, detail: e.to_string(), hint: None },
+    };
+    let labeled: Vec<&(String, i64)> = counts.iter().filter(|(s, _)| s != "(未标注)").collect();
+    match labeled.len() {
+        0 => Check { name: "Embedding spaces", ok: true, detail: "no chunks yet".into(), hint: None },
+        1 => Check {
+            name: "Embedding spaces",
+            ok: true,
+            detail: format!("{} chunks in {}", labeled[0].1, labeled[0].0),
+            hint: None,
+        },
+        _ => {
+            let detail = labeled
+                .iter()
+                .map(|(s, n)| format!("{s}={n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Check {
+                name: "Embedding spaces",
+                ok: false,
+                detail,
+                hint: Some("库被切成多个向量空间（换了嵌入模型但没有重新索引）——检索只能看到其中一个空间的来源。请重新索引受影响的来源（或全部来源）。".into()),
+            }
+        }
+    }
+}
+
 pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Result<Report> {
     let (version_check, v) = check_migration_version(conn, known_migrations);
     let checks = vec![
@@ -149,10 +183,44 @@ pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Resul
         check_disk_space(data_dir),
         check_onnx_model_if_used(conn, data_dir),
         check_model_configured(conn),
+        check_embedding_spaces(conn),
     ];
     let passed = checks.iter().filter(|c| c.ok).count();
     let failed = checks.len() - passed;
     Ok(Report { passed, failed, checks, user_version: v, known_migrations })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo;
+
+    #[test]
+    fn single_space_with_legacy_rows_is_healthy() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "S", None, None, None).unwrap();
+        let s1 = repo::insert_source(&c, &sid, None, "a.md", "md", None).unwrap();
+        let s2 = repo::insert_source(&c, &sid, None, "legacy.md", "md", None).unwrap();
+        repo::insert_chunk(&c, &s1, &sid, None, 0, "x", None, 2, &[0u8; 8], "onnx:384").unwrap();
+        repo::insert_chunk(&c, &s2, &sid, None, 0, "y", None, 2, &[0u8; 8], "").unwrap();
+        let check = check_embedding_spaces(&c);
+        assert!(check.ok, "one labeled space plus unlabeled rows is the upgrade path, not a split: {check:?}");
+    }
+
+    #[test]
+    fn two_labeled_spaces_fail_the_check() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = repo::insert_subject(&c, "S", None, None, None).unwrap();
+        let s1 = repo::insert_source(&c, &sid, None, "a.md", "md", None).unwrap();
+        let s2 = repo::insert_source(&c, &sid, None, "b.md", "md", None).unwrap();
+        repo::insert_chunk(&c, &s1, &sid, None, 0, "x", None, 2, &[0u8; 8], "onnx:384").unwrap();
+        repo::insert_chunk(&c, &s2, &sid, None, 0, "y", None, 2, &[0u8; 8], "gemini:768").unwrap();
+        let check = check_embedding_spaces(&c);
+        assert!(!check.ok, "a model switch without re-ingest must be surfaced: {check:?}");
+        assert!(check.detail.contains("onnx:384") && check.detail.contains("gemini:768"));
+    }
 }
 
 // `encode_wide` lives in std::os::windows::ffi::OsStrExt; bring it into scope.

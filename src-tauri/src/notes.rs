@@ -5,6 +5,7 @@
 
 use crate::db::AppState;
 use crate::embed;
+use crate::embed::Embedder;
 use crate::error::{Error, Result};
 use crate::ingest;
 use crate::models::*;
@@ -247,12 +248,15 @@ pub async fn note_to_source(app: AppHandle, id: String) -> Result<IngestResult> 
         };
         let embedder =
             embed::from_settings(&provider, &keys, ollama_url.as_deref(), state.data_dir.as_deref(), embed_model.as_deref());
-        let vectors = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
-            Ok(v) => v,
+        // The space follows whichever embedder actually produced the vectors
+        // (including the stub fallback) — stamping the intended embedder's
+        // space on stub vectors would make them invisible to stub queries.
+        let (vectors, space) = match ingest::embed_chunks(embedder.as_ref(), &chunks) {
+            Ok(v) => (v, embedder.space().to_string()),
             Err(_) => {
                 // fall back to the stub so conversion never hard-fails on a bad key
                 let stub = embed::StubEmbedder;
-                ingest::embed_chunks(&stub, &chunks)?
+                (ingest::embed_chunks(&stub, &chunks)?, stub.space().to_string())
             }
         };
 
@@ -269,6 +273,7 @@ pub async fn note_to_source(app: AppHandle, id: String) -> Result<IngestResult> 
                 None,
                 vec.len() as i64,
                 &f32s_to_blob(vec),
+                &space,
             )?;
         }
         let chunk_count = repo::count_chunks(&c, &source_id)?;

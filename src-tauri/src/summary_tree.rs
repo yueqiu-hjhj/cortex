@@ -699,6 +699,7 @@ mod tests {
             Some("p.1"),
             4,
             &f32s_to_blob(&vec![0.0; 4]),
+            "",
         )
         .unwrap();
         c.execute(

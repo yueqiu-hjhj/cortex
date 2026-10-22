@@ -788,7 +788,7 @@ mod tests {
         repo::insert_chunk(
             &c, &src, &s, None, 0,
             "特征值描述线性变换的不变方向，对角化把矩阵分解为特征值与特征向量。",
-            None, 10, &crate::vector::f32s_to_blob(&[0.0; 4]),
+            None, 10, &crate::vector::f32s_to_blob(&[0.0; 4]), "",
         )
         .unwrap();
 
