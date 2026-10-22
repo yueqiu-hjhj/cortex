@@ -1685,7 +1685,7 @@ pub fn add_chat_message_with_citations(
     text: &str,
     citations: &[Citation],
 ) -> Result<()> {
-    add_chat_message_full(conn, subject_id, role, text, citations, None, None)
+    add_chat_message_full(conn, subject_id, role, text, citations, None, None, None)
 }
 
 /// Same, plus retrieval accounting (hits/scope/abstained) and the count of
@@ -1698,6 +1698,7 @@ pub fn add_chat_message_full(
     citations: &[Citation],
     retrieval: Option<&crate::models::RetrievalMeta>,
     fabricated_dropped: Option<usize>,
+    answer_state: Option<&str>,
 ) -> Result<()> {
     let tid = current_thread(conn, subject_id)?;
     let ts = now_ms();
@@ -1711,9 +1712,9 @@ pub fn add_chat_message_full(
         None => None,
     };
     conn.execute(
-        "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at, retrieval, fabricated_dropped)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![new_id(), tid, role, text, citations_json, ts, retrieval_json, fabricated_dropped.map(|n| n as i64)],
+        "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at, retrieval, fabricated_dropped, answer_state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![new_id(), tid, role, text, citations_json, ts, retrieval_json, fabricated_dropped.map(|n| n as i64), answer_state],
     )?;
     conn.execute(
         "UPDATE chat_threads SET updated_at=?2 WHERE id=?1",
@@ -1726,7 +1727,7 @@ pub fn add_chat_message_full(
 pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<ChatMsg>> {
     let tid = current_thread(conn, subject_id)?;
     let mut stmt = conn.prepare(
-        "SELECT role, text, citations, created_at, retrieval, fabricated_dropped FROM chat_messages
+        "SELECT role, text, citations, created_at, retrieval, fabricated_dropped, answer_state FROM chat_messages
          WHERE thread_id=?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map(params![tid], |r| {
@@ -1744,6 +1745,7 @@ pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<Cha
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok()),
             fabricated_dropped: r.get::<_, Option<i64>>(5)?.map(|n| n.max(0) as usize),
+            answer_state: r.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -4953,7 +4955,7 @@ mod tests {
             scope: "subject".into(),
             abstained: false,
         };
-        add_chat_message_full(&c, &sid, "assistant", "回答 [1]", &[], Some(&meta), None).unwrap();
+        add_chat_message_full(&c, &sid, "assistant", "回答 [1]", &[], Some(&meta), None, None).unwrap();
         add_chat_message_full(
             &c,
             &sid,
@@ -4961,6 +4963,7 @@ mod tests {
             "零命中回答",
             &[],
             Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true }),
+            None,
             None,
         )
         .unwrap();
@@ -4979,12 +4982,29 @@ mod tests {
         let sid = insert_subject(&c, "线代", None, None, None).unwrap();
         // citecheck stripped two ⟦…⟧ tokens naming sources that were never
         // retrieved; that number is the honest badge for the answer.
-        add_chat_message_full(&c, &sid, "assistant", "回答", &[], None, Some(2)).unwrap();
+        add_chat_message_full(&c, &sid, "assistant", "回答", &[], None, Some(2), None).unwrap();
         let msgs = list_chat_messages(&c, &sid).unwrap();
         assert_eq!(msgs[0].fabricated_dropped, Some(2));
-        add_chat_message_full(&c, &sid, "assistant", "干净的回答", &[], None, None).unwrap();
+        add_chat_message_full(&c, &sid, "assistant", "干净的回答", &[], None, None, None).unwrap();
         let msgs = list_chat_messages(&c, &sid).unwrap();
         assert_eq!(msgs[1].fabricated_dropped, None, "no fabrication is NULL, not zero");
+    }
+
+    /// 0077: the answer state must survive the roundtrip, and rows written
+    /// without one (pre-0077 answers) read back as None — no retroactive
+    /// guessing about how an old answer ended.
+    #[test]
+    fn the_answer_state_survives_a_reload() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message_full(&c, &sid, "assistant", "半句话", &[], None, None, Some("truncated")).unwrap();
+        add_chat_message_full(&c, &sid, "assistant", "完整回答", &[], None, None, Some("completed")).unwrap();
+        add_chat_message_full(&c, &sid, "user", "旧消息", &[], None, None, None).unwrap();
+        let msgs = list_chat_messages(&c, &sid).unwrap();
+        assert_eq!(msgs[0].answer_state.as_deref(), Some("truncated"));
+        assert_eq!(msgs[1].answer_state.as_deref(), Some("completed"));
+        assert!(msgs[2].answer_state.is_none(), "old rows have no state");
     }
 
     #[test]

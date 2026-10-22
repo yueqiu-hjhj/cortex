@@ -183,6 +183,15 @@ pub struct ChatAnswer {
     /// Retrieval accounting for this answer (persisted with the message).
     #[serde(default)]
     pub retrieval: RetrievalMeta,
+    /// Terminal generation state (KnowNote borrow, 0077): a truncated answer
+    /// keeps its partial text and invites continuation; a blocked one was
+    /// stopped by a safety filter; failed means nothing usable came back.
+    #[serde(default)]
+    pub answer_state: crate::llm::AnswerState,
+    /// The provider's raw finishReason, verbatim, for diagnosability
+    /// (MAX_TOKENS vs SAFETY vs length are different problems).
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 /// A persisted chat message (belongs to one conversation thread).
@@ -200,6 +209,11 @@ pub struct ChatMsg {
     /// NULL for user/system rows and pre-0069 messages.
     #[serde(default)]
     pub fabricated_dropped: Option<usize>,
+    /// Terminal generation state (0077): completed / truncated / blocked /
+    /// aborted / failed. NULL for user/system rows and pre-0077 messages —
+    /// those answers predate the state machine, so no badge is shown.
+    #[serde(default)]
+    pub answer_state: Option<String>,
 }
 
 // ---- knowledge framework / mastery -----------------------------------

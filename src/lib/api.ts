@@ -121,7 +121,16 @@ export interface ChatAnswer {
   fabricated_dropped?: number;
   /** Retrieval accounting persisted with the message (session-level rate). */
   retrieval?: RetrievalMeta;
+  /** Terminal generation state (KnowNote borrow, 0077) — why the answer looks
+   *  the way it does: truncated answers keep their partial text and invite a
+   *  continuation; blocked was stopped by a safety filter; failed means the
+   *  model returned nothing usable. */
+  answer_state?: AnswerState;
+  /** The provider's raw finishReason, verbatim (MAX_TOKENS vs SAFETY …). */
+  finish_reason?: string | null;
 }
+/** The five terminal states of one generation. */
+export type AnswerState = "completed" | "truncated" | "blocked" | "aborted" | "failed";
 export interface RetrievalMeta {
   /** Passages retrieved; 0 = nothing found / not consulted. */
   hits: number;
@@ -804,6 +813,9 @@ export interface ChatMsg {
   retrieval?: RetrievalMeta | null;
   /** Fabriced citations citecheck stripped from this answer (0069). */
   fabricated_dropped?: number | null;
+  /** Terminal generation state (0077). NULL for user/system rows and
+   *  pre-0077 messages — those predate the state machine, so no badge. */
+  answer_state?: AnswerState | null;
 }
 export const listChatMessages = (subjectId: string) =>
   invoke<ChatMsg[]>("list_chat_messages", { subjectId });
@@ -814,7 +826,10 @@ export const addChatMessage = (
   citations?: Citation[],
   retrieval?: RetrievalMeta,
   /** How many fabricated citations citecheck stripped from this answer (0069). */
-  fabricatedDropped?: number
+  fabricatedDropped?: number,
+  /** Terminal generation state (0077) — set by the caller because only it
+   *  knows about user aborts; the backend classifies provider stops. */
+  answerState?: AnswerState
 ) =>
   invoke<void>("add_chat_message", {
     subjectId,
@@ -823,6 +838,7 @@ export const addChatMessage = (
     citations,
     retrieval,
     fabricatedDropped: fabricatedDropped ?? null,
+    answerState: answerState ?? null,
   });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
 

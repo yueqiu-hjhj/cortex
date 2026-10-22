@@ -2301,7 +2301,13 @@ pub async fn chat_answer(
         format!("SOURCE CONTEXT:\n{context}{framework_block}{web_block}\n\nQUESTION: {query}")
     };
 
-    let text = model.complete(system, &user)?;
+    // complete_raw (not complete): the finishReason decides the answer's
+    // terminal state — a length-capped half answer is still shown (marked
+    // truncated, continuation invited), and an empty reply becomes a Failed
+    // state instead of an opaque error.
+    let reply = model.complete_raw(system, &user)?;
+    let answer_state = crate::llm::classify_answer(reply.finish_reason.as_deref(), &reply.text);
+    let crate::llm::RawReply { text, finish_reason: reply_finish, .. } = reply;
     // Token accounting (0049, estimate): chat is the daily driver.
     { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "chat", &model.name(), &format!("{system}\n{user}"), &text, Some(&subject_id)); }
 
@@ -2367,6 +2373,8 @@ pub async fn chat_answer(
         abstained,
         fabricated_dropped,
         retrieval,
+        answer_state,
+        finish_reason: reply_finish,
     })
     })
     .await
@@ -2563,6 +2571,7 @@ pub fn add_chat_message(
     citations: Option<Vec<Citation>>,
     retrieval: Option<crate::models::RetrievalMeta>,
     fabricated_dropped: Option<i64>,
+    answer_state: Option<String>,
 ) -> Result<()> {
     let c = state.db.lock().unwrap();
     repo::add_chat_message_full(
@@ -2573,6 +2582,7 @@ pub fn add_chat_message(
         &citations.unwrap_or_default(),
         retrieval.as_ref(),
         fabricated_dropped.map(|n| n.max(0) as usize),
+        answer_state.as_deref(),
     )
 }
 

@@ -28,6 +28,8 @@
     /** Fabricated citations citecheck stripped (0069) — the badge that says
      *  "the model tried to cite sources that were never retrieved". */
     fabricated_dropped?: number;
+    /** Terminal generation state (0077) — how this answer ended. */
+    answer_state?: api.AnswerState;
   }
 
   // Web mode: let the AI pull live web snippets + images (diagrams/examples).
@@ -656,6 +658,7 @@
           {@const isUncited = cites.length > 0 && citedCount === 0}
           {@const noRetrieval = !!m.retrieval && m.retrieval.hits === 0}
           {@const fabricated = m.fabricated_dropped ?? 0}
+          {@const state = m.answer_state}
           <div
             class="bubble assistant"
             class:is-uncited={isUncited}
@@ -665,6 +668,25 @@
           >
             {#if noRetrieval}
               <span class="retr-badge">未检索 · 零命中</span>
+            {/if}
+            {#if state === "truncated"}
+              <span
+                class="retr-badge state-truncated"
+                title="生成达到了输出上限，回答在中间被截断——保留的部分仍然可用。可以直接追问「继续」让模型接着写。"
+                >已截断 · 可追问「继续」</span
+              >
+            {:else if state === "blocked"}
+              <span
+                class="retr-badge state-blocked"
+                title="模型的安全/内容策略在这轮生成中途叫停（如 SAFETY、content_filter）。换一种问法通常可以继续。"
+                >被安全策略拦截</span
+              >
+            {:else if state === "failed"}
+              <span class="retr-badge state-failed" title="模型没有返回任何可用内容（finishReason 见会话记录）。重试或换一个模型通常能解决。"
+                >模型无输出</span
+              >
+            {:else if state === "aborted"}
+              <span class="retr-badge state-aborted" title="你按下了停止，这里保留的是中断前已经生成的部分。">已中止</span>
             {/if}
             <RichText text={m.text} />
             {#if cites.length}
@@ -952,6 +974,23 @@
     color: var(--err, #e5484d);
     background: color-mix(in oklab, var(--err, #e5484d) 12%, transparent);
     border: 1px solid color-mix(in oklab, var(--err, #e5484d) 35%, transparent);
+  }
+  /* Answer-state badges (0077): same pill shape, per-state hue. Truncation
+     is a warning (partial answer kept), block/failure are errors, abort is
+     neutral grey. */
+  .retr-badge.state-truncated {
+    color: var(--warn, #f5a623);
+    background: color-mix(in oklab, var(--warn, #f5a623) 12%, transparent);
+    border-color: color-mix(in oklab, var(--warn, #f5a623) 35%, transparent);
+  }
+  .retr-badge.state-blocked,
+  .retr-badge.state-failed {
+    color: var(--err, #e5484d);
+  }
+  .retr-badge.state-aborted {
+    color: var(--fg-muted);
+    background: color-mix(in oklab, var(--fg-muted) 12%, transparent);
+    border-color: color-mix(in oklab, var(--fg-muted) 35%, transparent);
   }
   .retr-stat {
     display: inline-flex;

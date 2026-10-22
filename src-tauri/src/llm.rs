@@ -24,6 +24,82 @@ pub struct RawReply {
     pub usage: Option<serde_json::Value>,
 }
 
+/// Terminal state of one generation, borrowed from KnowNote's answer
+/// provenance: the UI must be able to say WHY an answer looks the way it
+/// does. A half-answer cut off by the token cap is still worth reading (and
+/// continuable), an answer the safety filter stopped needs a different
+/// warning, and "the model returned nothing at all" is its own thing —
+/// showing all three as an identical bubble hides exactly the difference
+/// the learner needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerState {
+    /// Finished normally with usable text.
+    Completed,
+    /// Hit the output cap mid-answer — partial text kept, continuation invited.
+    Truncated,
+    /// Stopped by a safety/policy filter (partial text may exist).
+    Blocked,
+    /// The user pressed stop (set by the caller, never by the classifier).
+    Aborted,
+    /// Nothing usable came back (error or empty output).
+    Failed,
+}
+
+impl AnswerState {
+    /// Canonical wire string — what lands in the DB and in logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnswerState::Completed => "completed",
+            AnswerState::Truncated => "truncated",
+            AnswerState::Blocked => "blocked",
+            AnswerState::Aborted => "aborted",
+            AnswerState::Failed => "failed",
+        }
+    }
+}
+
+/// finishReason vocabularies differ per provider, so the classifier is a
+/// table, not a guess:
+/// - OpenAI-compatible: `length` / `content_filter`
+/// - Gemini: `MAX_TOKENS` / `SAFETY` / `RECITATION` / `PROHIBITED_CONTENT` / `BLOCKLIST`
+/// - Anthropic: `max_tokens` / `refusal`
+/// Matching is case-insensitive. An unknown reason with usable text counts
+/// as completed — a provider we don't recognize must not downgrade a real
+/// answer; a provider we don't recognize with NO text is a failure, which
+/// the empty-text branch handles.
+const TRUNCATION_REASONS: &[&str] = &["length", "max_tokens"];
+const BLOCK_REASONS: &[&str] = &[
+    "content_filter",
+    "safety",
+    "recitation",
+    "prohibited_content",
+    "blocklist",
+    "refusal",
+];
+
+/// Map one finished generation onto [`AnswerState`]. `reason` is the
+/// provider's finishReason (`None` = provider doesn't report one, e.g. the
+/// offline stub); `text` is the cleaned output the user would see.
+pub fn classify_answer(reason: Option<&str>, text: &str) -> AnswerState {
+    let reason = reason.map(|r| r.trim().to_ascii_lowercase());
+    let known = reason.as_deref().filter(|r| !r.is_empty());
+    if text.trim().is_empty() {
+        // Empty output: a named filter explains it (blocked), anything else —
+        // including an exhausted token budget spent on hidden reasoning — is
+        // a failure. Either way there is no answer to show.
+        return match known {
+            Some(r) if BLOCK_REASONS.contains(&r) => AnswerState::Blocked,
+            _ => AnswerState::Failed,
+        };
+    }
+    match known {
+        Some(r) if TRUNCATION_REASONS.contains(&r) => AnswerState::Truncated,
+        Some(r) if BLOCK_REASONS.contains(&r) => AnswerState::Blocked,
+        _ => AnswerState::Completed,
+    }
+}
+
 pub trait Llm: Send + Sync {
     fn complete(&self, system: &str, user: &str) -> Result<String>;
     fn name(&self) -> String;
@@ -121,11 +197,13 @@ pub struct GeminiLlm {
     pub max_tokens: Option<u32>,
 }
 
-impl Llm for GeminiLlm {
-    fn set_max_tokens(&mut self, max: u32) {
-        self.max_tokens = Some(max);
-    }
-    fn complete(&self, system: &str, user: &str) -> Result<String> {
+impl GeminiLlm {
+    /// One generateContent round-trip: (concatenated text, finishReason).
+    /// Split out of `complete` so `complete_raw` can hand an EMPTY reply
+    /// back for state classification instead of erroring — a MAX_TOKENS
+    /// stop that emitted nothing is a `Failed` state the UI can badge,
+    /// not an opaque exception.
+    fn generate(&self, system: &str, user: &str) -> Result<(String, Option<String>, Option<serde_json::Value>)> {
         let client = llm_client();
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -165,18 +243,38 @@ impl Llm for GeminiLlm {
                     .collect::<String>()
             })
             .unwrap_or_default();
+        let finish = json["candidates"][0]["finishReason"]
+            .as_str()
+            .map(str::to_string);
+        let usage = if json["usageMetadata"].is_null() {
+            None
+        } else {
+            Some(json["usageMetadata"].clone())
+        };
+        Ok((text, finish, usage))
+    }
+}
+
+impl Llm for GeminiLlm {
+    fn set_max_tokens(&mut self, max: u32) {
+        self.max_tokens = Some(max);
+    }
+    fn complete(&self, system: &str, user: &str) -> Result<String> {
+        let (text, finish, _) = self.generate(system, user)?;
         if text.is_empty() {
             // Surface the finishReason (e.g. MAX_TOKENS / SAFETY) so the failure
             // is diagnosable instead of an opaque "empty response".
-            let reason = json["candidates"][0]["finishReason"]
-                .as_str()
-                .unwrap_or("unknown");
+            let reason = finish.as_deref().unwrap_or("unknown");
             return Err(Error::Other(format!(
                 "gemini: empty response (finishReason={reason}). \
                  If MAX_TOKENS, the model spent its budget on reasoning — try a flash model."
             )));
         }
         Ok(text)
+    }
+    fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
+        let (text, finish, usage) = self.generate(system, user)?;
+        Ok(RawReply { content: text.clone(), text, finish_reason: finish, usage })
     }
     fn name(&self) -> String {
         format!("gemini:{}", self.model)
@@ -633,18 +731,15 @@ pub struct ClaudeLlm {
     pub max_tokens: Option<u32>,
 }
 
-impl Llm for ClaudeLlm {
-    fn set_max_tokens(&mut self, max: u32) {
-        self.max_tokens = Some(max);
-    }
-    fn complete(&self, system: &str, user: &str) -> Result<String> {
+impl ClaudeLlm {
+    /// One messages round-trip: (first text block, stop_reason, usage).
+    /// Shared by `complete` (hard error on empty, as before) and
+    /// `complete_raw` (empty handed back for state classification).
+    fn messages(&self, system: &str, user: &str, max_tokens: u32) -> Result<(String, Option<String>, Option<serde_json::Value>)> {
         let client = llm_client();
         let body = serde_json::json!({
             "model": self.model,
-            // Roomy enough for a full cheatsheet without cutting off mid-section.
-            // Modern Claude models support far more (Sonnet 4.x: 64K, Opus: 128K
-            // output tokens); 32K covers any cheatsheet while staying within limits.
-            "max_tokens": self.max_tokens.unwrap_or(32000),
+            "max_tokens": max_tokens,
             "temperature": 0.3,
             "system": system,
             "messages": [{ "role": "user", "content": user }]
@@ -659,9 +754,31 @@ impl Llm for ClaudeLlm {
         )?;
         let text = json["content"][0]["text"]
             .as_str()
-            .ok_or_else(|| Error::Other("claude: empty response".into()))?
+            .unwrap_or_default()
             .to_string();
+        let stop = json["stop_reason"].as_str().map(str::to_string);
+        let usage = if json["usage"].is_null() { None } else { Some(json["usage"].clone()) };
+        Ok((text, stop, usage))
+    }
+}
+
+impl Llm for ClaudeLlm {
+    fn set_max_tokens(&mut self, max: u32) {
+        self.max_tokens = Some(max);
+    }
+    fn complete(&self, system: &str, user: &str) -> Result<String> {
+        // Roomy enough for a full cheatsheet without cutting off mid-section.
+        // Modern Claude models support far more (Sonnet 4.x: 64K, Opus: 128K
+        // output tokens); 32K covers any cheatsheet while staying within limits.
+        let (text, _, _) = self.messages(system, user, self.max_tokens.unwrap_or(32000))?;
+        if text.is_empty() {
+            return Err(Error::Other("claude: empty response".into()));
+        }
         Ok(text)
+    }
+    fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
+        let (text, stop, usage) = self.messages(system, user, self.max_tokens.unwrap_or(32000))?;
+        Ok(RawReply { content: text.clone(), text, finish_reason: stop, usage })
     }
     fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
         let mut content = Vec::new();
@@ -1057,6 +1174,36 @@ mod tests {
         assert_eq!(cards[0].back, "Meaning");
         assert!(parse_card_drafts(r#"{"cards":[]}"#).is_err());
         assert!(parse_card_drafts(r#"{"wrong":[]}"#).is_err());
+    }
+
+    /// The five-state classifier (0077): provider vocabularies differ, so the
+    /// mapping must be per-vocabulary and case-insensitive, and an unknown
+    /// reason must never downgrade a real answer.
+    #[test]
+    fn classify_answer_maps_provider_vocabularies() {
+        let full = "一个完整的回答。";
+        // normal stops across providers → completed
+        assert_eq!(classify_answer(Some("stop"), full), AnswerState::Completed);
+        assert_eq!(classify_answer(Some("STOP"), full), AnswerState::Completed);
+        assert_eq!(classify_answer(Some("end_turn"), full), AnswerState::Completed);
+        assert_eq!(classify_answer(None, full), AnswerState::Completed, "stub/unknown provider");
+        // output caps → truncated, partial text kept
+        assert_eq!(classify_answer(Some("length"), full), AnswerState::Truncated);
+        assert_eq!(classify_answer(Some("MAX_TOKENS"), full), AnswerState::Truncated);
+        assert_eq!(classify_answer(Some("max_tokens"), full), AnswerState::Truncated);
+        // safety/policy stops → blocked
+        assert_eq!(classify_answer(Some("content_filter"), full), AnswerState::Blocked);
+        assert_eq!(classify_answer(Some("SAFETY"), full), AnswerState::Blocked);
+        assert_eq!(classify_answer(Some("refusal"), full), AnswerState::Blocked);
+        // empty output: a named filter explains it, anything else fails
+        assert_eq!(classify_answer(Some("SAFETY"), "  "), AnswerState::Blocked);
+        assert_eq!(classify_answer(Some("MAX_TOKENS"), ""), AnswerState::Failed);
+        assert_eq!(classify_answer(None, ""), AnswerState::Failed);
+        // unknown reason with text stays completed — never downgrade blindly
+        assert_eq!(classify_answer(Some("brand_new_reason"), full), AnswerState::Completed);
+        // wire strings round-trip through as_str
+        assert_eq!(AnswerState::Truncated.as_str(), "truncated");
+        assert_eq!(serde_json::to_string(&AnswerState::Blocked).unwrap(), "\"blocked\"");
     }
 
     #[test]
