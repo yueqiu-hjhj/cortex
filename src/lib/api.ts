@@ -272,6 +272,20 @@ export const extractFlashcards = (mime: string, base64: string) =>
 export const aiSuggestGlossary = (text: string, maxTerms?: number) =>
   invoke<[string, string][]>("ai_suggest_glossary", { text, maxTerms });
 
+/** A glossary candidate generated from a source, with the verbatim sentence that
+ *  anchors it (the backend drops any candidate whose quote isn't a real substring
+ *  of the source text — same discipline as vocabulary mining). */
+export interface GlossaryCandidate {
+  term: string;
+  definition: string;
+  quote: string | null;
+}
+
+/** Generate glossary terms straight from a source (no paste). The model must
+ *  anchor each term in a sentence copied verbatim from the material. */
+export const glossaryGenerateFromSource = (sourceId: string) =>
+  invoke<GlossaryCandidate[]>("glossary_generate_from_source", { sourceId });
+
 export const saveFlashcards = (subjectId: string, topicId: string | null, cards: CardDraft[], title: string) =>
   invoke<number>("save_flashcards_to_subject", { subjectId, topicId, cards, title });
 

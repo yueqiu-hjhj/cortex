@@ -45,30 +45,53 @@
 
   // AI suggest dialog state.
   let aiOpen = $state(false);
+  let aiMode = $state<"paste" | "source">("paste");
   let aiText = $state("");
-  let aiCandidates = $state<[string, string][]>([]);
+  let aiCandidates = $state<api.GlossaryCandidate[]>([]);
   let aiSelected = $state<Record<number, boolean>>({});
   let aiBusy = $state(false);
   let aiErr = $state<string | null>(null);
-  function openAi() { aiText = ""; aiCandidates = []; aiSelected = {}; aiErr = null; aiOpen = true; }
+  let sources = $state<api.Source[]>([]);
+  let aiSource = $state("");
+  async function openAi() {
+    aiText = ""; aiCandidates = []; aiSelected = {}; aiErr = null; aiMode = "paste";
+    aiOpen = true;
+    if (sid) {
+      try { sources = await api.listSources(sid); if (sources[0]) aiSource = sources[0].id; }
+      catch { sources = []; }
+    }
+  }
   function closeAi() { aiOpen = false; }
   async function runSuggest() {
     if (aiBusy) return;
     aiBusy = true; aiErr = null; aiCandidates = []; aiSelected = {};
     try {
       const out = await api.aiSuggestGlossary(aiText, 20);
-      aiCandidates = out ?? [];
+      aiCandidates = (out ?? []).map(([t, d]) => ({ term: t, definition: d, quote: null }));
       aiSelected = Object.fromEntries(aiCandidates.map((_, i) => [i, true]));
       if (aiCandidates.length === 0) aiErr = "AI 没抽到术语";
+    } catch (e) { aiErr = String(e); }
+    finally { aiBusy = false; }
+  }
+  // "从资料" mode: pull terms from a real source. The backend only returns
+  // candidates whose original sentence is verbatim in the material.
+  async function runFromSource() {
+    if (aiBusy || !aiSource) return;
+    aiBusy = true; aiErr = null; aiCandidates = []; aiSelected = {};
+    try {
+      const out = await api.glossaryGenerateFromSource(aiSource);
+      aiCandidates = out ?? [];
+      aiSelected = Object.fromEntries(aiCandidates.map((_, i) => [i, true]));
+      if (aiCandidates.length === 0) aiErr = "AI 没抽到术语，或给出的原句都不在材料里";
     } catch (e) { aiErr = String(e); }
     finally { aiBusy = false; }
   }
   function acceptAi() {
     if (!sid) return;
     let added = 0;
-    aiCandidates.forEach(([t, d], i) => {
+    aiCandidates.forEach((c, i) => {
       if (!aiSelected[i]) return;
-      gl.addTerm(sid, t, d);
+      gl.addTerm(sid, c.term, c.definition);
       added++;
     });
     if (added) {
@@ -264,16 +287,42 @@
       </button>
     </header>
     <div class="gl-ai-body">
-      <label class="mono faint" for="gl-ai-text">粘贴一段文本（笔记 / 教材 / 来源内容）</label>
-      <textarea id="gl-ai-text" class="input" rows="6" bind:value={aiText} disabled={aiBusy} placeholder="把要抽术语的段落粘在这里…"></textarea>
-      <div class="gl-ai-actions">
-        <button class="btn btn--primary btn--sm" type="button" onclick={runSuggest} disabled={aiBusy || !aiText.trim()}>
-          {aiBusy ? "正在抽…" : "提取候选"}
-        </button>
-        {#if aiCandidates.length > 0}
-          <span class="mono faint">{aiCandidates.length} 候选 · 已选 {Object.values(aiSelected).filter(Boolean).length}</span>
-        {/if}
+      <div class="gl-ai-mode">
+        <button class="gl-ai-mode-btn{aiMode === "paste" ? " on" : ""}" type="button" onclick={() => (aiMode = "paste")}>粘贴文本</button>
+        <button class="gl-ai-mode-btn{aiMode === "source" ? " on" : ""}" type="button" onclick={() => (aiMode = "source")}>从资料</button>
       </div>
+
+      {#if aiMode === "paste"}
+        <label class="mono faint" for="gl-ai-text">粘贴一段文本（笔记 / 教材 / 来源内容）</label>
+        <textarea id="gl-ai-text" class="input" rows="6" bind:value={aiText} disabled={aiBusy} placeholder="把要抽术语的段落粘在这里…"></textarea>
+        <div class="gl-ai-actions">
+          <button class="btn btn--primary btn--sm" type="button" onclick={runSuggest} disabled={aiBusy || !aiText.trim()}>
+            {aiBusy ? "正在抽…" : "提取候选"}
+          </button>
+          {#if aiCandidates.length > 0}
+            <span class="mono faint">{aiCandidates.length} 候选 · 已选 {Object.values(aiSelected).filter(Boolean).length}</span>
+          {/if}
+        </div>
+      {:else}
+        <label class="mono faint" for="gl-ai-source">选择来源（抽出的原句会逐字对照材料）</label>
+        <select id="gl-ai-source" class="input" bind:value={aiSource} disabled={aiBusy}>
+          {#each sources as s}
+            <option value={s.id}>{s.name}</option>
+          {/each}
+        </select>
+        {#if sources.length === 0}
+          <span class="mono faint">这个科目下还没有可解析的来源。</span>
+        {/if}
+        <div class="gl-ai-actions">
+          <button class="btn btn--primary btn--sm" type="button" onclick={runFromSource} disabled={aiBusy || !aiSource || sources.length === 0}>
+            {aiBusy ? "正在抽…" : "生成术语"}
+          </button>
+          {#if aiCandidates.length > 0}
+            <span class="mono faint">{aiCandidates.length} 候选 · 已选 {Object.values(aiSelected).filter(Boolean).length}</span>
+          {/if}
+        </div>
+      {/if}
+
       {#if aiErr}
         <div class="gl-ai-err mono">{aiErr}</div>
       {/if}
@@ -283,8 +332,11 @@
             <li class="gl-ai-item">
               <label>
                 <input type="checkbox" bind:checked={aiSelected[i]} />
-                <span class="gl-ai-term read">{c[0]}</span>
-                <span class="gl-ai-def mono faint">{c[1]}</span>
+                <span class="gl-ai-term read">{c.term}</span>
+                <span class="gl-ai-def mono faint">{c.definition}</span>
+                {#if c.quote}
+                  <span class="gl-ai-quote">“{c.quote}”</span>
+                {/if}
               </label>
             </li>
           {/each}
@@ -438,6 +490,16 @@
   .gl-ai-head h2 { font-size: var(--t-md); font-weight: 600; color: var(--fg-bright); margin: 0; }
   .gl-ai-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
   .gl-ai-body .input { width: 100%; resize: vertical; min-height: 96px; }
+  .gl-ai-mode { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; align-self: flex-start; }
+  .gl-ai-mode-btn {
+    height: 28px; padding: 0 12px; background: transparent; border: 0; border-radius: 7px;
+    font-size: var(--t-2xs); color: var(--fg-muted); cursor: pointer;
+  }
+  .gl-ai-mode-btn.on { background: var(--surface); color: var(--fg-bright); box-shadow: 0 1px 0 var(--border); }
+  .gl-ai-quote {
+    grid-column: 2; font-size: var(--t-xs); color: var(--fg-faint); font-style: italic;
+    border-left: 2px solid var(--border-strong); padding-left: 8px; line-height: 1.5;
+  }
   .gl-ai-actions { display: flex; align-items: center; gap: 12px; }
   .gl-ai-err { color: var(--err); font-size: var(--t-xs); }
   .gl-ai-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }

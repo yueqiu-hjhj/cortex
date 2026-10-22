@@ -1158,6 +1158,155 @@ fn parse_glossary_terms(raw: &str, cap: usize) -> Result<Vec<(String, String)>> 
     Ok(out)
 }
 
+/// One extracted glossary candidate with the verbatim sentence that justifies it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GlossaryCandidate {
+    pub term: String,
+    pub definition: String,
+    /// A sentence copied verbatim from the source material, or None when the
+    /// model couldn't anchor the term in the text.
+    pub quote: Option<String>,
+}
+
+/// Generate glossary terms straight from a source, not pasted text. Same LLM
+/// discipline as `ai_suggest_glossary`, plus one extra rule this entry lives by:
+/// every candidate's `original_sentence` must be a verbatim substring of the
+/// source. A candidate whose quote can't be proven to live in the material is
+/// dropped whole — the same "don't trust the model's citations" rule the vocab
+/// miner uses. What the user confirms still goes through `gl.addTerm`, so this
+/// never touches the SQLite DB; it only proposes.
+#[tauri::command]
+pub async fn glossary_generate_from_source(
+    state: State<'_, AppState>,
+    source_id: String,
+) -> Result<Vec<GlossaryCandidate>> {
+    let content = {
+        let c = state.db.lock().unwrap();
+        if offline_mode(&c) {
+            return Err(Error::Other("离线模式下无法使用 AI 抽取".into()));
+        }
+        let content: Option<String> = c
+            .query_row("SELECT content FROM sources WHERE id=?1", [source_id], |r| r.get(0))
+            .ok();
+        match content {
+            Some(c) if !c.trim().is_empty() => c,
+            _ => {
+                return Err(Error::Other(
+                    "这个来源还没有可解析的正文（先等解析完成，或换一个文本来源）".into(),
+                ))
+            }
+        }
+    };
+    let cap = 20usize;
+    let text = if content.len() > 30_000 {
+        content.chars().take(30_000).collect::<String>()
+    } else {
+        content
+    };
+    let (spec, keys) = {
+        let c = state.db.lock().unwrap();
+        (model_spec_for(&c, "default"), read_keys(&c)?)
+    };
+    let model = llm::from_spec_or_any(&spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
+    let prompt = format!(
+        "从下面的学习材料中抽出最重要的 {cap} 个术语（term）和一句话定义（definition），并为每个术语给出一句 original_sentence——必须是材料中逐字照抄、能体现该术语语境的原句。\n\n要求：\n- 用材料原语言\n- 跳过停用词、人名、临时上下文\n- 优先定义名词、概念、原理、专有名词\n- definition 1-2 句，可独立理解\n- original_sentence 必须逐字来自材料，不要改写、不要翻译、不要缩写\n- 严格只输出 JSON：{{\"terms\":[{{\"term\":\"...\",\"definition\":\"...\",\"original_sentence\":\"...\"}}]}}，不要任何额外文字或 markdown 围栏\n\n材料：\n{text}"
+    );
+    let system = "你是一个学习助手，输出必须是严格 JSON。original_sentence 必须逐字来自材料。";
+    let raw = tauri::async_runtime::spawn_blocking(move || model.complete(system, &prompt))
+        .await
+        .map_err(|e| Error::Other(e.to_string()))??;
+    parse_glossary_with_quotes(&raw, &text, cap)
+}
+
+/// Tolerant JSON parser for the "from source" glossary prompt. Extends
+/// `parse_glossary_terms` with the verbatim check: a candidate whose
+/// `original_sentence` is not a substring of the source material is dropped
+/// entirely (quote optional, but if present it must check out).
+fn parse_glossary_with_quotes(raw: &str, source: &str, cap: usize) -> Result<Vec<GlossaryCandidate>> {
+    let mut s = raw.trim().to_string();
+    if s.starts_with("```") {
+        if let Some(end) = s.rfind("```") {
+            if end > 3 {
+                s = s[3..end].to_string();
+            }
+        }
+        if let Some(nl) = s.find('\n') {
+            s = s[nl + 1..].to_string();
+        }
+        s = s.trim().to_string();
+    }
+    let v: serde_json::Value = serde_json::from_str(&s)
+        .map_err(|e| Error::Other(format!("AI 返回的不是合法 JSON：{e}")))?;
+    let arr = v
+        .get("terms")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .or_else(|| v.as_array().cloned())
+        .ok_or_else(|| Error::Other("AI 返回的 JSON 没有 terms 数组".into()))?;
+    let norm_src = normalize_ws(source);
+    let src_tight = source.split_whitespace().collect::<String>();
+    let mut out: Vec<GlossaryCandidate> = Vec::new();
+    for item in arr {
+        let Some(obj) = item.as_object() else { continue };
+        let term = obj
+            .get("term")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let def = obj
+            .get("definition")
+            .or_else(|| obj.get("def"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let raw_quote = obj
+            .get("original_sentence")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if term.is_empty() || def.is_empty() {
+            continue;
+        }
+        if term.len() > 120 || def.len() > 500 {
+            continue;
+        }
+        // Verbatim discipline: the quote must actually live in the material.
+        // Tolerate spacing differences (CJK whitespace is not significant) by
+        // checking both whitespace-collapsed and whitespace-stripped forms; a
+        // real character substitution or omission still fails and drops the row.
+        let quote = if raw_quote.is_empty() {
+            None
+        } else {
+            let quote_spaced = normalize_ws(&raw_quote);
+            let quote_tight = raw_quote.split_whitespace().collect::<String>();
+            if norm_src.contains(&quote_spaced) || src_tight.contains(&quote_tight) {
+                Some(raw_quote)
+            } else {
+                continue; // not verbatim → drop the whole candidate
+            }
+        };
+        out.push(GlossaryCandidate { term, definition: def, quote });
+        if out.len() >= cap {
+            break;
+        }
+    }
+    if out.is_empty() {
+        return Err(Error::Other(
+            "AI 没抽出可用的术语，或给出的原句都不在材料里（已按逐字纪律丢弃）".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Collapse runs of whitespace to single spaces — lets the verbatim check
+/// tolerate the spacing the model adds without forgiving real edits.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Offload parsing to the configured homelab Tika service; None means no service configured.
 fn ingest_remote(state: &State<AppState>, path: &str) -> Result<Option<String>> {
     let base = {
@@ -7762,5 +7911,35 @@ mod model_routing_tests {
         // no cheap model configured → inherit chain untouched
         repo::set_setting(&c, "model_cheap", "").unwrap();
         assert_eq!(model_spec_for(&c, "flashcard"), "gemini:gemini-2.5-pro");
+    }
+
+    #[test]
+    fn glossary_from_source_drops_non_verbatim_quotes() {
+        // term+def valid but the quote is paraphrased → whole candidate dropped
+        let raw = r#"{"terms":[{"term":"熵","definition":"系统无序度的度量","original_sentence":"这是一段不在材料里的改写"},{"term":"基矢","definition":"空间的一组基","original_sentence":"基矢张成整个向量空间"}]}"#;
+        let src = "基矢张成整个向量空间，而熵度量无序度。";
+        let out = parse_glossary_with_quotes(raw, src, 20).unwrap();
+        assert_eq!(out.len(), 1, "非逐字原句应被丢弃");
+        assert_eq!(out[0].term, "基矢");
+        assert!(out[0].quote.is_some());
+        // whitespace-only differences are tolerated, real edits are not
+        let raw2 = r#"{"terms":[{"term":"熵","definition":"无序度","original_sentence":"基矢   张成   整个向量空间"}]}"#;
+        let out2 = parse_glossary_with_quotes(raw2, src, 20).unwrap();
+        assert_eq!(out2.len(), 1);
+        assert!(out2[0].quote.is_some());
+        // a candidate with no quote at all is still kept (quote is optional)
+        let raw3 = r#"{"terms":[{"term":"张量","definition":"多维数组的推广","original_sentence":""}]}"#;
+        let out3 = parse_glossary_with_quotes(raw3, src, 20).unwrap();
+        assert_eq!(out3.len(), 1);
+        assert!(out3[0].quote.is_none());
+    }
+
+    #[test]
+    fn glossary_from_source_rejects_empty_and_malformed() {
+        assert!(parse_glossary_with_quotes(r#"{"terms":[]}"#, "x", 20).is_err());
+        // fence-wrapped JSON is still parsed
+        let fenced = "```json\n{\"terms\":[{\"term\":\"a\",\"definition\":\"b\"}]}\n```";
+        let out = parse_glossary_with_quotes(fenced, "x", 20).unwrap();
+        assert_eq!(out.len(), 1);
     }
 }

@@ -578,6 +578,7 @@ pub fn run() {
             commands::external_provenance_record,
             commands::external_provenance_for,
             commands::ai_suggest_glossary,
+            commands::glossary_generate_from_source,
             commands::deep_research,
             commands::synthesize_video_overview,
             commands::zotero_import,
