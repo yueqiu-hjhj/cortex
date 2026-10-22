@@ -181,6 +181,8 @@
 | 4 | **小型自评集** | LDR/OpenScience 的 benchmark | 用自己领域的 30–50 道题验证检索质量，比公开跑分有用 | 小 |
 | 5 | **静态加密（可选）** | LDR（SQLCipher） | 笔记本丢失时的兜底；全盘加密可替代 | 中 |
 
+> **2026-10-22 更新**：#1、#2 已补上——新增 `cortex-paper-meta`（`--check` 查 Crossref 撤稿 + Unpaywall，`--fetch-oa` 下载开放全文），见 `docs/paper-meta.md`；#4 已有（`eval.rs` 的 Recall@5/MRR + 分层报告 + 弃答集 + 采纳规则）。剩余 #3 期刊质量信号与 #5 静态加密。
+
 ---
 
 ## 6. 对"自用"的取舍建议
