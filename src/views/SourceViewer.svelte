@@ -21,6 +21,43 @@
   // 应试精读 / 翻译训练面板（六维解析，挂在当前来源上）
   let benchOpen = $state(false);
 
+  // 可视化：从这篇材料生成思维导图 / 流程图 / 对比图 / 矩阵（确定性 SVG）
+  let visOpen = $state(false);
+  let visBusy = $state("");
+  let visErr = $state("");
+  let visSvg = $state("");
+  let visTitle = $state("");
+
+  async function runVisual(type: string) {
+    if (!src || visBusy) return;
+    visBusy = type;
+    visErr = "";
+    visSvg = "";
+    try {
+      const r =
+        type === "mindmap"
+          ? await api.mindmapGenerate(src.id)
+          : await api.chartGenerate(src.id, type);
+      visSvg = r.svg;
+      visTitle = r.title;
+    } catch (e) {
+      visErr = String(e);
+    } finally {
+      visBusy = "";
+    }
+  }
+
+  function downloadVisual() {
+    if (!visSvg) return;
+    const blob = new Blob([visSvg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(visTitle || "visual").replace(/[\\/:*?"<>|]/g, "_")}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // Citation deep-link: when a source is opened from a ⟦… · loc⟧ chip, scroll to the
   // chunk whose loc matches the cited location and flash it. Best-effort — no match just
   // opens the source. Re-runs when chunks finish loading.
@@ -611,6 +648,16 @@
             <Icon name="book" size={13} /> 应试精读
           </button>
         {/if}
+        {#if src?.content}
+          <button
+            class="btn btn--sm btn--ghost"
+            class:sv-on={visOpen}
+            onclick={() => (visOpen = !visOpen)}
+            title="从这篇材料生成思维导图 / 流程图 / 对比图 / 矩阵"
+          >
+            <Icon name="chart" size={13} /> 可视化
+          </button>
+        {/if}
         <button
           class="btn btn--icon btn--sm btn--ghost"
           onclick={editSource}
@@ -878,6 +925,47 @@
   <EnglishBench sourceId={src.id} kind="close" onclose={() => (benchOpen = false)} />
 {/if}
 
+{#if visOpen && src}
+  <div class="vis-overlay" role="dialog" aria-label="生成可视化">
+    <div class="vis-panel">
+      <div class="vis-head">
+        <span class="vis-title mono">{visSvg ? visTitle : "生成可视化"}</span>
+        <div class="grow"></div>
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={() => (visOpen = false)} title="关闭">
+          <Icon name="x" size={13} />
+        </button>
+      </div>
+      <div class="vis-types">
+        {#each [["mindmap", "思维导图"], ["flow", "流程图"], ["comparison", "对比图"], ["matrix", "矩阵"]] as [t, label] (t)}
+          <button
+            class="btn btn--sm btn--ghost"
+            class:sv-on={visBusy === t}
+            disabled={!!visBusy}
+            onclick={() => void runVisual(t)}
+          >
+            {visBusy === t ? "生成中…" : label}
+          </button>
+        {/each}
+      </div>
+      {#if visErr}
+        <p class="vis-err">{visErr}</p>
+      {/if}
+      {#if visSvg}
+        <div class="vis-canvas">{@html visSvg}</div>
+        <div class="vis-foot">
+          <button class="btn btn--sm btn--ghost" onclick={downloadVisual}>
+            <Icon name="external" size={13} /> 下载 SVG
+          </button>
+        </div>
+      {:else if !visBusy}
+        <p class="vis-hint faint">
+          选择一种图形，模型会读取这篇材料并生成确定性 SVG（同一次生成永远可复现）；结果同时存入材料库。
+        </p>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <style>
   /* Selection toolbar + flash — the LiteratureReader float look, scoped here. */
   /* 划词 AI 面板：固定在右上，避开阅读区正文 */
@@ -1104,5 +1192,69 @@
   }
   .sv-delete:hover {
     color: var(--err, var(--warn));
+  }
+
+  /* 可视化面板：从材料生成思维导图 / 图表 */
+  .vis-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .vis-panel {
+    width: min(880px, 92vw);
+    max-height: 86vh;
+    overflow-y: auto;
+    background: var(--panel, var(--bg));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .vis-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .vis-title {
+    font-size: var(--t-sm);
+    color: var(--fg);
+  }
+  .vis-types {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .vis-types button:disabled {
+    opacity: 0.55;
+  }
+  .vis-err {
+    margin: 0;
+    color: var(--err, var(--warn));
+    font-size: var(--t-sm);
+  }
+  .vis-canvas {
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    background: var(--bg);
+  }
+  .vis-canvas :global(svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  .vis-foot {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .vis-hint {
+    margin: 0;
+    font-size: var(--t-sm);
   }
 </style>

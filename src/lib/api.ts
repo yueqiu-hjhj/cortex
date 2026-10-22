@@ -3606,3 +3606,20 @@ export const growthRemove = (id: string) =>
 /** Markdown export of live items (active + paused). subjectId null = all. */
 export const growthExport = (subjectId?: string | null) =>
   invoke<string>("growth_export", { subjectId: subjectId ?? null });
+
+// ---- visuals (mind map / charts generated from a source) --------------------
+
+export interface VisualResult {
+  id: string;
+  title: string;
+  kind: string; // mindmap | chart
+  svg: string;
+}
+
+/** Mind map from a source's extracted text; stored as a material (kind=mindmap). */
+export const mindmapGenerate = (sourceId: string) =>
+  invoke<VisualResult>("mindmap_generate", { sourceId });
+
+/** chartType: flow | comparison | matrix; stored as a material (kind=chart). */
+export const chartGenerate = (sourceId: string, chartType: string) =>
+  invoke<VisualResult>("chart_generate", { sourceId, chartType });
