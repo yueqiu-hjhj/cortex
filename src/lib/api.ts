@@ -2714,6 +2714,8 @@ export interface Paper {
   cite_key: string | null;
   excerpt_count: number;
   open_task_count: number;
+  /** Crossref reports this work as retracted (filled by cortex-paper-meta). */
+  retracted: boolean;
 }
 
 export interface Excerpt {

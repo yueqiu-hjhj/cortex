@@ -54,6 +54,9 @@ pub struct Paper {
     pub excerpt_count: i64,
     /// Derived: open reading/writing tasks linked to it.
     pub open_task_count: i64,
+    /// Derived: Crossref says this work has been retracted. Filled by
+    /// `cortex-paper-meta --check`; false when never checked or still valid.
+    pub retracted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,7 +113,8 @@ const PAPER_COLUMNS: &str = "p.id, p.title, p.authors, p.year, p.venue, p.doi, p
      (SELECT COUNT(*) FROM excerpts e WHERE e.paper_id = p.id), \
      (SELECT COUNT(*) FROM item_links l JOIN work_items w ON w.id = l.item_id \
         WHERE l.entity_table = 'papers' AND l.entity_id = p.id \
-          AND w.status IN ('open','doing','blocked'))";
+          AND w.status IN ('open','doing','blocked')), \
+     COALESCE((SELECT q.retracted FROM paper_quality q WHERE q.paper_id = p.id), 0)";
 
 fn row_to_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
     Ok(Paper {
@@ -132,6 +136,7 @@ fn row_to_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
         cite_key: row.get(15)?,
         excerpt_count: row.get(16)?,
         open_task_count: row.get(17)?,
+        retracted: row.get::<_, i64>(18)? != 0,
     })
 }
 

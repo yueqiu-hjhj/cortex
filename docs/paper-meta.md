@@ -46,7 +46,8 @@ cargo run --bin cortex-paper-meta -- --report
 
 ## 结果写在哪
 
-新建表 `paper_quality`（工具自己 `CREATE TABLE IF NOT EXISTS`，**不改 `db.rs` 的迁移数组**）：
+表 `paper_quality`（迁移 `0083_paper_quality.sql`；工具运行时也会 `CREATE TABLE IF NOT EXISTS`，
+所以数据库还没迁移过也能先跑）：
 
 | 列 | 含义 |
 |---|---|
@@ -102,6 +103,7 @@ Unpaywall PDF 直链、closed 无链接、DOI 前缀归一化、URL 编码、文
 
 ## 已知边界
 
-- **UI 还没接入**：结果在 `paper_quality` 表里，`--report` 可看；文献列表的"已撤稿"角标待并行会话的改动稳定后再加（避免同时改 `papers.rs` / 前端）。
+- **应用内的显示**：论文列表与详情页会在 `retracted = 1` 时显示「⚠ 已撤稿」角标（`Paper.retracted`
+  由 `papers.rs` 的派生列给出）。检查本身仍是批处理，不在导入时联网。
 - Crossref/Unpaywall 覆盖不全：没有 DOI 的论文查不了（工具会跳过并计数）。
 - 查询失败不会丢数据：错误写进 `error`，下次 `--check` 自动重试。

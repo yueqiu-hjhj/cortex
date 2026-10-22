@@ -17,9 +17,9 @@
 //!   cortex-paper-meta --report         what we know so far
 //!
 //! Deliberate design choices:
-//!   - **No migration file.** The table is created here with IF NOT EXISTS, so
-//!     this tool never edits `db.rs`'s embedded migration array (a shared file).
-//!     If the app later adds a migration for the same table it stays a no-op.
+//!   - **Table is created defensively.** Migration `0083_paper_quality.sql`
+//!     owns the schema, but this tool also runs `CREATE TABLE IF NOT EXISTS`,
+//!     so it works against a database the app hasn't migrated yet.
 //!   - **Never fails the whole run.** A per-paper lookup error is recorded in
 //!     `paper_quality.error` and the loop continues.
 //!   - **Polite.** 250 ms between papers, a mailto user-agent, 20 s timeout.

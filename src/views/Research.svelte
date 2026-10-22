@@ -1543,6 +1543,7 @@
             <button type="button" class="prow-body" onclick={() => pick(p)}>
               <div class="ptitle">{p.title}</div>
               <div class="pmeta">
+                {#if p.retracted}<span class="retracted" title="Crossref 显示这篇论文已被撤稿">⚠ 已撤稿</span>{/if}
                 <span class="badge">{STATUS_LABEL[p.status] ?? p.status}</span>
                 {#if p.year}<span>{p.year}</span>{/if}
                 {#if p.excerpt_count}<span>{p.excerpt_count} 摘录</span>{/if}
@@ -1563,6 +1564,12 @@
           <p class="dmeta">{metaLine(selected) || "无元数据"}</p>
           {#if selected.doi}
             <p class="doi">DOI {selected.doi}</p>
+          {/if}
+          {#if selected.retracted}
+            <p class="retracted-note">
+              ⚠ Crossref 显示这篇论文已被撤稿。引用前请核对撤稿声明；需要更细的结论用
+              <code>cortex-paper-meta --report</code> 查看。
+            </p>
           {/if}
         </div>
 
@@ -2660,6 +2667,18 @@
   }
   .task {
     color: var(--accent);
+  }
+  .retracted {
+    border: 1px solid color-mix(in oklab, var(--danger, #e24b4a) 55%, transparent);
+    border-radius: 4px;
+    padding: 0 4px;
+    color: var(--danger, #e24b4a);
+  }
+  .retracted-note {
+    margin: 6px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--danger, #e24b4a);
   }
 
   .detail {
