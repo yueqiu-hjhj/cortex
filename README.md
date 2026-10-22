@@ -319,6 +319,7 @@ src-tauri/src/
 
 - **Storage:** a single SQLite database in the OS app-data dir, with WAL mode and versioned migrations. Embeddings are stored as little-endian `f32` BLOBs — exactly sqlite-vec's compact format — so retrieval ranks in SQL via `vec_distance_cosine` (with a Rust cosine scan as a transparent fallback).
 - **Privacy:** all content, embeddings, and generated material stay in that local DB. The only outbound calls are to the AI provider you configured and (optionally) your own SearXNG.
+- **Design contract:** the load-bearing invariants (answer states, citation snapshots, embedding-space isolation, chat rollover, the eval adoption rule) and the tests that enforce them live in [DESIGN.md](DESIGN.md).
 
 ## Tech stack
 
@@ -362,6 +363,21 @@ What works on this commit (`743c3ce`, v1.0.35), what doesn’t, and what’s onl
 | Builds signed + notarized for distribution | ❌ missing | repo is unsigned; release tooling lives in `.github/workflows/release.yml` |
 
 Legend: ✅ shipped = automated gate (run `npm run verify`); 🚧 partial = intentional gap, roadmap-tracked; ⚠️ = supported but not release-certified; ❌ = missing.
+
+## Deliberately not building
+Cortex is a **personal, local-first study OS** — not a research-platform clone. These were evaluated and rejected on purpose (full reasoning in `cortex-integrated-roadmap-2026-10-19.md` §4); the boundary is listed here so it stays explicit:
+| Not building | Why | Instead |
+| --- | --- | --- |
+| Python/R kernel execution | conda/venv/R packaging is a distribution nightmare, and the space is saturated | `cortex-mcp` can emit a notebook for Jupyter/Marimo |
+| SSH/Slurm/PBS remote compute | out-of-band tools already do this well | run jobs where you already run them |
+| BioNeMo / NVIDIA NIM adapters | not a study-OS user scenario | — |
+| ChEMBL / UniProt connectors | PubMed/arXiv cover ~90% of the literature use case | PubMed + arXiv only |
+| A fleet of domain-specialist agents | a general agent + personal skills is the right shape | the personal skills library |
+| Notebook-style Python editor | Jupyter/Marimo are the ceiling | export via `cortex-mcp` |
+| In-house web rendering pipeline / WebSocket push | already solved elsewhere | existing render path; syncd for live sync |
+| Our own browser extension / web clipper | extensions belong in the browser you already use | `cortex-mcp` (MCP) · `cortex-cli cortex clip <url>` |
+| A public benchmark suite | public scores exist; chasing them burns the budget that keeps the app good | the internal retrieval eval (synthetic + real corpus, persisted runs) |
+| Distribution & multi-user: store listings, notarization campaign, multi-device sync, accounts | personal use — there is exactly one user, you | local-first, single-user by design |
 
 ## Contributing
 
