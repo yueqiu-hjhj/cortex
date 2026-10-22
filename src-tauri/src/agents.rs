@@ -28,6 +28,8 @@ pub struct Agent {
     pub temperature: f64,
     pub max_steps: i64,
     pub enabled: bool,
+    /// Highest tool tier this agent may use: read < write < network (cumulative).
+    pub tool_tier: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -92,7 +94,7 @@ pub struct Tool {
 pub fn list_agents(conn: &Connection, user_id: &str) -> Result<Vec<Agent>> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, name, description, system_prompt, skills, tools, model,
-                temperature, max_steps, enabled, created_at, updated_at
+                temperature, max_steps, enabled, tool_tier, created_at, updated_at
            FROM agents WHERE user_id=?1 ORDER BY updated_at DESC"
     )?;
     let rows = stmt.query_map([user_id], parse_agent)?.collect::<rusqlite::Result<_>>()?;
@@ -102,11 +104,30 @@ pub fn list_agents(conn: &Connection, user_id: &str) -> Result<Vec<Agent>> {
 pub fn get_agent(conn: &Connection, user_id: &str, id: &str) -> Result<Agent> {
     conn.query_row(
         "SELECT id, user_id, name, description, system_prompt, skills, tools, model,
-                temperature, max_steps, enabled, created_at, updated_at
+                temperature, max_steps, enabled, tool_tier, created_at, updated_at
            FROM agents WHERE user_id=?1 AND id=?2",
         [user_id, id],
         parse_agent,
     ).map_err(|e| Error::NotFound(format!("agent {id} ({e})")))
+}
+
+pub const TOOL_TIERS: &[&str] = &["read", "write", "network"];
+
+/// Normalize a stored/requested tier; garbage falls back to the safe default.
+pub fn normalize_tier(s: &str) -> &'static str {
+    match s.trim() {
+        "write" => "write",
+        "network" => "network",
+        _ => "read",
+    }
+}
+
+pub fn tier_rank(t: &str) -> u8 {
+    match normalize_tier(t) {
+        "write" => 1,
+        "network" => 2,
+        _ => 0,
+    }
 }
 
 pub fn upsert_agent(
@@ -122,10 +143,14 @@ pub fn upsert_agent(
     temperature: f64,
     max_steps: i64,
     enabled: bool,
+    tool_tier: &str,
 ) -> Result<Agent> {
     if name.trim().is_empty() { return Err(Error::Other("agent name is required".into())); }
     if !(0.0..=2.0).contains(&temperature) { return Err(Error::Other("temperature must be 0..=2".into())); }
     if !(1..=64).contains(&max_steps) { return Err(Error::Other("max_steps must be 1..=64".into())); }
+    if !TOOL_TIERS.contains(&tool_tier) {
+        return Err(Error::Other(format!("tool_tier 必须是 {}", TOOL_TIERS.join("/"))));
+    }
     let skills = serde_json::to_string(skills)?;
     let tools = serde_json::to_string(tools)?;
     let now = crate::db::now_ms();
@@ -133,9 +158,9 @@ pub fn upsert_agent(
         Some(existing) => {
             let updated = conn.execute(
                 "UPDATE agents SET name=?1, description=?2, system_prompt=?3, skills=?4,
-                  tools=?5, model=?6, temperature=?7, max_steps=?8, enabled=?9, updated_at=?10
-                  WHERE user_id=?11 AND id=?12",
-                params![name, description, system_prompt, skills, tools, model, temperature, max_steps, enabled as i64, now, user_id, existing],
+                  tools=?5, model=?6, temperature=?7, max_steps=?8, enabled=?9, tool_tier=?10, updated_at=?11
+                  WHERE user_id=?12 AND id=?13",
+                params![name, description, system_prompt, skills, tools, model, temperature, max_steps, enabled as i64, tool_tier, now, user_id, existing],
             )?;
             if updated == 0 { return Err(Error::NotFound(format!("agent {existing}"))); }
             existing.to_string()
@@ -144,9 +169,9 @@ pub fn upsert_agent(
             let id = crate::db::new_id();
             conn.execute(
                 "INSERT INTO agents (id, user_id, name, description, system_prompt, skills, tools,
-                    model, temperature, max_steps, enabled, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
-                params![id, user_id, name, description, system_prompt, skills, tools, model, temperature, max_steps, enabled as i64, now],
+                    model, temperature, max_steps, enabled, tool_tier, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)",
+                params![id, user_id, name, description, system_prompt, skills, tools, model, temperature, max_steps, enabled as i64, tool_tier, now],
             )?;
             id
         }
@@ -498,7 +523,8 @@ fn parse_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
         skills: serde_json::from_str(r.get::<_, String>(5)?.as_str()).unwrap_or_default(),
         tools: serde_json::from_str(r.get::<_, String>(6)?.as_str()).unwrap_or_default(),
         model: r.get(7)?, temperature: r.get(8)?, max_steps: r.get(9)?, enabled: r.get(10)?,
-        created_at: r.get(11)?, updated_at: r.get(12)?,
+        tool_tier: normalize_tier(r.get::<_, String>(11)?.as_str()).to_string(),
+        created_at: r.get(12)?, updated_at: r.get(13)?,
     })
 }
 
@@ -507,8 +533,8 @@ fn parse_agent(r: &rusqlite::Row) -> rusqlite::Result<Agent> {
     fn thread_links_runs_and_shares_context_across_agents() {
         let st = crate::db::AppState::in_memory().unwrap();
         let c = st.db.lock().unwrap();
-        let a = upsert_agent(&c, "u1", None, "课程助教", Some("tutor"), "p", &[], &[], None, 0.5, 8, true).unwrap();
-        let b = upsert_agent(&c, "u1", None, "复习教练", Some("coach"), "p", &[], &[], None, 0.5, 8, true).unwrap();
+        let a = upsert_agent(&c, "u1", None, "课程助教", Some("tutor"), "p", &[], &[], None, 0.5, 8, true, "read").unwrap();
+        let b = upsert_agent(&c, "u1", None, "复习教练", Some("coach"), "p", &[], &[], None, 0.5, 8, true, "read").unwrap();
 
         // Agent A opens the thread.
         let r1 = start_run(&c, "u1", &a.id, "特征值是什么？").unwrap();
@@ -549,8 +575,8 @@ mod tests {
     fn agent_run_isolated_by_user() {
         let st = crate::db::AppState::in_memory().unwrap();
         let c = st.db.lock().unwrap();
-        let a = upsert_agent(&c, "u1", None, "Tutor", None, "Be helpful", &["skill-a".into()], &["tool-list-notebooks".into()], None, 0.3, 5, true).unwrap();
-        let b = upsert_agent(&c, "u2", None, "Tutor2", None, "Be helpful", &[], &[], None, 0.3, 5, true).unwrap();
+        let a = upsert_agent(&c, "u1", None, "Tutor", None, "Be helpful", &["skill-a".into()], &["tool-list-notebooks".into()], None, 0.3, 5, true, "read").unwrap();
+        let b = upsert_agent(&c, "u2", None, "Tutor2", None, "Be helpful", &[], &[], None, 0.3, 5, true, "read").unwrap();
         assert!(a.id != b.id);
         assert_eq!(list_agents(&c, "u1").unwrap().len(), 1);
         let r = start_run(&c, "u1", &a.id, "hi").unwrap();

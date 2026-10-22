@@ -85,8 +85,8 @@
     return {
       id: "", user_id: "u-default", name: "", description: null,
       system_prompt: "你是 Cortex 智能体。回答时引用来源；知识库没有的内容要明说。",
-      skills: [], tools: [], model: null, temperature: 0.3,
-      max_steps: 8, enabled: true, created_at: 0, updated_at: 0,
+      skills: [], tools: [],       model: null, temperature: 0.3,
+      max_steps: 8, enabled: true, tool_tier: "read", created_at: 0, updated_at: 0,
     };
   }
 
@@ -102,6 +102,7 @@
         editing.id || null, editing.name, editing.description,
         editing.system_prompt, editing.skills, editing.tools,
         editing.model, editing.temperature, editing.max_steps, editing.enabled,
+        editing.tool_tier,
       );
       app.pushToast({ kind: "success", title: editing.id ? "智能体已更新" : "智能体已创建" });
       editing = null;
@@ -259,6 +260,13 @@
         <label class="full">系统提示词<textarea class="input area" rows="3" bind:value={editing.system_prompt}></textarea></label>
         <label>随机性<input class="input" type="number" min="0" max="2" step="0.05" bind:value={editing.temperature} /></label>
         <label>最大步数<input class="input" type="number" min="1" max="64" step="1" bind:value={editing.max_steps} /></label>
+        <label>权限等级
+          <select class="input" bind:value={editing.tool_tier} title="read 只读 < write 应用写入 < network 外部网络（低含高）；超权调用会被拒绝并记录">
+            <option value="read">只读（read）</option>
+            <option value="write">可写应用（write）</option>
+            <option value="network">可外联（network，含 MCP）</option>
+          </select>
+        </label>
         <label class="check"><input type="checkbox" bind:checked={editing.enabled} /> 启用</label>
       </div>
       <div class="form-row">

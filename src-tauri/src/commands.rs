@@ -6293,9 +6293,9 @@ pub fn agents_list(state: State<AppState>) -> Result<Vec<crate::agents::Agent>> 
     repo_or_error(&state, |c| crate::agents::list_agents(c, crate::agents::DEFAULT_USER))
 }
 #[tauri::command]
-pub fn agents_upsert(state: State<AppState>, id: Option<String>, name: String, description: Option<String>, system_prompt: String, skills: Vec<String>, tools: Vec<String>, model: Option<String>, temperature: Option<f64>, max_steps: Option<i64>, enabled: Option<bool>) -> Result<crate::agents::Agent> {
+pub fn agents_upsert(state: State<AppState>, id: Option<String>, name: String, description: Option<String>, system_prompt: String, skills: Vec<String>, tools: Vec<String>, model: Option<String>, temperature: Option<f64>, max_steps: Option<i64>, enabled: Option<bool>, tool_tier: Option<String>) -> Result<crate::agents::Agent> {
     let c = state.db.lock().unwrap();
-    crate::agents::upsert_agent(&c, crate::agents::DEFAULT_USER, id.as_deref(), &name, description.as_deref(), &system_prompt, &skills, &tools, model.as_deref(), temperature.unwrap_or(0.3), max_steps.unwrap_or(8), enabled.unwrap_or(true))
+    crate::agents::upsert_agent(&c, crate::agents::DEFAULT_USER, id.as_deref(), &name, description.as_deref(), &system_prompt, &skills, &tools, model.as_deref(), temperature.unwrap_or(0.3), max_steps.unwrap_or(8), enabled.unwrap_or(true), tool_tier.as_deref().unwrap_or("read"))
 }
 #[tauri::command]
 pub fn agents_delete(state: State<AppState>, id: String) -> Result<()> {

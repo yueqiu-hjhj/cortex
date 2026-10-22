@@ -453,7 +453,7 @@ export interface Agent {
   id: string; user_id: string; name: string; description: string | null;
   system_prompt: string; skills: string[]; tools: string[];
   model: string | null; temperature: number; max_steps: number;
-  enabled: boolean; created_at: number; updated_at: number;
+  enabled: boolean; tool_tier: string; created_at: number; updated_at: number;
 }
 export interface Skill {
   id: string; user_id: string; name: string; description: string;
@@ -481,8 +481,8 @@ export const agentsList = () => invoke<Agent[]>("agents_list", {});
 export const agentsUpsert = (
   id: string | null, name: string, description: string | null, system_prompt: string,
   skills: string[], tools: string[], model: string | null, temperature: number,
-  max_steps: number, enabled: boolean
-) => invoke<Agent>("agents_upsert", { id, name, description, systemPrompt: system_prompt, skills, tools, model, temperature, maxSteps: max_steps, enabled });
+  max_steps: number, enabled: boolean, toolTier?: string
+) => invoke<Agent>("agents_upsert", { id, name, description, systemPrompt: system_prompt, skills, tools, model, temperature, maxSteps: max_steps, enabled, toolTier: toolTier ?? null });
 export const agentsDelete = (id: string) => invoke<void>("agents_delete", { id });
 export const agentsStartRun = (agentId: string, input: string, threadId?: string) =>
   invoke<AgentRun>("agents_start_run", { agentId, input, threadId });

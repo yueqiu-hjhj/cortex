@@ -106,6 +106,40 @@ fn check_onnx_model_if_used(conn: &Connection, data_dir: &Path) -> Check {
     }
 }
 
+/// 环境检测：能跑模型吗？任何一个云 key、注册表 provider key、Ollama 地址，
+/// 或用户显式开了离线模式（offline stub / 本地 Ollama）都算就绪。
+fn check_model_configured(conn: &Connection) -> Check {
+    let keys = crate::commands::read_keys(conn);
+    match keys {
+        Ok(k) => {
+            let cloud = k.gemini.is_some()
+                || k.openrouter.is_some()
+                || k.openai.is_some()
+                || k.claude.is_some()
+                || k.custom_api_key.is_some()
+                || !k.extra.is_empty();
+            if cloud || k.ollama_url.is_some() || k.offline {
+                let how = if cloud {
+                    "云端 key 已配置"
+                } else if k.ollama_url.is_some() {
+                    "本地 Ollama 已配置"
+                } else {
+                    "离线模式已开启"
+                };
+                Check { name: "Model available", ok: true, detail: how.into(), hint: None }
+            } else {
+                Check {
+                    name: "Model available",
+                    ok: false,
+                    detail: "没有配置任何模型 API key".into(),
+                    hint: Some("在 设置 › 模型 里添加 key（或开启离线模式）。没有模型时对话/生成/智能体都无法运行。".into()),
+                }
+            }
+        }
+        Err(e) => Check { name: "Model available", ok: false, detail: e.to_string(), hint: None },
+    }
+}
+
 pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Result<Report> {
     let (version_check, v) = check_migration_version(conn, known_migrations);
     let checks = vec![
@@ -114,6 +148,7 @@ pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Resul
         check_data_dir_writable(data_dir),
         check_disk_space(data_dir),
         check_onnx_model_if_used(conn, data_dir),
+        check_model_configured(conn),
     ];
     let passed = checks.iter().filter(|c| c.ok).count();
     let failed = checks.len() - passed;

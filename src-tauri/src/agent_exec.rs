@@ -263,11 +263,33 @@ fn system_prompt(
     } else {
         s.push_str("\n\n没有可用工具，直接给出最终回答，并以 `ANSWER: ` 开头。");
     }
+    // 分级权限：让模型知道自己的权限上限，避免它白费一轮调用被拒的工具。
+    s.push_str(&format!(
+        "\n\n## 工具权限\n你被授予 `{}` 级权限（read 只读 < write 应用写入 < network 外部网络，低含高）。超出权限的工具调用会被拒绝并记录在案。\n",
+        crate::agents::normalize_tier(&agent.tool_tier)
+    ));
     if !skills.is_empty() {
         s.push_str("\n## 可用技能（指令遵循）\n");
         s.push_str(skills);
     }
     s
+}
+
+/// Risk tier of a tool call. Built-in tools only read app data; MCP tools run
+/// on external servers and are classified `network` conservatively — the tier
+/// bounds what a prompt injection inside fetched content could reach.
+fn tool_tier(name: &str) -> &'static str {
+    if name.starts_with("mcp__") {
+        "network"
+    } else {
+        "read"
+    }
+}
+
+/// Permission gate at dispatch: denies the call, records the denial in the
+/// transcript (the audit trail), and lets the run continue.
+fn tier_allows(agent: &Agent, name: &str) -> bool {
+    crate::agents::tier_rank(tool_tier(name)) <= crate::agents::tier_rank(&agent.tool_tier)
 }
 
 fn transcript(messages: &[(String, String)]) -> String {
@@ -363,6 +385,16 @@ pub fn execute_run(
         if let Some((name, args)) = parse_tool_call(&reply) {
             let impl_tool = tools.iter().find(|t| t.name == name);
             append_message(c, run_id, "assistant", &reply, Some(&name))?;
+            // 分级权限：超出授予等级的调用直接拒绝，拒绝记录进 transcript。
+            if !tier_allows(agent, &name) {
+                let denial = format!(
+                    "权限拒绝：{name} 需要 {} 级权限，本智能体只授予 {} 级（read<write<network）。如确有必要，在智能体设置里调高权限等级后重试。",
+                    tool_tier(&name),
+                    crate::agents::normalize_tier(&agent.tool_tier)
+                );
+                append_message(c, run_id, "tool", &denial, Some(&name))?;
+                continue;
+            }
             let output = if let Some(t) = impl_tool {
                 match (t.run)(c, &args) {
                     Ok(o) => o,
@@ -481,6 +513,7 @@ mod tests {
             0.3,
             6,
             true,
+            "network",
         )
         .unwrap()
     }
@@ -499,8 +532,30 @@ mod tests {
             0.3,
             max_steps,
             true,
+            "read",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn tier_gate_blocks_network_for_read_agents() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let ro = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "RO", None, "p", &[], &[], None, 0.3, 5, true, "read").unwrap();
+        let net = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "NET", None, "p", &[], &[], None, 0.3, 5, true, "network").unwrap();
+        assert_eq!(ro.tool_tier, "read");
+        assert_eq!(net.tool_tier, "network");
+        // built-ins are read-tier: everyone may call them
+        assert!(tier_allows(&ro, "list_notebooks"));
+        assert!(tier_allows(&ro, "search_notebook"));
+        // MCP tools are network-tier: read agents are denied, network agents allowed
+        assert_eq!(tool_tier("mcp__kb__search"), "network");
+        assert!(!tier_allows(&ro, "mcp__kb__search"));
+        assert!(tier_allows(&net, "mcp__kb__search"));
+        // a write-tier agent is granted read but not network
+        let wr = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "WR", None, "p", &[], &[], None, 0.3, 5, true, "write").unwrap();
+        assert!(tier_allows(&wr, "list_notebooks"));
+        assert!(!tier_allows(&wr, "mcp__kb__search"));
     }
 
     #[test]
