@@ -1751,6 +1751,27 @@ pub fn list_chat_messages(conn: &Connection, subject_id: &str) -> Result<Vec<Cha
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The citations persisted with one assistant message, addressed by its
+/// created_at (ms) inside the subject's active thread. None when no such
+/// message exists — the frontend addresses the message it just rendered,
+/// and a stale tab must not crash on a cleared thread.
+pub fn message_citations_at(
+    conn: &Connection,
+    subject_id: &str,
+    created_at: i64,
+) -> Result<Option<Vec<Citation>>> {
+    let tid = current_thread(conn, subject_id)?;
+    let json: Option<Option<String>> = conn
+        .query_row(
+            "SELECT citations FROM chat_messages
+             WHERE thread_id=?1 AND created_at=?2 AND role='assistant'",
+            params![tid, created_at],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    Ok(json.flatten().as_deref().and_then(|s| serde_json::from_str(s).ok()))
+}
+
 /// Delete every message in the subject's active thread (keeps the thread row).
 pub fn clear_chat(conn: &Connection, subject_id: &str) -> Result<()> {
     let tid = current_thread(conn, subject_id)?;

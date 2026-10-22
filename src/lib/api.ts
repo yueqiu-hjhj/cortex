@@ -99,9 +99,21 @@ export interface Citation {
   char_start?: number | null;
   char_end?: number | null;
   snippet: string;
+  /** The frozen snapshot (0078): the chunk's full text at answer time.
+   *  citesnap re-checks it against the source's current text, so the
+   *  evidence can be verified long after re-indexing. Empty on pre-0078
+   *  citations (no snapshot was taken). */
+  quote?: string;
   score: number;
   cited: boolean;
 }
+/** Result of re-checking one frozen citation quote against the source's
+ *  current text (0078, KnowNote's content==slice invariant). */
+export type QuoteCheck =
+  | { kind: "exact" }
+  | { kind: "moved"; char_start: number; char_end: number }
+  | { kind: "drifted" }
+  | { kind: "source_gone" };
 export interface WebImage {
   img: string;
   thumb: string;
@@ -841,6 +853,11 @@ export const addChatMessage = (
     answerState: answerState ?? null,
   });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
+/** Re-check one answer's frozen citation quotes against current source text
+ *  (0078). One status per citation, in citation order; null entries are
+ *  pre-0078 citations with no snapshot. Empty when no such message. */
+export const verifyCitationSnapshots = (subjectId: string, createdAt: number) =>
+  invoke<(QuoteCheck | null)[]>("verify_citation_snapshots", { subjectId, createdAt });
 
 // chat sessions (history)
 export interface ThreadInfo { id: string; title: string; updated_at: number; count: number }

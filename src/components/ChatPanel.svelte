@@ -23,13 +23,17 @@
     text: string;
     citations?: api.Citation[];
     images?: api.WebImage[];
+    /** Persist time (ms) — also the address citesnap uses to re-fetch this
+     *  message's frozen citation snapshots (0078). Absent on optimistic
+     *  local bubbles (no citations to verify anyway). */
+    created_at?: number;
+    /** Terminal generation state (0077) — how this answer ended. */
+    answer_state?: api.AnswerState;
     /** Persisted retrieval accounting (0044) — drives the red 未检索 badge. */
     retrieval?: api.RetrievalMeta;
     /** Fabricated citations citecheck stripped (0069) — the badge that says
      *  "the model tried to cite sources that were never retrieved". */
     fabricated_dropped?: number;
-    /** Terminal generation state (0077) — how this answer ended. */
-    answer_state?: api.AnswerState;
   }
 
   // Web mode: let the AI pull live web snippets + images (diagrams/examples).
@@ -53,7 +57,20 @@
   // Per-message evidence-panel expansion. Default collapsed so the chat stays
   // scannable; clicking the Evidence header opens the snippets.
   let evidenceOpen = $state<Record<number, boolean>>({});
-  function toggleEvidence(i: number) { evidenceOpen = { ...evidenceOpen, [i]: !evidenceOpen[i] }; }
+  // Frozen-quote verification per message index (0078): when the evidence
+  // panel opens, re-check the answer's citation snapshots against the
+  // sources' current text. Lazy — history rows cost nothing until opened.
+  let snapChecks = $state<Record<number, (api.QuoteCheck | null)[]>>({});
+  function toggleEvidence(i: number) {
+    evidenceOpen = { ...evidenceOpen, [i]: !evidenceOpen[i] };
+    const m = messages[i];
+    if (evidenceOpen[i] && m && m.created_at != null && snapChecks[i] === undefined && (m.citations ?? []).some((c) => c.quote)) {
+      api
+        .verifyCitationSnapshots(app.activeSubjectId ?? "", m.created_at)
+        .then((checks) => { snapChecks = { ...snapChecks, [i]: checks }; })
+        .catch(() => {});
+    }
+  }
   let draft = $state("");
   // Streaming + suggestions now live in the store (app.sendChat) so a reply keeps
   // going even if this panel unmounts. We only surface the live text when it's for
@@ -132,6 +149,8 @@
             citations: m.citations ?? [],
             retrieval: m.retrieval ?? undefined,
             fabricated_dropped: m.fabricated_dropped ?? undefined,
+            created_at: m.created_at,
+            answer_state: m.answer_state ?? undefined,
           }));
       })
       .catch(() => {});
@@ -157,6 +176,8 @@
           citations: m.citations ?? [],
           retrieval: m.retrieval ?? undefined,
           fabricated_dropped: m.fabricated_dropped ?? undefined,
+          created_at: m.created_at,
+          answer_state: m.answer_state ?? undefined,
         })) as ChatMessage[];
         const imgs = app.chatLastImages;
         if (imgs.length && next.length && next[next.length - 1].role === "assistant") {
@@ -449,7 +470,13 @@
     if (!sid) return;
     await api.openChatThread(sid, id).catch(() => {});
     const ms = await api.listChatMessages(sid).catch(() => []);
-    messages = ms.map((m) => ({ role: m.role as ChatMessage["role"], text: m.text }));
+    messages = ms.map((m) => ({
+      role: m.role as ChatMessage["role"],
+      text: m.text,
+      citations: m.citations ?? [],
+      created_at: m.created_at,
+      answer_state: m.answer_state ?? undefined,
+    }));
     app.chatSuggestions = [];
     historyOpen = false;
   }
@@ -716,7 +743,8 @@
                 {#if evidenceOpen[i]}
                   <div class="evidence-body">
                     <div class="evidence-list">
-                      {#each cites as c (c.chunk_id)}
+                      {#each cites as c, ci (c.chunk_id)}
+                        {@const snap = snapChecks[i]?.[ci] ?? null}
                         <button
                           type="button"
                           class="evidence-chip"
@@ -732,6 +760,21 @@
                           <Icon name={c.cited ? "book" : "warn"} size={11} />
                           <span class="ec-source">{c.source_name}</span>
                           {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
+                          {#if snap && snap.kind === "moved"}
+                            <span
+                              class="ec-snap ec-snap-moved"
+                              title="快照明文仍在源文里，但位置随重索引移动了——引用依然成立"
+                              >⟲ 已移位</span
+                            >
+                          {:else if snap && snap.kind === "drifted"}
+                            <span
+                              class="ec-snap ec-snap-drift"
+                              title="这条引用冻结时的原文，已经不在来源的当前文本里了（来源被改过或重新提取过）——证据待人工核对"
+                              >⚠ 与现文不符</span
+                            >
+                          {:else if snap && snap.kind === "source_gone"}
+                            <span class="ec-snap ec-snap-drift" title="来源已被删除，无从核对">⚠ 来源已删</span>
+                          {/if}
                           {#if c.score != null}<span class="ec-score mono">{Math.round(c.score * 100)}%</span>{/if}
                         </button>
                       {/each}
@@ -1043,6 +1086,26 @@
   .evidence-chip.is-cited { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
   .ec-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ec-loc { flex: none; color: var(--fg-faint); font-family: var(--font-mono); font-size: 10px; }
+  /* Snapshot verification badges (0078): the frozen quote was re-checked
+     against the source's current text. Moved = content intact, re-indexed;
+     drift = the quote is no longer in the source (edited/re-extracted). */
+  .ec-snap {
+    flex: none;
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+  }
+  .ec-snap-moved {
+    color: var(--accent, #7c8cf8);
+    border-color: color-mix(in oklab, var(--accent, #7c8cf8) 40%, transparent);
+    background: color-mix(in oklab, var(--accent, #7c8cf8) 10%, transparent);
+  }
+  .ec-snap-drift {
+    color: var(--warn, #f5a623);
+    border-color: color-mix(in oklab, var(--warn, #f5a623) 45%, transparent);
+    background: color-mix(in oklab, var(--warn, #f5a623) 12%, transparent);
+  }
   .chat-img {
     display: block; width: 116px; height: 86px; border-radius: var(--rad-2);
     overflow: hidden; border: 1px solid var(--border); background: var(--surface-2);

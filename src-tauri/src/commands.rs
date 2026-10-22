@@ -2349,6 +2349,9 @@ pub async fn chat_answer(
             char_start: h.char_start,
             char_end: h.char_end,
             snippet: truncate(&h.text, 160),
+            // Frozen snapshot (0078): the full chunk text, so the evidence
+            // can be re-verified against the source long after re-indexing.
+            quote: h.text.clone(),
             score: h.score,
             cited: text.contains(&format!("⟦{}", h.source_name)),
         })

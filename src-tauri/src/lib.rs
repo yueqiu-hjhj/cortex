@@ -70,6 +70,7 @@ pub mod growth;
 pub mod visuals;
 pub mod kb;
 pub mod cloze;
+pub mod citesnap;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -752,6 +753,7 @@ pub fn run() {
             kb::kb_search_all,
             kb::kb_context,
             cloze::cloze_generate,
+            citesnap::verify_citation_snapshots,
             agents::roles_list,
             agents::roles_instantiate,
             // agent write-back queue (L2)

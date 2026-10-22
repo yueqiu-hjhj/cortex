@@ -136,6 +136,14 @@ pub struct Citation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub char_end: Option<i64>,
     pub snippet: String,
+    /// The frozen snapshot (0078): the chunk's FULL text at answer time —
+    /// `snippet` is just the UI truncation of this. citesnap re-checks the
+    /// quote against the source's current text, so a re-index that moves or
+    /// rewrites chunks can't silently invalidate the evidence an answer
+    /// showed. No migration needed: it rides inside the citations JSON.
+    /// Empty on pre-0078 citations (no snapshot was taken).
+    #[serde(default)]
+    pub quote: String,
     #[serde(default)]
     pub score: f32,
     /// True when the generated answer actually references this source. A useful
