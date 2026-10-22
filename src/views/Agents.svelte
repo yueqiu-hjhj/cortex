@@ -27,6 +27,58 @@
       if (!runAgentId && agents.length) runAgentId = agents[0].id;
     } catch (e) { app.pushToast({ kind: "error", title: "智能体加载失败", body: String(e) }); }
     finally { loaded = true; }
+    void loadKbs();
+  }
+
+  // ---- 外接知识库（KBP 式外挂大脑：Dify / FastGPT / MCP）----
+  let kbs = $state<api.KbConn[]>([]);
+  let kbAdding = $state(false);
+  let kbBusy = $state(false);
+  let kbNew = $state({ name: "", kind: "dify", base_url: "", dataset_id: "", api_key: "", description: "", args_json: "" });
+  let kbQ = $state("");
+  let kbReports = $state<api.KbSearchReport[]>([]);
+  let kbSearching = $state(false);
+
+  async function loadKbs() {
+    try { kbs = await api.kbList(); }
+    catch (e) { app.pushToast({ kind: "error", title: "知识库加载失败", body: String(e) }); }
+  }
+
+  async function kbCreate() {
+    if (!kbNew.name.trim()) return;
+    kbBusy = true;
+    try {
+      await api.kbAdd(
+        kbNew.name.trim(), kbNew.kind, kbNew.base_url.trim(), kbNew.dataset_id.trim(),
+        kbNew.api_key.trim() || null, kbNew.description.trim(), kbNew.args_json.trim() || null,
+      );
+      kbNew = { name: "", kind: kbNew.kind, base_url: "", dataset_id: "", api_key: "", description: "", args_json: "" };
+      kbAdding = false;
+      await loadKbs();
+      app.pushToast({ kind: "success", title: "知识库已接入" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "接入失败", body: String(e) });
+    } finally { kbBusy = false; }
+  }
+
+  async function kbToggle(k: api.KbConn) {
+    try { await api.kbSetEnabled(k.id, !k.enabled); await loadKbs(); }
+    catch (e) { app.pushToast({ kind: "error", title: "操作失败", body: String(e) }); }
+  }
+
+  async function kbDelete(k: api.KbConn) {
+    if (!(await app.confirm({ title: `删除知识库「${k.name}」？`, danger: true, okLabel: "删除" }))) return;
+    try { await api.kbRemove(k.id); await loadKbs(); }
+    catch (e) { app.pushToast({ kind: "error", title: "删除失败", body: String(e) }); }
+  }
+
+  async function kbRunSearch() {
+    const q = kbQ.trim();
+    if (!q || kbSearching) return;
+    kbSearching = true; kbReports = [];
+    try { kbReports = await api.kbSearchAll(q); }
+    catch (e) { app.pushToast({ kind: "error", title: "检索失败", body: String(e) }); }
+    finally { kbSearching = false; }
   }
 
   function blankAgent(): api.Agent {
@@ -334,6 +386,85 @@
       </ul>
     {/if}
   </div>
+
+  <div class="card">
+    <h3>外接知识库</h3>
+    <p class="mut" style="margin:0">
+      把 Dify / FastGPT 的知识库或任意 MCP 工具接成「外挂大脑」。每个库写一句
+      <strong>描述协议</strong>（装什么、什么时候该查），检索与智能体都按它理解用途；API key 加密存储，不回显。
+    </p>
+    {#if kbs.length}
+      <ul class="kb-list">
+        {#each kbs as k (k.id)}
+          <li>
+            <div>
+              <strong>{k.name}</strong>
+              <span class="tag">{k.kind}</span>
+              {#if !k.enabled}<span class="tag tag--off">已停用</span>{/if}
+              <span class="mut mono kb-meta">{k.kind === "mcp" ? k.dataset_id : k.base_url}</span>
+              <div class="mut kb-desc">{k.description || "（未填写描述协议）"}</div>
+            </div>
+            <div class="row-end">
+              <button class="btn" onclick={() => void kbToggle(k)}>{k.enabled ? "停用" : "启用"}</button>
+              <button class="btn" onclick={() => void kbDelete(k)}>删除</button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <div class="mut">还没有外接知识库。Dify 填服务地址+数据集 ID+数据集 Key；FastGPT 填服务地址+知识库 ID+账号 Key；MCP 直接选一个已注册工具。</div>
+    {/if}
+
+    {#if kbAdding}
+      <div class="form-row">
+        <label>名称<input class="input" bind:value={kbNew.name} placeholder="如：课程资料库" /></label>
+        <label>类型
+          <select class="input" bind:value={kbNew.kind}>
+            <option value="dify">Dify 数据集</option>
+            <option value="fastgpt">FastGPT 知识库</option>
+            <option value="mcp">MCP 工具</option>
+          </select>
+        </label>
+        {#if kbNew.kind === "mcp"}
+          <label class="full">工具名（mcp__服务器__工具）<input class="input mono" bind:value={kbNew.dataset_id} placeholder="mcp__kb__search" /></label>
+          <label class="full">参数模板（JSON，{'{query}'} 会被替换成检索词）<input class="input mono" bind:value={kbNew.args_json} placeholder={'{"query":"{query}"}'} /></label>
+        {:else}
+          <label>服务地址<input class="input mono" bind:value={kbNew.base_url} placeholder={kbNew.kind === "dify" ? "https://dify.example/v1" : "http://localhost:3000"} /></label>
+          <label>{kbNew.kind === "dify" ? "数据集 ID" : "知识库 ID"}<input class="input mono" bind:value={kbNew.dataset_id} /></label>
+          <label class="full">API Key<input class="input mono" type="password" bind:value={kbNew.api_key} placeholder="加密存储，不会回显" /></label>
+        {/if}
+        <label class="full">描述协议（装什么、什么时候该查）<input class="input" bind:value={kbNew.description} placeholder="如：全部课程讲义的向量库，问课程内容时查它" /></label>
+      </div>
+      <div class="row-end">
+        <button class="btn" onclick={() => (kbAdding = false)}>取消</button>
+        <button class="btn primary" disabled={kbBusy || !kbNew.name.trim()} onclick={() => void kbCreate()}>
+          {kbBusy ? "接入中…" : "接入"}
+        </button>
+      </div>
+    {:else}
+      <div class="row-end"><button class="btn" onclick={() => (kbAdding = true)}>＋ 接入知识库</button></div>
+    {/if}
+
+    <div class="row-inline">
+      <input class="input" placeholder="检索所有已启用的知识库…" bind:value={kbQ}
+             onkeydown={(e) => e.key === "Enter" && void kbRunSearch()} />
+      <button class="btn primary" disabled={kbSearching || !kbQ.trim() || !kbs.some((k) => k.enabled)}
+              onclick={() => void kbRunSearch()}>{kbSearching ? "检索中…" : "检索"}</button>
+    </div>
+    {#if kbReports.length}
+      {#each kbReports as rep (rep.name)}
+        <div class="kb-rep">
+          <div class="mut mono">{rep.name} · {rep.kind}{rep.error ? ` · ${rep.error}` : ` · ${rep.hits.length} 条`}</div>
+          {#each rep.hits as h, i (i)}
+            <div class="kb-hit">
+              <div class="mut mono kb-src">{h.source} · {(h.score * 100).toFixed(0)}%</div>
+              <div class="kb-content">{h.content}</div>
+            </div>
+          {/each}
+        </div>
+      {/each}
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -386,4 +517,13 @@
   .thr-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--fg-muted); cursor: pointer; }
   .thr-switch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; margin-bottom: 6px;
     background: color-mix(in oklab, var(--accent) 6%, transparent); border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent); border-radius: 6px; }
+  .kb-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .kb-list li { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .kb-meta { margin-left: 6px; font-size: 10.5px; }
+  .kb-desc { margin-top: 3px; font-size: 11px; }
+  .kb-rep { border-left: 2px solid var(--border-strong); padding-left: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .kb-hit { display: flex; flex-direction: column; gap: 2px; }
+  .kb-src { font-size: 10.5px; }
+  .kb-content { font-size: 12px; white-space: pre-wrap; max-height: 130px; overflow-y: auto; }
+  .tag--off { opacity: 0.5; }
 </style>

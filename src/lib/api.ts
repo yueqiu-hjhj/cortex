@@ -3623,3 +3623,88 @@ export const mindmapGenerate = (sourceId: string) =>
 /** chartType: flow | comparison | matrix; stored as a material (kind=chart). */
 export const chartGenerate = (sourceId: string, chartType: string) =>
   invoke<VisualResult>("chart_generate", { sourceId, chartType });
+
+// ---- external knowledge bases (KBP-style 外挂大脑) ---------------------------
+
+export interface KbConn {
+  id: string;
+  name: string;
+  kind: string; // dify | fastgpt | mcp
+  base_url: string;
+  dataset_id: string;
+  args_json: string;
+  description: string;
+  enabled: boolean;
+  created_at: number;
+  has_key: boolean;
+}
+
+export interface KbHit {
+  kb: string;
+  source: string;
+  content: string;
+  score: number;
+}
+
+/** One KB's answer inside a merged search — failures stay isolated per KB. */
+export interface KbSearchReport {
+  name: string;
+  kind: string;
+  hits: KbHit[];
+  error: string | null;
+}
+
+export const kbList = () => invoke<KbConn[]>("kb_list");
+
+export const kbAdd = (
+  name: string,
+  kind: string,
+  baseUrl: string,
+  datasetId: string,
+  apiKey: string | null,
+  description: string,
+  argsJson?: string | null,
+) =>
+  invoke<KbConn>("kb_add", {
+    name,
+    kind,
+    baseUrl,
+    datasetId,
+    apiKey: apiKey || null,
+    description,
+    argsJson: argsJson ?? null,
+  });
+
+/** apiKey semantics: null = keep existing, "" = clear, text = replace. */
+export const kbUpdate = (
+  id: string,
+  name: string,
+  baseUrl: string,
+  datasetId: string,
+  description: string,
+  argsJson: string | null,
+  apiKey: string | null,
+) =>
+  invoke<void>("kb_update", {
+    id,
+    name,
+    baseUrl,
+    datasetId,
+    description,
+    argsJson,
+    apiKey,
+  });
+
+export const kbSetEnabled = (id: string, enabled: boolean) =>
+  invoke<void>("kb_set_enabled", { id, enabled });
+
+export const kbRemove = (id: string) => invoke<void>("kb_remove", { id });
+
+export const kbQuery = (id: string, query: string, topK?: number) =>
+  invoke<KbHit[]>("kb_query", { id, query, topK: topK ?? null });
+
+export const kbSearchAll = (query: string, topK?: number) =>
+  invoke<KbSearchReport[]>("kb_search_all", { query, topK: topK ?? null });
+
+/** Description protocol as prompt text (enabled KBs, one line each). */
+export const kbContext = () => invoke<string>("kb_context");

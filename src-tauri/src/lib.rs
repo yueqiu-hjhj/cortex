@@ -68,6 +68,7 @@ pub mod writing_kit;
 pub mod english_bench;
 pub mod growth;
 pub mod visuals;
+pub mod kb;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -741,6 +742,14 @@ pub fn run() {
             growth::growth_active_prompt,
             visuals::mindmap_generate,
             visuals::chart_generate,
+            kb::kb_list,
+            kb::kb_add,
+            kb::kb_update,
+            kb::kb_set_enabled,
+            kb::kb_remove,
+            kb::kb_query,
+            kb::kb_search_all,
+            kb::kb_context,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,
