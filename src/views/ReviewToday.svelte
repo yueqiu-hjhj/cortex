@@ -95,6 +95,35 @@
   const cur = $derived(session && !session.done ? session.queue[session.i] : null);
   const backOf = $derived(cur ? (backs.get(cur.item_key) ?? "") : "");
 
+  // ── 遮挡自测：正面含 {{c1::答案}} 标记时，渲染成可点击的遮挡块 ──
+  type ClozePart = { t: "text"; s: string } | { t: "cloze"; answer: string };
+  function parseCloze(front: string): ClozePart[] | null {
+    const re = /\{\{c\d+::(.*?)\}\}/g;
+    if (!re.test(front)) return null;
+    const parts: ClozePart[] = [];
+    let last = 0;
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(front))) {
+      if (m.index > last) parts.push({ t: "text", s: front.slice(last, m.index) });
+      parts.push({ t: "cloze", answer: m[1] });
+      last = m.index + m[0].length;
+    }
+    if (last < front.length) parts.push({ t: "text", s: front.slice(last) });
+    return parts;
+  }
+  let revealed = $state<number[]>([]);
+  // 换卡时重置揭示状态
+  $effect(() => { void cur; revealed = []; });
+  const clozeParts = $derived(cur ? parseCloze(cur.item_key) : null);
+  const maskStr = (len: number) => "█".repeat(Math.max(3, Math.min(len, 10)));
+  function toggleReveal(i: number) {
+    revealed = revealed.includes(i) ? revealed.filter((x) => x !== i) : [...revealed, i];
+  }
+  function revealAll() {
+    revealed = (clozeParts ?? []).map((_, i) => i).filter((i) => clozeParts![i].t === "cloze");
+  }
+
   // Next-interval preview per grade [again, hard, good, easy] for the current card.
   $effect(() => {
     const s = session;
@@ -222,7 +251,27 @@
         >
           <div class="rv-card-side">
             <span class="rv-card-tag eyebrow">正面</span>
-            <div class="rv-card-text read"><RichText text={cur.item_key} /></div>
+            <div class="rv-card-text read">
+              {#if clozeParts}
+                <div class="rv-cloze">
+                  {#each clozeParts as p, i}
+                    {#if p.t === "text"}<span>{p.s}</span>{:else}
+                      <button
+                        class="rv-mask"
+                        class:open={revealed.includes(i)}
+                        onclick={(e) => { e.stopPropagation(); toggleReveal(i); }}
+                        title={revealed.includes(i) ? "再点一下重新遮挡" : "点击揭示"}
+                      >{revealed.includes(i) ? p.answer : maskStr(p.answer.length)}</button>
+                    {/if}
+                  {/each}
+                </div>
+                <button class="rv-cloze-all" onclick={(e) => { e.stopPropagation(); revealAll(); }}>
+                  全部揭示
+                </button>
+              {:else}
+                <RichText text={cur.item_key} />
+              {/if}
+            </div>
           </div>
           {#if session.flipped}
             <div class="rv-card-side back">
@@ -491,4 +540,25 @@
     font-family: var(--font-display); font-size: 18px; font-weight: 600;
     color: var(--fg-bright);
   }
+
+  /* ── 遮挡自测（cloze）卡面 ── */
+  .rv-cloze { display: inline; line-height: 2.1; }
+  .rv-mask {
+    font: inherit; cursor: pointer; display: inline-block;
+    margin: 0 2px; padding: 0 7px; border-radius: 5px;
+    background: var(--surface-2, rgba(127, 127, 127, 0.12));
+    border: 1px dashed var(--border-strong, var(--border));
+    color: transparent; user-select: none; vertical-align: baseline;
+  }
+  .rv-mask.open {
+    border-style: solid; color: var(--accent); font-weight: 600;
+    background: transparent; user-select: text;
+  }
+  .rv-cloze-all {
+    display: block; margin-top: 10px;
+    font-size: var(--t-xs); color: var(--fg-muted);
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 10px; cursor: pointer;
+  }
+  .rv-cloze-all:hover { color: var(--fg-bright); border-color: var(--border-strong, var(--border)); }
 </style>

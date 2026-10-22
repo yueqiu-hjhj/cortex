@@ -3708,3 +3708,14 @@ export const kbSearchAll = (query: string, topK?: number) =>
 
 /** Description protocol as prompt text (enabled KBs, one line each). */
 export const kbContext = () => invoke<string>("kb_context");
+
+// ---- cloze (遮挡) flashcards -------------------------------------------------
+
+export interface ClozeResult {
+  material_id: string;
+  count: number;
+}
+
+/** Generate occlusion cards from a source; saved as a flashcards material. */
+export const clozeGenerate = (sourceId: string, count?: number) =>
+  invoke<ClozeResult>("cloze_generate", { sourceId, count: count ?? null });

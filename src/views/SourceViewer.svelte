@@ -58,6 +58,25 @@
     URL.revokeObjectURL(url);
   }
 
+  // 遮挡自测卡：一键从材料生成（正面遮挡，复习页点击揭示）
+  let clozeBusy = $state(false);
+  async function genCloze() {
+    if (!src || clozeBusy) return;
+    clozeBusy = true;
+    try {
+      const r = await api.clozeGenerate(src.id);
+      app.pushToast({
+        kind: "success",
+        title: `已生成 ${r.count} 张遮挡卡`,
+        body: "卡面遮住了关键概念，到「今天」的复习队列里点开自测",
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "遮挡卡生成失败", body: String(e) });
+    } finally {
+      clozeBusy = false;
+    }
+  }
+
   // Citation deep-link: when a source is opened from a ⟦… · loc⟧ chip, scroll to the
   // chunk whose loc matches the cited location and flash it. Best-effort — no match just
   // opens the source. Re-runs when chunks finish loading.
@@ -656,6 +675,16 @@
             title="从这篇材料生成思维导图 / 流程图 / 对比图 / 矩阵"
           >
             <Icon name="chart" size={13} /> 可视化
+          </button>
+        {/if}
+        {#if src?.content}
+          <button
+            class="btn btn--sm btn--ghost"
+            disabled={clozeBusy}
+            onclick={() => void genCloze()}
+            title="从这篇材料生成遮挡自测卡（正面遮挡关键概念，点击揭示；进 FSRS 复习队列）"
+          >
+            <Icon name="cards" size={13} /> {clozeBusy ? "生成中…" : "遮挡卡"}
           </button>
         {/if}
         <button

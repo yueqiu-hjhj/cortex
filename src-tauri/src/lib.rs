@@ -69,6 +69,7 @@ pub mod english_bench;
 pub mod growth;
 pub mod visuals;
 pub mod kb;
+pub mod cloze;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -750,6 +751,7 @@ pub fn run() {
             kb::kb_query,
             kb::kb_search_all,
             kb::kb_context,
+            cloze::cloze_generate,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,

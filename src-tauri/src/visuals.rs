@@ -34,7 +34,7 @@ pub struct VisualResult {
 
 // ---- source text -----------------------------------------------------------
 
-fn source_text(conn: &Connection, source_id: &str) -> Result<String> {
+pub(crate) fn source_text(conn: &Connection, source_id: &str) -> Result<String> {
     let content: Option<String> = conn
         .query_row("SELECT content FROM sources WHERE id=?1", [source_id], |r| r.get(0))
         .ok();
@@ -419,7 +419,7 @@ fn strip_fences(raw: &str) -> String {
     s
 }
 
-fn load_model(state: &tauri::State<'_, crate::AppState>) -> Result<Box<dyn crate::llm::Llm>> {
+pub(crate) fn load_model(state: &tauri::State<'_, crate::AppState>) -> Result<Box<dyn crate::llm::Llm>> {
     let (spec, keys) = {
         let c = state.db.lock().unwrap();
         (
