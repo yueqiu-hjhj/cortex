@@ -66,6 +66,7 @@ pub mod provenance;
 pub mod redteam;
 pub mod writing_kit;
 pub mod english_bench;
+pub mod growth;
 pub mod moc;
 pub mod cross_book;
 pub mod workitems;
@@ -728,6 +729,14 @@ pub fn run() {
             tutor::tutor_misjudged,
             tutor::tutor_misjudged_resolve,
             tutor::tutor_due_count,
+            // growth profile — a human-owned object over learning signals
+            growth::growth_derive,
+            growth::growth_list,
+            growth::growth_add,
+            growth::growth_set_status,
+            growth::growth_remove,
+            growth::growth_export,
+            growth::growth_active_prompt,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::accept_proposal,

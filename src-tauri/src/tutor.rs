@@ -210,6 +210,7 @@ struct TurnContext {
     node_summary: Option<String>,
     node_doc: Option<String>,
     history: Vec<TutorTurn>,
+    growth: String,
 }
 
 fn load_context(conn: &Connection, session_id: &str) -> Result<TurnContext> {
@@ -245,7 +246,11 @@ fn load_context(conn: &Connection, session_id: &str) -> Result<TurnContext> {
     })?;
     let mut history: Vec<TutorTurn> = rows.collect::<rusqlite::Result<_>>()?;
     history.reverse();
-    Ok(TurnContext { session, node_summary, node_doc, history })
+    // The learner's cross-conversation profile is read-only context for the
+    // coach: it tells the tutor what the student is working on *elsewhere* so
+    // it can connect this drill to their real goals and known blind spots.
+    let growth = crate::growth::active_prompt(conn, &session.subject_id).unwrap_or_default();
+    Ok(TurnContext { session, node_summary, node_doc, history, growth })
 }
 
 fn build_turn_prompt(ctx: &TurnContext, answer: &str, confidence: i64) -> String {
@@ -272,6 +277,9 @@ fn build_turn_prompt(ctx: &TurnContext, answer: &str, confidence: i64) -> String
             let who = if t.role == "user" { "学生" } else { "教练" };
             p.push_str(&format!("{}：{}\n", who, t.text.chars().take(400).collect::<String>()));
         }
+    }
+    if !ctx.growth.is_empty() {
+        p.push_str(&format!("\n{}\n", ctx.growth));
     }
     p.push_str(&format!("\n学生这一轮的回答：{}\n\n按规则输出 VERDICT 行和你的回复。", answer));
     p

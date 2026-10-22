@@ -3520,3 +3520,75 @@ export const retrievalTrace = (query: string, subjectId?: string | null, k?: num
     subjectId: subjectId ?? null,
     k: k ?? null,
   });
+
+// ---- growth profile — a human-owned object over learning signals ----------
+// Derived from real BKT mastery / calibration / tutor-misjudgements. The model
+// only ever *proposes*; a row exists only after the user confirms.
+
+export interface GrowthEvidence {
+  source: string; // knowledge_node | tutor_misjudged | calibration | manual
+  ref: string; // backing row id (or subject id for calibration)
+  excerpt: string; // traceable snippet
+}
+
+export interface GrowthItem {
+  id: string;
+  subject_id: string;
+  subject_name: string;
+  kind: string; // goal | misconception | review | strength
+  title: string;
+  detail: string;
+  status: string; // active | paused | resolved | dismissed
+  origin: string; // derived | manual
+  evidence: GrowthEvidence[];
+  created_at: number;
+  updated_at: number;
+  resolved_at: number | null;
+}
+
+export interface GrowthProposal {
+  subject_id: string;
+  subject_name: string;
+  kind: string;
+  title: string;
+  detail: string;
+  evidence: GrowthEvidence[];
+}
+
+/** Propose items from real data (no insert). subjectId null = every subject. */
+export const growthDerive = (subjectId?: string | null) =>
+  invoke<GrowthProposal[]>("growth_derive", { subjectId: subjectId ?? null });
+
+/** List items. subjectId null = cross-subject; status null = every lifecycle. */
+export const growthList = (subjectId?: string | null, status?: string | null) =>
+  invoke<GrowthItem[]>("growth_list", {
+    subjectId: subjectId ?? null,
+    status: status ?? null,
+  });
+
+export const growthAdd = (
+  subjectId: string,
+  kind: string,
+  title: string,
+  detail: string,
+  evidence?: GrowthEvidence[],
+  origin?: string,
+) =>
+  invoke<GrowthItem>("growth_add", {
+    subjectId,
+    kind,
+    title,
+    detail,
+    evidenceJson: evidence ? JSON.stringify(evidence) : null,
+    origin: origin ?? null,
+  });
+
+export const growthSetStatus = (id: string, status: string) =>
+  invoke<void>("growth_set_status", { id, status });
+
+export const growthRemove = (id: string) =>
+  invoke<void>("growth_remove", { id });
+
+/** Markdown export of live items (active + paused). subjectId null = all. */
+export const growthExport = (subjectId?: string | null) =>
+  invoke<string>("growth_export", { subjectId: subjectId ?? null });

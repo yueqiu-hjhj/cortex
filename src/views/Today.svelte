@@ -15,6 +15,7 @@
   import { app } from "../lib/store.svelte";
   import * as api from "../lib/api";
   import Icon from "../components/Icon.svelte";
+  import GrowthPanel from "../components/GrowthPanel.svelte";
 
   const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -392,6 +393,8 @@
       今天
     </button>
   </div>
+
+  <GrowthPanel />
 
   {#if error}
     <div class="err">{error}</div>
