@@ -2595,6 +2595,31 @@ pub fn list_chat_messages(state: State<AppState>, subject_id: String) -> Result<
     repo::list_chat_messages(&c, &subject_id)
 }
 
+/// Reverse provenance (KnowNote borrow): passages of this source that past
+/// answers cited inline, with those answers and their questions attached.
+#[tauri::command]
+pub fn source_backrefs(
+    state: State<AppState>,
+    subject_id: String,
+    source_id: String,
+) -> Result<Vec<crate::backrefs::PassageBackref>> {
+    let c = state.db.lock().unwrap();
+    crate::backrefs::source_backrefs(&c, &subject_id, &source_id)
+}
+
+/// Reverse provenance: every question asked in this subject, newest first,
+/// with the paired answer's provenance (state / retrieval hits / stripped
+/// fabrications). `limit` defaults to 50 and is clamped to 200.
+#[tauri::command]
+pub fn question_index(
+    state: State<AppState>,
+    subject_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::backrefs::QuestionEntry>> {
+    let c = state.db.lock().unwrap();
+    crate::backrefs::question_index(&c, &subject_id, limit.unwrap_or(50))
+}
+
 #[tauri::command]
 pub fn clear_chat(state: State<AppState>, subject_id: String) -> Result<()> {
     let c = state.db.lock().unwrap();

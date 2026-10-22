@@ -196,6 +196,39 @@
     if (wasBusy && !busy) dequeue();
     wasBusy = busy;
   });
+
+  // Jump-to-message (引用回流 / 问题索引 set app.chatJumpTo): reload the
+  // current thread, scroll the target bubble into view and flash it. The
+  // signal is consumed on read so jumping to the same message twice works.
+  $effect(() => {
+    const target = app.chatJumpTo;
+    if (target === null) return;
+    app.chatJumpTo = null;
+    const sid = app.activeSubjectId;
+    if (!sid) return;
+    api.listChatMessages(sid)
+      .then((ms) => {
+        if (app.activeSubjectId !== sid) return;
+        messages = ms.map((m) => ({
+          role: m.role as ChatMessage["role"],
+          text: m.text,
+          citations: m.citations ?? [],
+          retrieval: m.retrieval ?? undefined,
+          fabricated_dropped: m.fabricated_dropped ?? undefined,
+          created_at: m.created_at,
+          answer_state: m.answer_state ?? undefined,
+        }));
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-msg-at="${target}"]`);
+          if (el) {
+            el.scrollIntoView({ block: "center", behavior: "smooth" });
+            el.classList.add("bubble-flash");
+            setTimeout(() => el.classList.remove("bubble-flash"), 1600);
+          }
+        });
+      })
+      .catch(() => {});
+  });
   let scrollEl = $state<HTMLElement | null>(null);
   let composeEl = $state<HTMLTextAreaElement | null>(null);
 
@@ -481,6 +514,38 @@
     historyOpen = false;
   }
 
+  // 问题索引（KnowNote borrow）：本科目问过的每个问题，连同配对的回答的
+  // provenance（终止态 / 检索命中 / 剥离的伪造引用）。点一条跳回那段对话。
+  let histTab = $state<"threads" | "questions">("threads");
+  let questions = $state<api.QuestionEntry[]>([]);
+  let questionsBusy = $state(false);
+  async function loadQuestions() {
+    const sid = app.activeSubjectId;
+    if (!sid) {
+      questions = [];
+      return;
+    }
+    questionsBusy = true;
+    try {
+      questions = await api.questionIndex(sid);
+    } catch {
+      questions = [];
+    } finally {
+      questionsBusy = false;
+    }
+  }
+  function showQuestions() {
+    histTab = "questions";
+    if (questions.length === 0 && !questionsBusy) void loadQuestions();
+  }
+  async function jumpToQuestion(q: api.QuestionEntry) {
+    const sid = app.activeSubjectId;
+    if (!sid) return;
+    await api.openChatThread(sid, q.thread_id).catch(() => {});
+    historyOpen = false;
+    app.jumpToChatMessage(q.created_at);
+  }
+
   // Send the next queued message (if any) once the current one finishes.
   function dequeue() {
     if (queued.length === 0 || app.chatBusy) return;
@@ -678,7 +743,7 @@
         {#if m.role === "system"}
           <div class="bubble system">— {m.text} —</div>
         {:else if m.role === "user"}
-          <div class="bubble user">{m.text}</div>
+          <div class="bubble user" data-msg-at={m.created_at}>{m.text}</div>
         {:else}
           {@const cites = m.citations ?? []}
           {@const citedCount = cites.filter((c) => c.cited).length}
@@ -690,6 +755,7 @@
             class="bubble assistant"
             class:is-uncited={isUncited}
             class:is-unretrieved={noRetrieval}
+            data-msg-at={m.created_at}
             data-clip-scope="chat"
             data-clip-label={`AI 回答 · ${modelLabel()}`}
           >
@@ -968,6 +1034,19 @@
       <div class="hist-panel" role="dialog" aria-modal="true" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
         <div class="hist-head">
           <span class="hist-title">对话历史</span>
+          <div class="hist-tabs">
+            <button
+              type="button"
+              class="hist-tab"
+              class:hist-tab-on={histTab === "threads"}
+              onclick={() => (histTab = "threads")}
+            >
+              对话
+            </button>
+            <button type="button" class="hist-tab" class:hist-tab-on={histTab === "questions"} onclick={showQuestions}>
+              问题索引
+            </button>
+          </div>
           <div class="grow"></div>
           <button class="btn btn--sm btn--ghost" onclick={startNewConversation} title="New conversation">
             <Icon name="plus" size={12} /> New
@@ -976,15 +1055,54 @@
             <Icon name="x" size={12} />
           </button>
         </div>
-        {#if threads.length === 0}
-          <div class="hist-empty mono faint">还没有历史对话。</div>
+        {#if histTab === "threads"}
+          {#if threads.length === 0}
+            <div class="hist-empty mono faint">还没有历史对话。</div>
+          {:else}
+            <div class="hist-list">
+              {#each threads as th}
+                <button type="button" class="hist-item" onclick={() => pickThread(th.id)}>
+                  <Icon name="chat" size={13} color="var(--fg-faint)" />
+                  <span class="hist-item-title">{th.title || "New conversation"}</span>
+                  <span class="hist-item-meta mono faint">{th.count} msg</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {:else if questionsBusy}
+          <div class="hist-empty mono faint">正在建立问题索引…</div>
+        {:else if questions.length === 0}
+          <div class="hist-empty mono faint">这个科目还没有问过问题。</div>
         {:else}
           <div class="hist-list">
-            {#each threads as th}
-              <button type="button" class="hist-item" onclick={() => pickThread(th.id)}>
-                <Icon name="chat" size={13} color="var(--fg-faint)" />
-                <span class="hist-item-title">{th.title || "New conversation"}</span>
-                <span class="hist-item-meta mono faint">{th.count} msg</span>
+            {#each questions as q (q.created_at + q.thread_id)}
+              <button type="button" class="q-item" onclick={() => void jumpToQuestion(q)}>
+                <span class="q-text">{q.question || "（空问题）"}</span>
+                <span class="q-badges">
+                  {#if q.answer_state === null}
+                    <span class="q-badge q-badge-warn" title="这个问题还没有得到回答（生成被中断或尚未发送）">未回答</span>
+                  {:else}
+                    {#if q.answer_state === "truncated"}
+                      <span class="q-badge q-badge-warn" title="回答被输出上限截断，保留了部分内容">截断</span>
+                    {:else if q.answer_state === "blocked"}
+                      <span class="q-badge q-badge-err" title="回答被模型安全策略拦截">拦截</span>
+                    {:else if q.answer_state === "failed"}
+                      <span class="q-badge q-badge-err" title="模型没有返回可用内容">无输出</span>
+                    {:else if q.answer_state === "aborted"}
+                      <span class="q-badge" title="你按下了停止">已中止</span>
+                    {/if}
+                    {#if q.hits === 0}
+                      <span class="q-badge q-badge-err" title="检索零命中：这一轮回答没有用到你的资料">零命中</span>
+                    {:else if q.hits}
+                      <span class="q-badge" title="检索命中 {q.hits} 个分块">{q.hits} 命中</span>
+                    {/if}
+                    {#if q.fabricated_dropped}
+                      <span class="q-badge q-badge-err" title="citecheck 剥掉了 {q.fabricated_dropped} 条捏造的引用">
+                        剥离 {q.fabricated_dropped}
+                      </span>
+                    {/if}
+                  {/if}
+                </span>
               </button>
             {/each}
           </div>
@@ -1139,6 +1257,52 @@
   .hist-item:hover { background: var(--surface-2); border-color: var(--border); }
   .hist-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-bright); font-size: 12.5px; }
   .hist-item-meta { flex: none; font-size: 10.5px; }
+
+  /* History drawer tabs: 对话 / 问题索引 (KnowNote borrow). */
+  .hist-tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--surface-2); }
+  .hist-tab {
+    border: none; background: transparent; cursor: pointer;
+    padding: 2px 10px; border-radius: 999px;
+    font-size: 11px; color: var(--fg-muted);
+  }
+  .hist-tab:hover { color: var(--fg-bright); }
+  .hist-tab-on { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
+
+  /* Question index rows: the question, then its answer's provenance badges. */
+  .q-item {
+    display: flex; flex-direction: column; gap: 4px; align-items: stretch;
+    width: 100%; text-align: left; cursor: pointer;
+    padding: 8px 10px; border-radius: var(--rad-2, 8px);
+    border: 1px solid transparent; background: transparent;
+  }
+  .q-item:hover { background: var(--surface-2); border-color: var(--border); }
+  .q-text {
+    color: var(--fg-bright); font-size: 12.5px; line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .q-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+  .q-badge {
+    font-size: 10px; padding: 0 6px; border-radius: 999px;
+    color: var(--fg-muted); background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+  .q-badge-warn {
+    color: var(--warn, #f5a623);
+    border-color: color-mix(in oklab, var(--warn, #f5a623) 40%, transparent);
+    background: color-mix(in oklab, var(--warn, #f5a623) 10%, transparent);
+  }
+  .q-badge-err {
+    color: var(--err, #e5484d);
+    border-color: color-mix(in oklab, var(--err, #e5484d) 40%, transparent);
+    background: color-mix(in oklab, var(--err, #e5484d) 10%, transparent);
+  }
+
+  /* Jump target flash (引用回流 / 问题索引 scroll-here). */
+  @keyframes bubble-flash {
+    0%, 100% { box-shadow: none; }
+    30% { box-shadow: 0 0 0 2px var(--accent); }
+  }
+  .bubble-flash { animation: bubble-flash 1.6s ease-in-out 1; }
 
   /* ── next-step suggestion chips + queue + stop + model picker ──────────── */
   .chat-suggest {

@@ -28,6 +28,35 @@
   let visSvg = $state("");
   let visTitle = $state("");
 
+  // 引用回流（KnowNote borrow）：这篇材料的哪些段落被过去的问答引用过，
+  // 连同当时的问题与回答一起列出来。按需加载，打开面板时才查。
+  let backrefOpen = $state(false);
+  let backrefs = $state<api.PassageBackref[]>([]);
+  let backrefBusy = $state(false);
+  let backrefLoadedFor = $state("");
+  async function loadBackrefs() {
+    if (!src || backrefBusy) return;
+    backrefBusy = true;
+    try {
+      backrefs = await api.sourceBackrefs(src.subject_id, src.id);
+      backrefLoadedFor = src.id;
+    } catch {
+      backrefs = [];
+    } finally {
+      backrefBusy = false;
+    }
+  }
+  function toggleBackrefs() {
+    backrefOpen = !backrefOpen;
+    if (backrefOpen && backrefLoadedFor !== src?.id) void loadBackrefs();
+  }
+  // 点一条引用回流 → 打开对应科目的聊天、切到那条对话、滚到当时的那条消息。
+  async function jumpToThread(threadId: string, createdAt: number) {
+    if (!src) return;
+    await api.openChatThread(src.subject_id, threadId).catch(() => {});
+    app.jumpToChatMessage(createdAt);
+  }
+
   async function runVisual(type: string) {
     if (!src || visBusy) return;
     visBusy = type;
@@ -677,6 +706,16 @@
             <Icon name="chart" size={13} /> 可视化
           </button>
         {/if}
+        {#if src}
+          <button
+            class="btn btn--sm btn--ghost"
+            class:sv-on={backrefOpen}
+            onclick={toggleBackrefs}
+            title="引用回流：这篇材料里被过去的问答实际引用过的段落，连同当时的问题一起列出"
+          >
+            <Icon name="book" size={13} /> 引用回流{backrefs.length ? ` ${backrefs.length}` : ""}
+          </button>
+        {/if}
         {#if src?.content}
           <button
             class="btn btn--sm btn--ghost"
@@ -995,6 +1034,56 @@
   </div>
 {/if}
 
+{#if backrefOpen && src}
+  <div class="vis-overlay" role="dialog" aria-label="引用回流">
+    <div class="vis-panel backref-panel">
+      <div class="vis-head">
+        <span class="vis-title mono">引用回流 · {src.name}</span>
+        <div class="grow"></div>
+        <button class="btn btn--icon btn--sm btn--ghost" onclick={() => (backrefOpen = false)} title="关闭">
+          <Icon name="x" size={13} />
+        </button>
+      </div>
+      {#if backrefBusy}
+        <p class="vis-hint faint">正在检索历史问答…</p>
+      {:else if backrefs.length === 0}
+        <p class="vis-hint faint">
+          还没有任何回答行内引用过这篇材料的段落。在聊天里提出引用了它的问题后，这里会把「哪段支撑了哪个结论」反向列出来。
+        </p>
+      {:else}
+        <p class="vis-hint faint">
+          被行内引用过的段落，按被引用次数排序。每条引用都带着当时的问题——点问题可以跳回那段对话。
+        </p>
+        <div class="backref-list">
+          {#each backrefs as b (b.chunk_id)}
+            <div class="backref-item">
+              <div class="backref-passage">
+                <span class="backref-ord mono">#{b.ord + 1}</span>
+                {#if b.loc}<span class="backref-loc mono">{b.loc}</span>{/if}
+                <span class="backref-count mono" title="被 {b.cites.length} 个回答行内引用">{b.cites.length}</span>
+              </div>
+              <p class="backref-excerpt">{b.excerpt}</p>
+              <div class="backref-cites">
+                {#each b.cites as a (a.created_at)}
+                  <button
+                    type="button"
+                    class="backref-cite"
+                    title={`${a.question}\n—— ${a.answer}`}
+                    onclick={() => void jumpToThread(a.thread_id, a.created_at)}
+                  >
+                    <Icon name="chat" size={11} />
+                    <span class="backref-q">{a.question || "（无记录的问题）"}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <style>
   /* Selection toolbar + flash — the LiteratureReader float look, scoped here. */
   /* 划词 AI 面板：固定在右上，避开阅读区正文 */
@@ -1254,6 +1343,57 @@
     font-size: var(--t-sm);
     color: var(--fg);
   }
+  /* 引用回流面板（KnowNote borrow）：被行内引用过的段落 + 当时的问题。 */
+  .backref-panel { max-width: 560px; }
+  .backref-list { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow-y: auto; }
+  .backref-item {
+    border: 1px solid var(--border);
+    border-radius: var(--rad-2, 8px);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .backref-passage { display: flex; align-items: center; gap: 6px; }
+  .backref-ord { font-size: 10px; color: var(--fg-faint); }
+  .backref-loc { font-size: 10px; color: var(--fg-muted); }
+  .backref-count {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--accent);
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .backref-excerpt {
+    margin: 0;
+    font-family: var(--font-read);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--fg);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .backref-cites { display: flex; flex-direction: column; gap: 2px; }
+  .backref-cite {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 3px 4px;
+    border-radius: 6px;
+    color: var(--fg-muted);
+    font-size: 11.5px;
+  }
+  .backref-cite:hover { background: var(--surface-2); color: var(--fg-bright); }
+  .backref-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .vis-types {
     display: flex;
     gap: 8px;

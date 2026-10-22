@@ -573,8 +573,19 @@ class AppStore {
   chatMsgNonce = $state(0); // bump → open panels reload persisted history
   chatSuggestions = $state<string[]>([]); // next-step chips from the last reply
   chatLastImages = $state<api.WebImage[]>([]); // web-mode images from the last reply
+  // Jump target (引用回流 / 问题索引): a message's created_at. The open chat
+  // panel reloads history, scrolls to that bubble and flashes it, then clears.
+  chatJumpTo = $state<number | null>(null);
   #chatTypeIv: ReturnType<typeof setInterval> | null = null;
   #chatCancelled = false;
+
+  /// Open the chat (if closed) and ask the panel to scroll to one message.
+  /// The caller is responsible for having switched the active thread first
+  /// (openChatThread) — this only navigates within whatever is current.
+  jumpToChatMessage(createdAt: number) {
+    this.chatOpen = true;
+    this.chatJumpTo = createdAt;
+  }
 
   #clearChatIv() {
     if (this.#chatTypeIv) { clearInterval(this.#chatTypeIv); this.#chatTypeIv = null; }

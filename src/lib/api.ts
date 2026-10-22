@@ -859,6 +859,41 @@ export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { sub
 export const verifyCitationSnapshots = (subjectId: string, createdAt: number) =>
   invoke<(QuoteCheck | null)[]>("verify_citation_snapshots", { subjectId, createdAt });
 
+// ---- reverse provenance (KnowNote borrow) ----
+/** One answer that cited a passage, with the question that provoked it. */
+export interface AnswerRef {
+  question: string;
+  answer: string;
+  created_at: number;
+  thread_id: string;
+}
+/** One passage of a source that at least one answer cited inline. */
+export interface PassageBackref {
+  chunk_id: string;
+  ord: number;
+  loc: string | null;
+  excerpt: string;
+  cites: AnswerRef[];
+}
+/** One asked question with its paired answer's provenance. */
+export interface QuestionEntry {
+  question: string;
+  created_at: number;
+  thread_id: string;
+  /** Terminal generation state of the paired answer (0077), if any. */
+  answer_state?: AnswerState | null;
+  /** Retrieval hits of the paired answer. */
+  hits?: number | null;
+  /** Fabricated citations citecheck stripped from the paired answer. */
+  fabricated_dropped?: number | null;
+  /** How many citations the answer's evidence panel showed. */
+  citation_count: number;
+}
+export const sourceBackrefs = (subjectId: string, sourceId: string) =>
+  invoke<PassageBackref[]>("source_backrefs", { subjectId, sourceId });
+export const questionIndex = (subjectId: string, limit?: number) =>
+  invoke<QuestionEntry[]>("question_index", { subjectId, limit });
+
 // chat sessions (history)
 export interface ThreadInfo { id: string; title: string; updated_at: number; count: number }
 export const newChat = (subjectId: string) => invoke<void>("new_chat", { subjectId });
