@@ -7533,7 +7533,7 @@ pub async fn retrieval_trace(
 pub async fn retrieval_eval(
     state: State<'_, AppState>,
     k: Option<i64>,
-) -> Result<Vec<crate::eval::EvalReport>> {
+) -> Result<crate::eval::EvalOutcome> {
     let (provider, keys, ollama_url, data_dir, embed_model) = {
         let c = state.db.lock().unwrap();
         (
@@ -7568,7 +7568,11 @@ pub async fn retrieval_eval(
     .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
     let c = state.db.lock().unwrap();
     crate::eval::seed(&c, &seeded)?;
-    crate::eval::score_all(&c, want, &queries)
+    let reports = crate::eval::score_all(&c, want, &queries)?;
+    // Persist + judge against the previous synthetic run: the adoption rule
+    // (KnowNote borrow) turns "did my change help?" into a repeatable verdict.
+    let verdict = crate::eval::record_and_judge(&c, "synthetic", &reports)?;
+    Ok(crate::eval::EvalOutcome { reports, verdict })
 }
 
 /// The same four-mode evaluation over the USER'S OWN corpus, closing gap C1:
@@ -7586,7 +7590,7 @@ pub async fn retrieval_eval_real(
     state: State<'_, AppState>,
     subject_ids: Option<Vec<String>>,
     k: Option<i64>,
-) -> Result<Vec<crate::eval::EvalReport>> {
+) -> Result<crate::eval::EvalOutcome> {
     let want = k.unwrap_or(crate::eval::DEFAULT_K as i64).clamp(1, 20) as usize;
 
     // Pure SQL: sample query candidates from the user's indexed chunks.
@@ -7624,10 +7628,20 @@ pub async fn retrieval_eval_real(
     let queries: Vec<crate::eval::EvalQuery> = candidates
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| crate::eval::EvalQuery { query, expect, vec })
+        .map(|((query, expect), vec)| crate::eval::EvalQuery {
+            query,
+            expect,
+            vec,
+            kind: "real".to_string(),
+        })
         .collect();
     let c = state.db.lock().unwrap();
-    crate::eval::score_all(&c, want, &queries)
+    let reports = crate::eval::score_all(&c, want, &queries)?;
+    // Real runs are persisted and judged like synthetic ones, but the
+    // verdict's note carries the caveat: these numbers also move when the
+    // library does, so a delta is not purely the retrieval change's doing.
+    let verdict = crate::eval::record_and_judge(&c, "real", &reports)?;
+    Ok(crate::eval::EvalOutcome { reports, verdict })
 }
 
 /// How far off the user's time estimates have been, over a look-back window.

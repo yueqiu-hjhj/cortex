@@ -55,9 +55,13 @@
   let trace = $state<api.RetrievalTrace | null>(null);
   let traceErr = $state<string | null>(null);
   let traceBusy = $state(false);
-  let modes = $state<api.EvalReport[] | null>(null);
+  let modes = $state<api.EvalOutcome | null>(null);
   let modesKind = $state<"synthetic" | "real" | null>(null);
   let modesErr = $state<string | null>(null);
+  // The shipping config the adoption rule judges (must match the Rust const).
+  const VERDICT_MODE = "hybrid+rerank";
+  const verdictMode = $derived(modes?.reports.find((r) => r.mode === VERDICT_MODE) ?? null);
+  const verdict = $derived(modes?.verdict ?? null);
 
   const channels = $derived<{ name: string; hits: api.TraceHit[] }[]>(
     trace
@@ -368,14 +372,14 @@
         </div>
         {#if modesErr}<div class="lab-err">{modesErr}</div>{/if}
         {#if modes}
-          {#if !modes.length}
+          {#if !modes.reports.length}
             <p class="lab-empty-inline">这一档没有可评测的问题——库里还没索引出足够的段落。</p>
           {:else}
             <div class="lab-table">
               <div class="lab-tr lab-th">
                 <span>模式</span><span>Recall@5</span><span>MRR</span><span>问题数</span>
               </div>
-              {#each modes as m (m.mode)}
+              {#each modes.reports as m (m.mode)}
                 <div class="lab-tr">
                   <span class="mono">{m.mode}</span>
                   <span class="mono">{(m.recall_at_k * 100).toFixed(1)}%</span>
@@ -385,8 +389,51 @@
               {/each}
             </div>
             <p class="lab-hint">
-              {modesKind === "synthetic" ? "合成语料" : "你的库"} · k = {modes[0].k} · 只看召回与名次，不看生成的文字。
+              {modesKind === "synthetic" ? "合成语料" : "你的库"} · k = {modes.reports[0].k} · 只看召回与名次，不看生成的文字。
             </p>
+
+            <!-- 采纳规则（KnowNote borrow）：与上一次同档运行机械对比。 -->
+            {#if verdict}
+              <div class="lab-verdict" class:lab-verdict-adopt={verdict.overall === "adopt"} class:lab-verdict-regress={verdict.overall === "regress"}>
+                <span class="lab-verdict-tag mono">
+                  {verdict.overall === "adopt" ? "✓ ADOPT" : verdict.overall === "regress" ? "✗ REGRESS" : "— NEUTRAL"}
+                </span>
+                <span class="lab-verdict-mode mono">{verdict.mode} · 对比上次运行</span>
+                <div class="lab-verdict-metrics">
+                  {#each verdict.metrics as mv (mv.metric)}
+                    <span class="lab-vm" class:lab-vm-adopt={mv.verdict === "adopt"} class:lab-vm-regress={mv.verdict === "regress"}>
+                      {mv.metric} {mv.baseline.toFixed(3)} → {mv.candidate.toFixed(3)}（{mv.delta >= 0 ? "+" : ""}{mv.delta.toFixed(3)}）
+                    </span>
+                  {/each}
+                </div>
+                <p class="lab-hint">{verdict.note}</p>
+              </div>
+            {/if}
+
+            <!-- 分层明细：只列出厂配置那一档——规则也只审它。 -->
+            {#if verdictMode && verdictMode.strata.length}
+              <div class="lab-table">
+                <div class="lab-tr lab-th lab-tr5">
+                  <span>分层 · {verdictMode.mode}</span><span>Recall@5</span><span>MRR</span><span>题数</span><span>top1 均分</span>
+                </div>
+                {#each verdictMode.strata as s (s.kind)}
+                  <div class="lab-tr lab-tr5">
+                    <span class="mono">{s.kind}</span>
+                    <span class="mono">{(s.recall_at_k * 100).toFixed(1)}%</span>
+                    <span class="mono">{s.mrr.toFixed(3)}</span>
+                    <span class="mono faint">{s.cases}</span>
+                    <span class="mono faint">{s.mean_top1.toFixed(3)}</span>
+                  </div>
+                {/each}
+              </div>
+              {#if verdictMode.separation}
+                <p class="lab-hint">
+                  弃权分离度：可答 {verdictMode.separation.answerable_mean_top1.toFixed(3)} vs 不可答{" "}
+                  {verdictMode.separation.unanswerable_mean_top1.toFixed(3)}（差距{" "}
+                  {(verdictMode.separation.ratio * 100).toFixed(1)}%）—— 这个差距是「零命中」徽章的全部依据，垮掉它比掉几个召回点更严重。
+                </p>
+              {/if}
+            {/if}
           {/if}
         {/if}
       </div>
@@ -849,6 +896,24 @@
   }
   .lab-tr:last-child { border-bottom: none; }
   .lab-th { background: var(--surface-2); color: var(--fg-faint); font-weight: 500; }
+  /* 分层明细表：5 列（分层/Recall/MRR/题数/top1 均分）。 */
+  .lab-tr5 { grid-template-columns: minmax(0, 1.4fr) 92px 92px 56px 96px; }
+  /* 采纳规则横幅（KnowNote borrow）。 */
+  .lab-verdict {
+    margin-top: 10px; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: 10px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .lab-verdict-adopt { border-color: color-mix(in oklab, var(--ok, #15803d) 45%, transparent); background: color-mix(in oklab, var(--ok, #15803d) 8%, transparent); }
+  .lab-verdict-regress { border-color: color-mix(in oklab, var(--err, #b91c1c) 45%, transparent); background: color-mix(in oklab, var(--err, #b91c1c) 8%, transparent); }
+  .lab-verdict-tag { font-weight: 700; font-size: 12px; }
+  .lab-verdict-adopt .lab-verdict-tag { color: var(--ok, #15803d); }
+  .lab-verdict-regress .lab-verdict-tag { color: var(--err, #b91c1c); }
+  .lab-verdict-mode { font-size: 10.5px; color: var(--fg-faint); }
+  .lab-verdict-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+  .lab-vm { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; color: var(--fg-muted); background: var(--surface-2); border: 1px solid var(--border); }
+  .lab-vm-adopt { color: var(--ok, #15803d); border-color: color-mix(in oklab, var(--ok, #15803d) 40%, transparent); }
+  .lab-vm-regress { color: var(--err, #b91c1c); border-color: color-mix(in oklab, var(--err, #b91c1c) 40%, transparent); }
   .lab-tr-fail { padding-top: 0; color: var(--err, var(--warn)); }
   .lab-td-name { color: var(--fg-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lab-td-v { display: flex; align-items: center; gap: 6px; }

@@ -3110,6 +3110,28 @@ export interface EvalRow {
   expect: string;
   got: string[];
   rank: number | null;
+  /** Stratum: factual / conceptual / unanswerable / real. */
+  kind: string;
+  /** Score of the top-1 hit — the abstention signal. */
+  top1: number;
+}
+
+/** One stratum's slice of a report. */
+export interface Stratum {
+  kind: string;
+  cases: number;
+  recall_at_k: number;
+  mrr: number;
+  mean_top1: number;
+}
+
+/** Answerable-vs-unanswerable score separation. When this collapses,
+ *  retrieval can no longer tell "not in your library" from "in it". */
+export interface Separation {
+  answerable_mean_top1: number;
+  unanswerable_mean_top1: number;
+  /** Scale-free gap: (answerable − unanswerable) / answerable. */
+  ratio: number;
 }
 
 export interface EvalReport {
@@ -3119,17 +3141,49 @@ export interface EvalReport {
   recall_at_k: number;
   mrr: number;
   rows: EvalRow[];
+  /** Per-stratum breakdown (same metrics, sliced by case kind). */
+  strata: Stratum[];
+  /** Score separation, when the run has both answerable and unanswerable cases. */
+  separation?: Separation | null;
+}
+
+/** One metric's verdict: adopt (improved with headroom) / regress (worse
+ *  beyond tolerance) / neutral (inside the noise band). */
+export interface MetricVerdict {
+  metric: string;
+  baseline: number;
+  candidate: number;
+  delta: number;
+  verdict: "adopt" | "regress" | "neutral";
+}
+
+/** The mechanical verdict of one candidate run against the previous run of
+ *  the same kind (KnowNote adoption rule). */
+export interface EvalVerdict {
+  baseline_at: number;
+  mode: string;
+  metrics: MetricVerdict[];
+  /** adopt | regress | neutral */
+  overall: "adopt" | "regress" | "neutral";
+  note: string;
+}
+
+/** A run's result: the per-mode table plus the adoption verdict against the
+ *  previous run, when there was one. */
+export interface EvalOutcome {
+  reports: EvalReport[];
+  verdict: EvalVerdict | null;
 }
 
 /** Run the synthetic-corpus retrieval evaluation for all four modes. */
 export const retrievalEval = (k?: number) =>
-  invoke<EvalReport[]>("retrieval_eval", { k: k ?? null });
+  invoke<EvalOutcome>("retrieval_eval", { k: k ?? null });
 
 /** Run the same four modes over the user's OWN corpus. `subjectIds` scopes the
  *  pool (null/empty = every subject except the synthetic eval one). Queries are
  *  keyword terms sampled from indexed chunks; ground truth = the chunk's source. */
 export const retrievalEvalReal = (subjectIds: string[] | null, k?: number) =>
-  invoke<EvalReport[]>("retrieval_eval_real", { subjectIds, k: k ?? null });
+  invoke<EvalOutcome>("retrieval_eval_real", { subjectIds, k: k ?? null });
 
 // ---- planner estimate calibration ----------------------------------------
 

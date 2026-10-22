@@ -1772,6 +1772,47 @@ pub fn message_citations_at(
     Ok(json.flatten().as_deref().and_then(|s| serde_json::from_str(s).ok()))
 }
 
+/// Persist one retrieval-eval run (the four mode reports as JSON). Returns
+/// its created_at, which doubles as the run's id for the adoption rule's
+/// "strictly before" comparison. Timestamps are forced strictly increasing
+/// per kind: two runs inside the same millisecond would otherwise make the
+/// previous run invisible to its own successor.
+pub fn save_eval_run(conn: &Connection, kind: &str, reports: &[crate::eval::EvalReport]) -> Result<i64> {
+    let last: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(created_at) FROM eval_runs WHERE kind=?1",
+            params![kind],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let at = now_ms().max(last.map(|n| n + 1).unwrap_or(0));
+    let json = serde_json::to_string(reports)?;
+    conn.execute(
+        "INSERT INTO eval_runs (id, kind, report_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![new_id(), kind, json, at],
+    )?;
+    Ok(at)
+}
+
+/// The most recent run of `kind` strictly before `before_at`, if any — the
+/// baseline the adoption rule judges against.
+pub fn previous_eval_run(
+    conn: &Connection,
+    kind: &str,
+    before_at: i64,
+) -> Result<Option<(i64, Vec<crate::eval::EvalReport>)>> {
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT created_at, report_json FROM eval_runs
+             WHERE kind=?1 AND created_at<?2 ORDER BY created_at DESC LIMIT 1",
+            params![kind, before_at],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(at, json)| serde_json::from_str(&json).ok().map(|r| (at, r))))
+}
+
 /// Delete every message in the subject's active thread (keeps the thread row).
 pub fn clear_chat(conn: &Connection, subject_id: &str) -> Result<()> {
     let tid = current_thread(conn, subject_id)?;

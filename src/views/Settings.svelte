@@ -68,7 +68,7 @@
   // ── 检索评测 ──
   let evalBusy = $state(false);
   let evalError = $state<string | null>(null);
-  let evalReports = $state<api.EvalReport[] | null>(null);
+  let evalReports = $state<api.EvalOutcome | null>(null);
   async function runRetrievalEval() {
     if (evalBusy) return;
     evalBusy = true;
@@ -82,13 +82,13 @@
     }
   }
   const evalBest = $derived(
-    evalReports?.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), evalReports[0]) ?? null,
+    evalReports?.reports.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), evalReports.reports[0]) ?? null,
   );
 
   // ── 真实语料评测（用户自己的库） ──
   let realEvalBusy = $state(false);
   let realEvalError = $state<string | null>(null);
-  let realEvalReports = $state<api.EvalReport[] | null>(null);
+  let realEvalReports = $state<api.EvalOutcome | null>(null);
   let evalSubjectIds = $state<string[]>([]);
   let evalSubjects = $state<api.Subject[]>([]);
   async function runRealEval() {
@@ -109,7 +109,7 @@
       : [...evalSubjectIds, id];
   }
   const realEvalBest = $derived(
-    realEvalReports?.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), realEvalReports[0]) ?? null,
+    realEvalReports?.reports.reduce((a, b) => (b.recall_at_k > a.recall_at_k ? b : a), realEvalReports.reports[0]) ?? null,
   );
 
   // Honour a deep-link from elsewhere (e.g. the subject Overview → Moodle setup).
@@ -3285,7 +3285,7 @@ Notes: {about}</pre>
                   <tr><th>配置</th><th>Recall@5</th><th>MRR</th><th>命中</th></tr>
                 </thead>
                 <tbody>
-                  {#each evalReports as r (r.mode)}
+                  {#each evalReports.reports as r (r.mode)}
                     <tr class:best={evalBest?.mode === r.mode && evalBest.recall_at_k > 0}>
                       <td class="mono">{r.mode}</td>
                       <td class="mono">{(r.recall_at_k * 100).toFixed(0)}%</td>
@@ -3296,7 +3296,7 @@ Notes: {about}</pre>
                 </tbody>
               </table>
 
-              {#each evalReports as r (r.mode)}
+              {#each evalReports.reports as r (r.mode)}
                 {@const misses = r.rows.filter((x) => !x.rank)}
                 {#if misses.length}
                   <div class="eval-misses">
@@ -3358,7 +3358,7 @@ Notes: {about}</pre>
                   <tr><th>配置</th><th>Recall@5</th><th>MRR</th><th>命中</th></tr>
                 </thead>
                 <tbody>
-                  {#each realEvalReports as r (r.mode)}
+                  {#each realEvalReports.reports as r (r.mode)}
                     <tr class:best={realEvalBest?.mode === r.mode && realEvalBest.recall_at_k > 0}>
                       <td class="mono">{r.mode}</td>
                       <td class="mono">{(r.recall_at_k * 100).toFixed(0)}%</td>
@@ -3369,7 +3369,7 @@ Notes: {about}</pre>
                 </tbody>
               </table>
 
-              {#each realEvalReports as r (r.mode)}
+              {#each realEvalReports.reports as r (r.mode)}
                 {@const misses = r.rows.filter((x) => !x.rank)}
                 {#if misses.length}
                   <div class="eval-misses">

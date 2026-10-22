@@ -21,6 +21,25 @@
 //! The corpus is honest about its limits. It is synthetic text about textbook
 //! topics, so it measures *the pipeline*, not real-world recall. Real documents
 //! would need a labelled fixture — which this is a stepping stone to.
+//!
+//! Three additions make the numbers decidable rather than decorative (all
+//! KnowNote borrows):
+//!
+//! - **Stratified report** — every case carries a kind (factual / conceptual /
+//!   unanswerable) and every metric is reported per stratum as well as in
+//!   aggregate. A change that lifts factual recall while quietly wrecking
+//!   conceptual questions is not an improvement, and an average hides exactly
+//!   that.
+//! - **Abstention set** — unanswerable queries the corpus cannot answer.
+//!   Retrieval has no right answer here; what matters is that it scores them
+//!   clearly BELOW the answerable strata, because that gap is what makes the
+//!   零命中 badge honest. [`SEPARATION_FLOOR`] is the collapse threshold.
+//! - **Adoption rule** — every run is persisted (0080) and judged against the
+//!   previous run of the same kind: adopt only with headroom
+//!   ([`IMPROVE_MARGIN`]) and no regression beyond [`REGRESS_TOLERANCE`];
+//!   "no measurable change" is its own verdict. The rule judges
+//!   [`VERDICT_MODE`] — the shipping config — not whichever mode happens to
+//!   look best today.
 
 use crate::embed::Embedder;
 use crate::error::Result;
@@ -208,31 +227,50 @@ fn corpus() -> Vec<(&'static str, Vec<&'static str>)> {
     ]
 }
 
-/// Queries with the source whose chunk should rank first. Some queries
-/// deliberately overlap the decoy documents' vocabulary.
-fn cases() -> Vec<(&'static str, &'static str)> {
+/// Queries with the source whose chunk should rank first, plus a stratum.
+/// Strata make the report stratified (KnowNote borrow): a change that lifts
+/// factual recall while quietly wrecking conceptual questions is not an
+/// improvement, and an aggregate number hides exactly that.
+///
+///   factual      definitional lookups — the easiest shape
+///   conceptual   mechanism/why questions — paraphrase-shaped, the shape real
+///                studying produces
+///   unanswerable topics the corpus does NOT contain — the abstention set.
+///                Retrieval has no right answer here; what matters is that it
+///                scores them clearly BELOW the answerable strata, because
+///                that gap is what makes the 零命中 badge honest.
+fn cases() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
-        ("how do bayesian networks encode conditional independence", "bayes-notes.md"),
-        ("what does d-separation tell you about conditional independence", "bayes-notes.md"),
-        ("explain gradient descent and the learning rate", "gradient-descent.md"),
-        ("how does momentum damp oscillation in gradient descent", "gradient-descent.md"),
-        ("why does L2 regularisation penalise large weights", "regularisation.md"),
-        ("how does dropout reduce overfitting during training", "regularisation.md"),
-        ("how does multi head attention work in the transformer", "transformer.md"),
-        ("why are positional encodings needed for attention", "transformer.md"),
-        ("how does k means clustering assign points to centroids", "kmeans.md"),
-        ("what is the difference between underfitting and overfitting", "bias-variance.md"),
-        ("how does the chain rule give backpropagation its gradients", "backprop.md"),
-        ("what makes vanishing gradients slow early layers", "backprop.md"),
-        ("what does the prior and likelihood give in bayes theorem", "bayes-theorem.md"),
-        ("which axis captures the largest variance in principal component analysis", "dimensionality.md"),
-        ("why subtract the maximum logit before softmax", "softmax.md"),
-        ("how does weight sharing help convolutional layers", "convolution.md"),
-        ("what property does a markov chain transition matrix have", "markov.md"),
+        ("how do bayesian networks encode conditional independence", "bayes-notes.md", "conceptual"),
+        ("what does d-separation tell you about conditional independence", "bayes-notes.md", "conceptual"),
+        ("explain gradient descent and the learning rate", "gradient-descent.md", "conceptual"),
+        ("how does momentum damp oscillation in gradient descent", "gradient-descent.md", "conceptual"),
+        ("why does L2 regularisation penalise large weights", "regularisation.md", "conceptual"),
+        ("how does dropout reduce overfitting during training", "regularisation.md", "conceptual"),
+        ("how does multi head attention work in the transformer", "transformer.md", "conceptual"),
+        ("why are positional encodings needed for attention", "transformer.md", "conceptual"),
+        ("how does k means clustering assign points to centroids", "kmeans.md", "conceptual"),
+        ("what is the difference between underfitting and overfitting", "bias-variance.md", "conceptual"),
+        ("how does the chain rule give backpropagation its gradients", "backprop.md", "conceptual"),
+        ("what makes vanishing gradients slow early layers", "backprop.md", "conceptual"),
+        ("what does the prior and likelihood give in bayes theorem", "bayes-theorem.md", "factual"),
+        ("which axis captures the largest variance in principal component analysis", "dimensionality.md", "factual"),
+        ("why subtract the maximum logit before softmax", "softmax.md", "factual"),
+        ("how does weight sharing help convolutional layers", "convolution.md", "conceptual"),
+        ("what property does a markov chain transition matrix have", "markov.md", "factual"),
+        // Abstention set: nothing in a machine-learning textbook corpus answers
+        // these. They exist to catch a retrieval change that makes everything
+        // look relevant.
+        ("how do i fix a flat bicycle tire", "", "unanswerable"),
+        ("what is the boiling point of mercury at sea level", "", "unanswerable"),
+        ("who won the 2018 football world cup final", "", "unanswerable"),
+        ("how do i renew my passport before it expires", "", "unanswerable"),
+        ("what causes ocean tides to rise and fall", "", "unanswerable"),
+        ("how do i feed a sourdough starter", "", "unanswerable"),
     ]
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalRow {
     pub query: String,
     pub expect: String,
@@ -240,9 +278,40 @@ pub struct EvalRow {
     pub got: Vec<String>,
     /// 1-based rank of the expected source (None = not in the top k).
     pub rank: Option<usize>,
+    /// Stratum this case belongs to (factual / conceptual / unanswerable /
+    /// real). Unanswerable rows carry an empty `expect` and never a rank.
+    pub kind: String,
+    /// Score of the top-1 hit. The abstention signal: unanswerable queries
+    /// must score clearly below answerable ones.
+    pub top1: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// One stratum's slice of a report. Aggregates lie when strata move in
+/// opposite directions, so every metric is reported per stratum too.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Stratum {
+    pub kind: String,
+    pub cases: usize,
+    pub recall_at_k: f32,
+    pub mrr: f32,
+    /// Mean top-1 score inside this stratum.
+    pub mean_top1: f32,
+}
+
+/// How far apart the answerable strata and the unanswerable stratum sit.
+/// This gap is the mechanical basis of the 零命中 / abstention badge: when it
+/// collapses, retrieval can no longer tell "not in your library" from "in it",
+/// and every ungrounded answer starts looking grounded.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Separation {
+    pub answerable_mean_top1: f32,
+    pub unanswerable_mean_top1: f32,
+    /// Scale-free gap: (answerable − unanswerable) / answerable. Scale-free so
+    /// cosine scores and RRF rank scores can be compared under one rule.
+    pub ratio: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalReport {
     pub mode: String,
     pub k: usize,
@@ -252,6 +321,10 @@ pub struct EvalReport {
     /// Mean reciprocal rank of the expected source.
     pub mrr: f32,
     pub rows: Vec<EvalRow>,
+    /// Per-stratum breakdown (same metrics, sliced by case kind).
+    pub strata: Vec<Stratum>,
+    /// Answerable-vs-unanswerable score separation, when the run has both.
+    pub separation: Option<Separation>,
 }
 
 pub const MODES: [&str; 4] = ["vector", "rerank", "hybrid", "hybrid+rerank"];
@@ -322,20 +395,22 @@ pub struct EvalQuery {
     pub query: String,
     pub expect: String,
     pub vec: Vec<f32>,
+    /// Stratum: factual / conceptual / unanswerable (synthetic) or real.
+    pub kind: String,
 }
 
 /// Embed every eval query in one call -- again so the slow part happens in the
 /// command layer's blocking hop, not once per mode.
 pub fn embed_queries(embedder: &dyn Embedder) -> Result<Vec<EvalQuery>> {
-    let queries: Vec<(String, String)> = cases()
+    let queries: Vec<(String, String, String)> = cases()
         .into_iter()
-        .map(|(q, e)| (q.to_string(), e.to_string()))
+        .map(|(q, e, k)| (q.to_string(), e.to_string(), k.to_string()))
         .collect();
-    let vecs = embedder.embed(&queries.iter().map(|(q, _)| q.clone()).collect::<Vec<_>>())?;
+    let vecs = embedder.embed(&queries.iter().map(|(q, _, _)| q.clone()).collect::<Vec<_>>())?;
     Ok(queries
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| EvalQuery { query, expect, vec })
+        .map(|((query, expect, kind), vec)| EvalQuery { query, expect, vec, kind })
         .collect())
 }
 
@@ -368,6 +443,7 @@ pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> 
         }
 
         let got: Vec<String> = hits.iter().map(|h| h.source_name.clone()).collect();
+        let top1 = hits.first().map(|h| h.score).unwrap_or(0.0);
         let rank = got.iter().position(|s| s == &q.expect).map(|i| i + 1);
         if rank.is_some() {
             hit_count += 1;
@@ -380,10 +456,14 @@ pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> 
             expect: q.expect.clone(),
             got,
             rank,
+            kind: q.kind.clone(),
+            top1,
         });
     }
 
     let n = rows.len().max(1);
+    let strata = strata_of(&rows);
+    let separation = separation_of(&strata);
     Ok(EvalReport {
         mode: mode.to_string(),
         k,
@@ -391,12 +471,199 @@ pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> 
         recall_at_k: hit_count as f32 / n as f32,
         mrr: rr_sum / n as f32,
         rows,
+        strata,
+        separation,
+    })
+}
+
+/// Per-stratum metrics. Strata are reported in a stable order (unanswerable
+/// last) so the UI table doesn't reshuffle between runs.
+fn strata_of(rows: &[EvalRow]) -> Vec<Stratum> {
+    let mut kinds: Vec<String> = rows.iter().map(|r| r.kind.clone()).collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds.sort_by_key(|k| if k == "unanswerable" { 1 } else { 0 });
+    kinds
+        .iter()
+        .map(|kind| {
+            let sub: Vec<&EvalRow> = rows.iter().filter(|r| &r.kind == kind).collect();
+            let n = sub.len().max(1);
+            Stratum {
+                kind: kind.clone(),
+                cases: sub.len(),
+                recall_at_k: sub.iter().filter(|r| r.rank.is_some()).count() as f32 / n as f32,
+                mrr: sub
+                    .iter()
+                    .map(|r| r.rank.map(|x| 1.0 / x as f32).unwrap_or(0.0))
+                    .sum::<f32>()
+                    / n as f32,
+                mean_top1: sub.iter().map(|r| r.top1).sum::<f32>() / n as f32,
+            }
+        })
+        .collect()
+}
+
+/// Answerable-vs-unanswerable separation, when the run contains both. `None`
+/// for real-corpus runs (every case is answerable by construction).
+fn separation_of(strata: &[Stratum]) -> Option<Separation> {
+    let un = strata.iter().find(|s| s.kind == "unanswerable")?;
+    let ans: Vec<&Stratum> = strata.iter().filter(|s| s.kind != "unanswerable").collect();
+    if ans.is_empty() {
+        return None;
+    }
+    let mean = ans.iter().map(|s| s.mean_top1).sum::<f32>() / ans.len() as f32;
+    if mean <= 0.0 {
+        return None;
+    }
+    Some(Separation {
+        answerable_mean_top1: mean,
+        unanswerable_mean_top1: un.mean_top1,
+        ratio: (mean - un.mean_top1) / mean,
     })
 }
 
 /// Score every mode, in [`MODES`] order, so the UI can render one table.
 pub fn score_all(conn: &Connection, k: usize, queries: &[EvalQuery]) -> Result<Vec<EvalReport>> {
     MODES.iter().map(|m| score(conn, m, k, queries)).collect()
+}
+
+/// What a run returns: the per-mode table plus, when a previous run of the
+/// same kind exists, the mechanical adoption verdict against it. The verdict
+/// is the point of persisting runs — "did my change help?" becomes a
+/// repeatable question instead of a vibe.
+#[derive(Debug, Clone, Serialize)]
+pub struct EvalOutcome {
+    pub reports: Vec<EvalReport>,
+    pub verdict: Option<EvalVerdict>,
+}
+
+/// Persist one run and judge it against the previous run of the same kind.
+/// `kind` separates synthetic runs (comparable across time — same corpus)
+/// from real-corpus runs (whose numbers also move when the library does).
+pub fn record_and_judge(
+    conn: &Connection,
+    kind: &str,
+    reports: &[EvalReport],
+) -> Result<Option<EvalVerdict>> {
+    let at = crate::repo::save_eval_run(conn, kind, reports)?;
+    let Some((prev_at, prev_reports)) = crate::repo::previous_eval_run(conn, kind, at)? else {
+        return Ok(None); // first run of this kind: nothing to compare against
+    };
+    let base = prev_reports.iter().find(|r| r.mode == VERDICT_MODE);
+    let cand = reports.iter().find(|r| r.mode == VERDICT_MODE);
+    Ok(base.zip(cand).map(|(b, c)| {
+        let mut v = verdict(prev_at, b, c);
+        if kind == "real" {
+            v.note.push_str("（real 语料的对比同时反映了你库里的增删改——数字变化不全是检索改动的功劳或责任。）");
+        }
+        v
+    }))
+}
+
+// ------------------------------------- adoption rule (KnowNote borrow)
+
+/// Margins for the adoption rule. A retrieval change is ADOPTed only with
+/// headroom: some metric improves by at least [`IMPROVE_MARGIN`] and NOTHING
+/// regresses by more than [`REGRESS_TOLERANCE`]. "No measurable change" is its
+/// own verdict — a change that moves nothing should be reverted on
+/// complexity grounds alone, not celebrated.
+pub const IMPROVE_MARGIN: f32 = 0.02;
+pub const REGRESS_TOLERANCE: f32 = 0.01;
+/// Below this scale-free separation, retrieval can no longer tell "not in the
+/// library" from "in it" — the 零命中 badge becomes decoration.
+pub const SEPARATION_FLOOR: f32 = 0.10;
+/// The config the verdict judges: the shipping pipeline. The other modes stay
+/// in the table for humans, not for the rule.
+pub const VERDICT_MODE: &str = "hybrid+rerank";
+
+/// One metric's verdict: adopt (improved with headroom) / regress (worse
+/// beyond tolerance) / neutral (inside the noise band).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MetricVerdict {
+    pub metric: String,
+    pub baseline: f32,
+    pub candidate: f32,
+    pub delta: f32,
+    pub verdict: String,
+}
+
+/// The mechanical verdict of one candidate run against the stored baseline.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvalVerdict {
+    /// created_at of the baseline run this judges against.
+    pub baseline_at: i64,
+    pub mode: String,
+    pub metrics: Vec<MetricVerdict>,
+    /// adopt | regress | neutral
+    pub overall: String,
+    pub note: String,
+}
+
+fn cmp_metric(metric: &str, baseline: f32, candidate: f32) -> MetricVerdict {
+    let delta = candidate - baseline;
+    let verdict = if delta >= IMPROVE_MARGIN {
+        "adopt"
+    } else if delta <= -REGRESS_TOLERANCE {
+        "regress"
+    } else {
+        "neutral"
+    };
+    MetricVerdict {
+        metric: metric.to_string(),
+        baseline,
+        candidate,
+        delta,
+        verdict: verdict.to_string(),
+    }
+}
+
+/// Judge one candidate report against the baseline. Both must be for
+/// [`VERDICT_MODE`]; the caller picks the mode. A collapsed separation is a
+/// regression regardless of the recall numbers — a retriever that scores
+/// unanswerable queries as high as answerable ones has lost the ability to
+/// abstain, which is a correctness failure, not a tuning trade-off.
+pub fn verdict(baseline_at: i64, baseline: &EvalReport, candidate: &EvalReport) -> EvalVerdict {
+    let mut metrics = vec![
+        cmp_metric("recall_at_k", baseline.recall_at_k, candidate.recall_at_k),
+        cmp_metric("mrr", baseline.mrr, candidate.mrr),
+    ];
+    if let (Some(b), Some(c)) = (&baseline.separation, &candidate.separation) {
+        metrics.push(cmp_metric("separation_ratio", b.ratio, c.ratio));
+    }
+    let collapsed = candidate
+        .separation
+        .as_ref()
+        .is_some_and(|s| s.ratio < SEPARATION_FLOOR);
+    let overall = if collapsed || metrics.iter().any(|m| m.verdict == "regress") {
+        "regress"
+    } else if metrics.iter().any(|m| m.verdict == "adopt") {
+        "adopt"
+    } else {
+        "neutral"
+    };
+    // Permille, not {:.3} — this toolchain's rustc has no fixed-point format
+    // trait (same reason fmt1 exists elsewhere in the codebase).
+    let note = if collapsed {
+        let ratio = candidate.separation.as_ref().map(|s| s.ratio).unwrap_or(0.0);
+        format!(
+            "分数分离度跌到 {}‰ 以下（阈值 {}‰）：检索已经分不清「库里没有」和「库里有」，零命中徽章失去意义——按回退处理。",
+            (ratio * 1000.0).round() as i64,
+            (SEPARATION_FLOOR * 1000.0).round() as i64
+        )
+    } else {
+        format!(
+            "规则：任一指标改善 ≥ {}‰ 且无指标回退 > {}‰ → adopt；有回退 → regress；其余 → neutral（无可测变化的改动应按复杂度理由回退，而不是庆祝）。",
+            (IMPROVE_MARGIN * 1000.0).round() as i64,
+            (REGRESS_TOLERANCE * 1000.0).round() as i64
+        )
+    };
+    EvalVerdict {
+        baseline_at,
+        mode: VERDICT_MODE.to_string(),
+        metrics,
+        overall: overall.to_string(),
+        note,
+    }
 }
 
 // ------------------------------------------------------- real-corpus eval
@@ -480,7 +747,7 @@ pub fn real_queries(
     Ok(candidates
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| EvalQuery { query, expect, vec })
+        .map(|((query, expect), vec)| EvalQuery { query, expect, vec, kind: "real".to_string() })
         .collect())
 }
 
@@ -645,8 +912,12 @@ mod tests {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
         let r = score(&c, "vector", DEFAULT_K, &queries).unwrap();
+        // Unanswerable cases have no expected source and never rank — the
+        // stub embedder is a hashed bag of terms, so every clean (answerable)
+        // query should still put its source first.
+        let answerable = r.rows.iter().filter(|row| !row.expect.is_empty()).count();
         let top = r.rows.iter().filter(|row| row.rank == Some(1)).count();
-        assert_eq!(top, r.evaluated, "every clean query should be rank 1");
+        assert_eq!(top, answerable, "every clean query should be rank 1");
     }
 
     // ------------------------------------------------ real-corpus queries
@@ -697,5 +968,90 @@ mod tests {
         // Scoped to a non-existent subject → nothing.
         let none = real_queries(&c, Some(&["nope".into()]), &StubEmbedder).unwrap();
         assert!(none.is_empty());
+    }
+
+    /// A hand-built report for the verdict tests — the adoption rule is pure
+    /// arithmetic over two reports, so it must be testable without retrieval.
+    fn report(mode: &str, recall: f32, mrr: f32, sep: Option<f32>) -> EvalReport {
+        EvalReport {
+            mode: mode.to_string(),
+            k: DEFAULT_K,
+            evaluated: 23,
+            recall_at_k: recall,
+            mrr,
+            rows: Vec::new(),
+            strata: Vec::new(),
+            separation: sep.map(|ratio| Separation {
+                answerable_mean_top1: 0.8,
+                unanswerable_mean_top1: 0.8 * (1.0 - ratio),
+                ratio,
+            }),
+        }
+    }
+
+    /// Every case lands in exactly one stratum, unanswerable cases never rank
+    /// anything, and the answerable/unanswerable score gap exists — the gap is
+    /// what makes the 零命中 badge honest.
+    #[test]
+    fn strata_are_stratified_and_unanswerable_never_ranks() {
+        let (st, queries) = prepare();
+        let c = st.db.lock().unwrap();
+        let r = &score_all(&c, DEFAULT_K, &queries).unwrap()[0];
+        let kinds: Vec<&str> = r.strata.iter().map(|s| s.kind.as_str()).collect();
+        assert!(kinds.contains(&"factual"), "strata: {kinds:?}");
+        assert!(kinds.contains(&"conceptual"), "strata: {kinds:?}");
+        assert!(kinds.contains(&"unanswerable"), "strata: {kinds:?}");
+        let total: usize = r.strata.iter().map(|s| s.cases).sum();
+        assert_eq!(total, r.evaluated, "strata must partition the cases");
+        for row in r.rows.iter().filter(|x| x.kind == "unanswerable") {
+            assert!(row.rank.is_none(), "unanswerable case ranked something: {row:?}");
+            assert!(row.expect.is_empty());
+        }
+        let sep = r.separation.as_ref().expect("synthetic corpus has both strata");
+        assert!(sep.ratio > 0.0, "answerable queries must outscore unanswerable ones");
+        assert!(sep.answerable_mean_top1 > sep.unanswerable_mean_top1);
+    }
+
+    /// The adoption rule: headroom to adopt, any regression rejects, noise is
+    /// its own verdict.
+    #[test]
+    fn the_adoption_rule_needs_headroom_and_rejects_any_regression() {
+        let base = report(VERDICT_MODE, 0.60, 0.50, Some(0.30));
+        // Everything improves beyond the margins → adopt.
+        let v = verdict(1, &base, &report(VERDICT_MODE, 0.65, 0.52, Some(0.30)));
+        assert_eq!(v.overall, "adopt");
+        // Recall drops beyond tolerance while mrr improves → the drop wins.
+        let v = verdict(1, &base, &report(VERDICT_MODE, 0.58, 0.60, Some(0.30)));
+        assert_eq!(v.overall, "regress");
+        // Both inside the noise band → neutral, explicitly not a celebration.
+        let v = verdict(1, &base, &report(VERDICT_MODE, 0.61, 0.51, Some(0.30)));
+        assert_eq!(v.overall, "neutral");
+    }
+
+    /// A collapsed separation is a regression even with perfect recall: a
+    /// retriever that can't tell "not in the library" from "in it" has lost
+    /// the ability to abstain.
+    #[test]
+    fn collapsed_separation_regresses_even_with_perfect_recall() {
+        let base = report(VERDICT_MODE, 0.60, 0.50, Some(0.30));
+        let v = verdict(1, &base, &report(VERDICT_MODE, 1.0, 1.0, Some(0.05)));
+        assert_eq!(v.overall, "regress");
+        assert!(v.note.contains("分离度"), "note should name the cause: {}", v.note);
+    }
+
+    /// record_and_judge: first run has no baseline; the second is judged
+    /// against the first, and the baseline is strictly the PREVIOUS run.
+    #[test]
+    fn record_and_judge_compares_against_the_previous_run() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let first = record_and_judge(&c, "synthetic", std::slice::from_ref(&report(VERDICT_MODE, 0.60, 0.50, Some(0.30)))).unwrap();
+        assert!(first.is_none(), "the first run has nothing to be judged against");
+        let second = record_and_judge(&c, "synthetic", std::slice::from_ref(&report(VERDICT_MODE, 0.66, 0.52, Some(0.30)))).unwrap();
+        let v = second.expect("second run judges against the first");
+        assert_eq!(v.overall, "adopt");
+        assert_eq!(v.mode, VERDICT_MODE);
+        // A real run's baseline is separate: synthetic history must not leak in.
+        assert!(record_and_judge(&c, "real", std::slice::from_ref(&report(VERDICT_MODE, 0.5, 0.5, None))).unwrap().is_none());
     }
 }
