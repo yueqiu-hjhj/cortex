@@ -535,11 +535,11 @@ pub fn preset_roles() -> Vec<PresetRole> {
         PresetRole {
             id: "chapter-writer".into(),
             name: "章节写手".into(),
-            description: "学术语气章节草稿：段落规划 → 逐段起草 → 小结衔接。绑「章节草稿起草」技能。".into(),
-            system_prompt: "你是学术写作助手。按「章节草稿起草」技能起草章节；引用只允许用户提供的文献或用检索工具在库里查到的内容，查不到支撑的句子标 ⚠。回答用中文。".into(),
+            description: "学术语气章节草稿：段落规划 → 逐段起草 → 小结衔接；write 权限，草稿可直接存为笔记。绑「章节草稿起草」技能。".into(),
+            system_prompt: "你是学术写作助手。按「章节草稿起草」技能起草章节；引用只允许用户提供的文献或用检索工具在库里查到的内容，查不到支撑的句子标 ⚠。用户要求保存草稿时，用 save_note 把成稿写进指定科目（不确定科目归属就先问，不要猜）。回答用中文。".into(),
             skills: vec!["章节草稿起草".into()],
-            tools: read_tools(&["list_notebooks", "search_notebook", "search_notes", "get_source"]),
-            tool_tier: "read".into(),
+            tools: read_tools(&["list_notebooks", "search_notebook", "search_notes", "get_source", "save_note"]),
+            tool_tier: "write".into(),
         },
         PresetRole {
             id: "math-tutor".into(),

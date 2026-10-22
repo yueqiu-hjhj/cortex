@@ -17,9 +17,10 @@
 //!   anything else                  → treated as the final answer
 //!
 //! Safety mirrors the platform's: tools come from the agent's whitelist ∩ the
-//! enabled built-in registry (all `read` kind — no write/shell tool exists to
-//! whitelist), every step is appended to `agent_messages`, and the loop is
-//! capped by the agent's `max_steps`.
+//! enabled built-in registry ∩ the agent's permission tier (read agents see
+//! only read tools; write agents additionally get two bounded, audited
+//! writers — no shell, no delete, no overwrite), every step is appended to
+//! `agent_messages`, and the loop is capped by the agent's `max_steps`.
 
 use crate::agents::{append_message, finish_run, Agent};
 use crate::error::Result;
@@ -39,12 +40,15 @@ struct BuiltinTool {
     name: &'static str,
     /// One-line usage shown to the model, including the expected JSON args.
     usage: &'static str,
+    /// Risk tier used for both prompt filtering and the dispatch gate.
+    tier: &'static str,
     run: fn(&Connection, &serde_json::Value) -> Result<String>,
 }
 
-/// The five read-only tools seeded by migration 0030. Keep the names in sync
-/// with that migration — the DB rows are the registry of record for the UI;
-/// this table is the dispatch. `&'static` so the executor can hold borrows.
+/// The five read tools seeded by migration 0030 plus the two write tools
+/// seeded by 0076. Keep the names in sync with those migrations — the DB rows
+/// are the registry of record for the UI; this table is the dispatch.
+/// `&'static` so the executor can hold borrows.
 fn builtin_tools() -> &'static [BuiltinTool] {
     static TOOLS: std::sync::OnceLock<Vec<BuiltinTool>> = std::sync::OnceLock::new();
     TOOLS.get_or_init(|| {
@@ -52,27 +56,44 @@ fn builtin_tools() -> &'static [BuiltinTool] {
             BuiltinTool {
                 name: "list_notebooks",
                 usage: r#"list_notebooks {} — 列出所有科目及其主题."#,
+                tier: "read",
                 run: tool_list_notebooks,
             },
             BuiltinTool {
                 name: "search_notebook",
                 usage: r#"search_notebook {"query": "关键词", "subject_id": "可选", "limit": 8} — 全文检索知识库分块."#,
+                tier: "read",
                 run: tool_search_notebook,
             },
             BuiltinTool {
                 name: "get_source",
                 usage: r#"get_source {"source_id": "…"} — 读取一个来源的名称与全文（截断）."#,
+                tier: "read",
                 run: tool_get_source,
             },
             BuiltinTool {
                 name: "search_notes",
                 usage: r#"search_notes {"query": "关键词", "limit": 8} — 按标题/正文搜索用户的笔记."#,
+                tier: "read",
                 run: tool_search_notes,
             },
             BuiltinTool {
                 name: "get_knowledge_tree",
                 usage: r#"get_knowledge_tree {"subject_id": "…"} — 科目的主题树与各主题的来源数."#,
+                tier: "read",
                 run: tool_knowledge_tree,
+            },
+            BuiltinTool {
+                name: "save_note",
+                usage: r#"save_note {"title": "标题", "body": "正文", "subject_id": "可选", "topic_id": "可选"} — 新建一条笔记（write 权限）."#,
+                tier: "write",
+                run: tool_save_note,
+            },
+            BuiltinTool {
+                name: "save_flashcards",
+                usage: r#"save_flashcards {"subject_id": "…", "title": "可选", "topic_id": "可选", "cards": [{"front": "问", "back": "答"}]} — 保存 1-50 张问答卡（write 权限）."#,
+                tier: "write",
+                run: tool_save_flashcards,
             },
         ]
     })
@@ -173,6 +194,95 @@ fn tool_knowledge_tree(c: &Connection, args: &serde_json::Value) -> Result<Strin
     Ok(out)
 }
 
+/// Write tool: create a note. Append-only by design — no update/delete
+/// surface, bounded sizes, optional subject/topic placement with the same
+/// belongs-check the UI path enforces.
+fn tool_save_note(c: &Connection, args: &serde_json::Value) -> Result<String> {
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if title.is_empty() || body.is_empty() {
+        return Ok("缺少 title 或 body 参数，笔记未保存".into());
+    }
+    if title.chars().count() > 200 {
+        return Ok("title 过长（上限 200 字），请缩短后重试".into());
+    }
+    if body.chars().count() > 20_000 {
+        return Ok("body 过长（上限 20000 字），请拆成多条笔记".into());
+    }
+    let subject_id = args.get("subject_id").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+    if let Some(sid) = subject_id {
+        if repo::get_subject(c, sid).is_err() {
+            return Ok(format!("subject_id {sid} 不存在，笔记未保存（可先用 list_notebooks 查到）"));
+        }
+    }
+    let topic_id = args.get("topic_id").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+    if let (Some(tid), Some(sid)) = (topic_id, subject_id) {
+        let belongs: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM topics WHERE id=?1 AND subject_id=?2)",
+            params![tid, sid],
+            |r| r.get(0),
+        )?;
+        if !belongs {
+            return Ok("topic_id 不属于给定的 subject_id，笔记未保存".into());
+        }
+    } else if topic_id.is_some() {
+        return Ok("提供了 topic_id 但缺少 subject_id，笔记未保存".into());
+    }
+    let id = repo::insert_note(c, subject_id, topic_id, title, body)?;
+    Ok(format!("已保存笔记（id={id}）：「{title}」"))
+}
+
+/// Write tool: save a Q/A deck as a flashcards material — the same
+/// `repo::save_material` path the UI's save_flashcards command uses, so the
+/// result appears in the normal materials list and SRS seeding flows.
+fn tool_save_flashcards(c: &Connection, args: &serde_json::Value) -> Result<String> {
+    let subject_id = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if subject_id.is_empty() {
+        return Ok("缺少 subject_id 参数（可先用 list_notebooks 查到），卡片未保存".into());
+    }
+    if repo::get_subject(c, subject_id).is_err() {
+        return Ok(format!("subject_id {subject_id} 不存在，卡片未保存（可先用 list_notebooks 查到）"));
+    }
+    let topic_id = args.get("topic_id").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+    if let Some(tid) = topic_id {
+        let belongs: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM topics WHERE id=?1 AND subject_id=?2)",
+            params![tid, subject_id],
+            |r| r.get(0),
+        )?;
+        if !belongs {
+            return Ok("topic_id 不属于给定的 subject_id，卡片未保存".into());
+        }
+    }
+    let Some(cards) = args.get("cards").and_then(|v| v.as_array()) else {
+        return Ok("缺少 cards 参数（数组，每项含 front/back），卡片未保存".into());
+    };
+    let mut clean: Vec<serde_json::Value> = Vec::new();
+    for card in cards {
+        let front = card.get("front").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let back = card.get("back").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if !front.is_empty() && !back.is_empty() {
+            clean.push(serde_json::json!({"q": front, "a": back}));
+        }
+    }
+    if clean.is_empty() {
+        return Ok("cards 里没有一张完整的问答卡（front/back 都不能为空）".into());
+    }
+    if clean.len() > 50 {
+        return Ok("一次最多保存 50 张卡片，请分批保存".into());
+    }
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let title: String = if title.is_empty() {
+        "Agent flashcards".into()
+    } else {
+        title.chars().take(120).collect()
+    };
+    let count = clean.len();
+    let meta = format!("{count} cards · agent");
+    repo::save_material(c, subject_id, topic_id, "flashcards", &title, &meta, &serde_json::Value::Array(clean))?;
+    Ok(format!("已保存 {count} 张卡片到「{title}」"))
+}
+
 /// Char-boundary-safe truncation with an ellipsis marker.
 fn snippet(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -185,17 +295,21 @@ fn snippet(text: &str, max: usize) -> String {
 // ------------------------------------------------------------- the loop
 
 /// Load the tool implementations the agent may call: its whitelist ∩ the
-/// enabled built-in registry. An agent with no tools (or all-disabled tools)
-/// still works — it just answers in one completion.
+/// enabled built-in registry ∩ the agent's permission tier. Tier-filtering
+/// here (not just at dispatch) means a read-tier agent never even sees
+/// write tools in its prompt — no wasted round-trips into a denial.
+/// An agent with no tools (or all-disabled tools) still works — it just
+/// answers in one completion.
 fn resolve_tools(c: &Connection, user_id: &str, agent: &Agent) -> Result<Vec<&'static BuiltinTool>> {
     let enabled: std::collections::HashSet<String> = crate::agents::list_tools(c, user_id)?
         .into_iter()
-        .filter(|t| t.enabled && t.kind == "read")
+        .filter(|t| t.enabled && (t.kind == "read" || t.kind == "write"))
         .map(|t| t.name)
         .collect();
     Ok(builtin_tools()
         .iter()
         .filter(|t| agent.tools.iter().any(|n| n == t.name) && enabled.contains(t.name))
+        .filter(|t| crate::agents::tier_rank(t.tier) <= crate::agents::tier_rank(&agent.tool_tier))
         .collect())
 }
 
@@ -275,10 +389,14 @@ fn system_prompt(
     s
 }
 
-/// Risk tier of a tool call. Built-in tools only read app data; MCP tools run
-/// on external servers and are classified `network` conservatively — the tier
-/// bounds what a prompt injection inside fetched content could reach.
+/// Risk tier of a tool call. Built-in tools carry their tier in the registry
+/// (the two 0076 writers are `write`); MCP tools run on external servers and
+/// are classified `network` conservatively — the tier bounds what a prompt
+/// injection inside fetched content could reach.
 fn tool_tier(name: &str) -> &'static str {
+    if let Some(t) = builtin_tools().iter().find(|t| t.name == name) {
+        return t.tier;
+    }
     if name.starts_with("mcp__") {
         "network"
     } else {
@@ -480,7 +598,7 @@ mod tests {
 
     /// A scripted Llm: returns queued replies, recording every prompt.
     struct Scripted {
-        replies: std::sync::Mutex<std::collections::VecDeque<&'static str>>,
+        replies: std::sync::Mutex<std::collections::VecDeque<String>>,
         prompts: std::sync::Mutex<Vec<String>>,
     }
     impl Llm for Scripted {
@@ -490,7 +608,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .map(str::to_string)
                 .ok_or_else(|| crate::error::Error::Other("script exhausted".into()))
         }
         fn name(&self) -> String {
@@ -548,14 +665,117 @@ mod tests {
         // built-ins are read-tier: everyone may call them
         assert!(tier_allows(&ro, "list_notebooks"));
         assert!(tier_allows(&ro, "search_notebook"));
+        // the 0076 writers are write-tier: denied for read agents
+        assert_eq!(tool_tier("save_note"), "write");
+        assert_eq!(tool_tier("save_flashcards"), "write");
+        assert!(!tier_allows(&ro, "save_note"));
         // MCP tools are network-tier: read agents are denied, network agents allowed
         assert_eq!(tool_tier("mcp__kb__search"), "network");
         assert!(!tier_allows(&ro, "mcp__kb__search"));
         assert!(tier_allows(&net, "mcp__kb__search"));
-        // a write-tier agent is granted read but not network
+        // a write-tier agent is granted read+write but not network
         let wr = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "WR", None, "p", &[], &[], None, 0.3, 5, true, "write").unwrap();
         assert!(tier_allows(&wr, "list_notebooks"));
+        assert!(tier_allows(&wr, "save_note"));
         assert!(!tier_allows(&wr, "mcp__kb__search"));
+    }
+
+    #[test]
+    fn write_tools_create_notes_and_flashcard_decks() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let s = repo::insert_subject(&c, "线代", Some("math"), Some("◆"), None).unwrap();
+        let t = repo::insert_topic(&c, &s, "特征值", None, &[]).unwrap();
+
+        // save_note: full placement path
+        let out = tool_save_note(&c, &serde_json::json!({
+            "title": "特征值笔记", "body": "特征值是不变方向。",
+            "subject_id": s, "topic_id": t,
+        }))
+        .unwrap();
+        assert!(out.contains("已保存笔记"));
+        let notes = repo::list_notes(&c, Some(&s)).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].title, "特征值笔记");
+        assert_eq!(notes[0].topic_id.as_deref(), Some(t.as_str()));
+
+        // save_flashcards: same payload shape the UI saves
+        let out = tool_save_flashcards(&c, &serde_json::json!({
+            "subject_id": s, "title": "Agent 卡组",
+            "cards": [
+                {"front": "特征值是什么", "back": "不变方向"},
+                {"front": "", "back": "空卡应被丢弃"},
+                {"front": "对角化", "back": "分解为特征对"},
+            ],
+        }))
+        .unwrap();
+        assert!(out.contains("已保存 2 张卡片"));
+        let mats = repo::list_materials(&c, &s).unwrap();
+        let deck = mats.iter().find(|m| m.kind == "flashcards").expect("deck saved");
+        assert_eq!(deck.title, "Agent 卡组");
+        let payload = deck.payload.as_array().unwrap();
+        assert_eq!(payload.len(), 2);
+        assert_eq!(payload[0]["q"], "特征值是什么");
+
+        // validation: topic/subject mismatch, missing cards, bad subject
+        let out = tool_save_note(&c, &serde_json::json!({"title": "t", "body": "b", "subject_id": "nope"})).unwrap();
+        assert!(out.contains("未保存") || out.contains("失败"), "{out}");
+        let out = tool_save_flashcards(&c, &serde_json::json!({"subject_id": s, "cards": []})).unwrap();
+        assert!(out.contains("没有一张完整"));
+        let out = tool_save_flashcards(&c, &serde_json::json!({"subject_id": s, "cards": [{"front": "a"}]})).unwrap();
+        assert!(out.contains("没有一张完整"));
+    }
+
+    #[test]
+    fn resolve_tools_hides_write_tools_from_read_agents() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let both: Vec<String> = vec!["search_notebook".into(), "save_note".into()];
+        let ro = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "RO", None, "p", &[], &both, None, 0.3, 5, true, "read").unwrap();
+        let wr = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "WR", None, "p", &[], &both, None, 0.3, 5, true, "write").unwrap();
+        let ro_tools = resolve_tools(&c, crate::agents::DEFAULT_USER, &ro).unwrap();
+        let wr_tools = resolve_tools(&c, crate::agents::DEFAULT_USER, &wr).unwrap();
+        assert_eq!(ro_tools.len(), 1, "read agent never sees the whitelisted write tool");
+        assert_eq!(ro_tools[0].name, "search_notebook");
+        assert_eq!(wr_tools.len(), 2, "write agent gets both");
+        // and the read agent's prompt carries no save_note usage line
+        let sp = system_prompt(&ro_tools, &[], "", &ro);
+        assert!(!sp.contains("save_note"));
+        assert!(sp.contains("read"));
+    }
+
+    #[test]
+    fn write_agent_persists_a_note_inside_the_loop() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let s = repo::insert_subject(&c, "线代", Some("math"), Some("◆"), None).unwrap();
+        let agent = upsert_agent(
+            &c, crate::agents::DEFAULT_USER, None, "书记员", None, "把用户口述整理成笔记并保存。",
+            &[], &["save_note".to_string()], None, 0.3, 6, true, "write",
+        )
+        .unwrap();
+        let run = start_run(&c, crate::agents::DEFAULT_USER, &agent.id, "记一下：逆矩阵存在当且仅当行列式非零").unwrap();
+        let tool_reply = format!(
+            r#"TOOL save_note {{"title": "逆矩阵条件", "body": "逆矩阵存在当且仅当行列式非零。", "subject_id": "{}"}}"#,
+            s
+        );
+        let scripted = Scripted {
+            replies: std::sync::Mutex::new(
+                vec![tool_reply, "ANSWER: 已保存。".to_string()].into_iter().collect(),
+            ),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        };
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted).unwrap();
+        assert_eq!(done.status, "success");
+        let notes = repo::list_notes(&c, Some(&s)).unwrap();
+        assert_eq!(notes.len(), 1, "the agent's tool call wrote a real note");
+        assert!(notes[0].body.contains("行列式非零"));
+        // audit trail: tool call + tool confirmation in the transcript
+        let msgs = list_messages(&c, crate::agents::DEFAULT_USER, &run.id, 50).unwrap();
+        let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_msgs.len(), 1);
+        assert!(tool_msgs[0].content.contains("已保存笔记"));
+        assert_eq!(msgs[1].tool_name.as_deref(), Some("save_note"));
     }
 
     #[test]
@@ -581,6 +801,7 @@ mod tests {
                     "ANSWER: 特征值描述线性变换的不变方向，见《特征值讲义.md》。",
                 ]
                 .into_iter()
+                .map(str::to_string)
                 .collect(),
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
@@ -611,6 +832,7 @@ mod tests {
                     "ANSWER: 好的。",
                 ]
                 .into_iter()
+                .map(str::to_string)
                 .collect(),
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
@@ -633,7 +855,7 @@ mod tests {
         let run = start_run(&c, crate::agents::DEFAULT_USER, &agent.id, "hi").unwrap();
         let scripted = Scripted {
             replies: std::sync::Mutex::new(
-                vec![r#"TOOL search_notebook {"query": "x"}"#].into_iter().collect(),
+                vec![r#"TOOL search_notebook {"query": "x"}"#].into_iter().map(str::to_string).collect(),
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
         };
