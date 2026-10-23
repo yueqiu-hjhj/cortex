@@ -278,10 +278,22 @@ Two rules keep it honest:
 - **No answers means "no answers"**, not a score of zero — an empty window
   reports that and stops, because a clean sheet and an unmeasured sheet look
   identical in numbers.
-- Drift is computed by `citesnap::verify_message`, the same call the evidence
-  panel makes, so the badge and the verdict can never disagree.
+- Drift is computed by `citesnap::audit_subject`, the very call the citation
+  ledger makes, so the badge, the ledger and the verdict cannot disagree.
+
+A third rule governs where it runs. The startup check uses only
+`answer_health::quick_verdicts` — the `stats` half, no source lookups.
+Verifying every frozen quote is a full-library read, and a check that slows
+every launch is a check the user switches off; snapshot drift therefore stays
+in the Lab, where it is asked for.
+
+Data quality fails nothing. `Check.warn` exists so a check can **pass and
+still be surfaced**: a library whose answers are failing is not a reason to
+refuse to start, but it is not something to leave in the dark either.
 
 Enforced by: `answer_health.rs` (empty window; state counts only for states
 that occurred; failure / abstention / fabrication / truncation each raise
 their own line; drift counted against rewritten source with reanchored
-flagged; window + subject scoping; rolled threads counted once).
+flagged; window + subject scoping; rolled threads counted once) and
+`selfcheck.rs` (an unhealthy window warns while `ok` stays true; an empty
+library raises no warning).

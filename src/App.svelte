@@ -182,6 +182,11 @@
     return () => clearTimeout(t);
   });
   const selfcheckFailures = $derived(selfcheck?.checks.filter((c) => !c.ok) ?? []);
+  // A warn check passes (it must not block startup) yet still deserves to be
+  // seen — bad library data is exactly the kind of thing that stays invisible
+  // until it is measured.
+  const selfcheckWarnings = $derived(selfcheck?.checks.filter((c) => c.ok && c.warn) ?? []);
+  const selfcheckIssues = $derived([...selfcheckFailures, ...selfcheckWarnings]);
 
   // Chat dock / FAB visibility. Read EVERY signal into a local first so &&/||
   // short-circuiting can't drop one from Svelte's reactive dependency set (that
@@ -497,22 +502,34 @@
     {/if}
 
     <div class="app-main">
-      {#if selfcheckFailures.length > 0 && !selfcheckDismissed}
-        <div class="selfcheck" role="alert">
+      {#if selfcheckIssues.length > 0 && !selfcheckDismissed}
+        <div
+          class="selfcheck"
+          class:soft={selfcheckFailures.length === 0}
+          role={selfcheckFailures.length > 0 ? "alert" : "status"}
+        >
           <button
             class="sc-head"
             onclick={() => (selfcheckOpen = !selfcheckOpen)}
             aria-expanded={selfcheckOpen}
           >
             <Icon name="bolt" size={14} />
-            <span class="sc-title">启动自检发现 {selfcheckFailures.length} 项问题</span>
+            <span class="sc-title">
+              {#if selfcheckFailures.length > 0}
+                启动自检发现 {selfcheckFailures.length} 项问题{selfcheckWarnings.length
+                  ? ` · ${selfcheckWarnings.length} 项提醒`
+                  : ""}
+              {:else}
+                启动自检有 {selfcheckWarnings.length} 项提醒
+              {/if}
+            </span>
             <span class="sc-spacer"></span>
             <span class="sc-toggle">{selfcheckOpen ? "收起" : "详情"}</span>
           </button>
           {#if selfcheckOpen}
             <ul class="sc-list">
-              {#each selfcheckFailures as c (c.name)}
-                <li class="sc-item">
+              {#each selfcheckIssues as c (c.name)}
+                <li class="sc-item" class:soft={c.ok}>
                   <span class="sc-name">{c.name}</span>
                   <span class="sc-detail">{c.detail}</span>
                   {#if c.hint}<span class="sc-hint">{c.hint}</span>{/if}
@@ -697,6 +714,11 @@
     content: ""; position: absolute; left: 6px; top: 6px;
     width: 6px; height: 6px; border-radius: 50%; background: var(--warn);
   }
+  /* A warning passes but still needs to read as "not the same as fine". */
+  .sc-item.soft::before { background: var(--fg-faint); }
+  .selfcheck.soft { border-color: var(--border); }
+  .selfcheck.soft .sc-head > :global(svg) { color: var(--fg-faint); }
+  .selfcheck.soft .sc-head:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
   .sc-name { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-muted); }
   .sc-detail { color: var(--fg-bright); }
   .sc-hint { color: var(--fg-muted); font-size: var(--t-2xs); }

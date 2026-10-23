@@ -96,7 +96,26 @@ fn pct(n: i64, d: i64) -> f64 {
 /// Aggregate answer health. `subject_id` scopes to one subject; `days <= 0`
 /// means the whole history (an honest answer for a library that is two days
 /// old and has no 30-day window to report).
-pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<AnswerHealth> {
+/// The cheap half of a health report: everything derivable from the message
+/// rows alone. The UI layers snapshots on top; the startup check uses this half
+/// by itself, because verifying every frozen quote is a full-library read and
+/// must never happen on launch.
+#[derive(Debug, Clone)]
+pub struct AnswerStats {
+    pub days: i64,
+    pub answers: i64,
+    /// Counts in `STATE_ORDER`; `unrecorded` holds rows from before 0077.
+    pub counts: [i64; 5],
+    pub unrecorded: i64,
+    pub grounded: i64,
+    pub abstained: i64,
+    pub cited: i64,
+    pub fabricated_total: i64,
+    pub fabricated_answers: i64,
+    pub rolled_threads: i64,
+}
+
+pub fn stats(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<AnswerStats> {
     let since = if days > 0 {
         crate::db::now_ms() - days * 86_400_000
     } else {
@@ -169,6 +188,36 @@ pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<
         }
     }
 
+    Ok(AnswerStats {
+        days,
+        answers,
+        counts,
+        unrecorded,
+        grounded,
+        abstained: abstained_answers,
+        cited: cited_answers,
+        fabricated_total,
+        fabricated_answers,
+        rolled_threads: rolled.len() as i64,
+    })
+}
+
+fn states_of(counts: &[i64; 5], unrecorded: i64) -> Vec<StateCount> {
+    let mut states: Vec<StateCount> = STATE_ORDER
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| counts[*i] > 0)
+        .map(|(i, s)| StateCount { state: (*s).to_string(), count: counts[i] })
+        .collect();
+    if unrecorded > 0 {
+        states.push(StateCount { state: "unrecorded".into(), count: unrecorded });
+    }
+    states
+}
+
+pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<AnswerHealth> {
+    let s = stats(conn, subject_id, days)?;
+
     // Snapshot health is read from citesnap's ledger rather than re-derived
     // here: the evidence badge, the Lab verdict and the startup check must never
     // be able to disagree about how many quotes drifted.
@@ -183,39 +232,45 @@ pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<
         reanchored: audit.reanchored as i64,
     };
 
-    let mut states: Vec<StateCount> = STATE_ORDER
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| counts[*i] > 0)
-        .map(|(i, s)| StateCount { state: (*s).to_string(), count: counts[i] })
-        .collect();
-    if unrecorded > 0 {
-        states.push(StateCount { state: "unrecorded".into(), count: unrecorded });
-    }
-
     let signals = verdicts(
-        answers,
-        &counts,
-        abstained_answers,
-        grounded,
-        fabricated_total,
-        fabricated_answers,
+        s.answers,
+        &s.counts,
+        s.abstained,
+        s.grounded,
+        s.fabricated_total,
+        s.fabricated_answers,
         &snap,
     );
 
     Ok(AnswerHealth {
-        days,
-        answers,
-        states,
-        grounded,
-        abstained: abstained_answers,
-        cited: cited_answers,
-        fabricated_total,
-        fabricated_answers,
-        rolled_threads: rolled.len() as i64,
+        days: s.days,
+        answers: s.answers,
+        states: states_of(&s.counts, s.unrecorded),
+        grounded: s.grounded,
+        abstained: s.abstained,
+        cited: s.cited,
+        fabricated_total: s.fabricated_total,
+        fabricated_answers: s.fabricated_answers,
+        rolled_threads: s.rolled_threads,
         snapshots: snap,
         signals,
     })
+}
+
+/// Verdicts reachable without touching any source text — what the startup check
+/// is allowed to run. Snapshot drift is deliberately absent: it needs the full
+/// audit, and a check that slows every launch is a check the user turns off.
+pub fn quick_verdicts(conn: &Connection, days: i64) -> Result<Vec<HealthSignal>> {
+    let s = stats(conn, None, days)?;
+    Ok(verdicts(
+        s.answers,
+        &s.counts,
+        s.abstained,
+        s.grounded,
+        s.fabricated_total,
+        s.fabricated_answers,
+        &SnapshotHealth::default(),
+    ))
 }
 
 /// The mechanical read of the numbers. Ordered worst-first so the first line

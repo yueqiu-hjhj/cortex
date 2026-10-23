@@ -428,6 +428,9 @@ export const deleteSecret = (key: string) =>
 export interface Check {
   name: string;
   ok: boolean;
+  /** Worth surfacing but explicitly NOT a failure: a check can pass and still
+   *  want attention (bad library data must not block startup). */
+  warn: boolean;
   detail: string;
   hint?: string | null;
 }
