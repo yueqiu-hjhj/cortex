@@ -25,6 +25,7 @@
 use crate::agents::{append_message, finish_run, Agent};
 use crate::error::Result;
 use crate::llm::Llm;
+use crate::models::Note;
 use crate::repo;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
@@ -42,7 +43,24 @@ struct BuiltinTool {
     usage: &'static str,
     /// Risk tier used for both prompt filtering and the dispatch gate.
     tier: &'static str,
-    run: fn(&Connection, &serde_json::Value) -> Result<String>,
+    run: fn(&ToolCtx, &serde_json::Value) -> Result<String>,
+}
+
+/// What a tool body is allowed to touch. `data_dir` is here because a note
+/// write has to reach the vault: the Markdown file is the truth and SQLite is
+/// only its index, so a tool that updated the row alone would be silently
+/// reverted by the next reindex. `run_id` goes into the revision log, so every
+/// agent edit can be traced back to the run that made it.
+struct ToolCtx<'a> {
+    conn: &'a Connection,
+    data_dir: Option<&'a std::path::Path>,
+    run_id: &'a str,
+}
+
+impl<'a> ToolCtx<'a> {
+    fn new(conn: &'a Connection, data_dir: Option<&'a std::path::Path>, run_id: &'a str) -> Self {
+        Self { conn, data_dir, run_id }
+    }
 }
 
 /// The five read tools seeded by migration 0030 plus the two write tools
@@ -95,13 +113,26 @@ fn builtin_tools() -> &'static [BuiltinTool] {
                 tier: "write",
                 run: tool_save_flashcards,
             },
+            BuiltinTool {
+                name: "get_note",
+                usage: r#"get_note {"note_id": "…"} — 读取一条笔记的完整正文（write 前必用）."#,
+                tier: "read",
+                run: tool_get_note,
+            },
+            BuiltinTool {
+                name: "update_note",
+                usage: r#"update_note {"note_id": "…", "find": "原文", "replace": "新文"} — 改一条已有笔记（write 权限）；整篇重写用 body，撤销用 restore_revision."#,
+                tier: "write",
+                run: tool_update_note,
+            },
         ]
     })
 }
 
 // ------------------------------------------------------------ tool bodies
 
-fn tool_list_notebooks(c: &Connection, _args: &serde_json::Value) -> Result<String> {
+fn tool_list_notebooks(ctx: &ToolCtx, _args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let subjects = repo::list_subjects(c)?;
     let mut out = String::new();
     for s in subjects {
@@ -117,7 +148,8 @@ fn tool_list_notebooks(c: &Connection, _args: &serde_json::Value) -> Result<Stri
     Ok(if out.is_empty() { "（还没有任何科目）".into() } else { out })
 }
 
-fn tool_search_notebook(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_search_notebook(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
     if query.trim().is_empty() {
         return Ok("缺少 query 参数".into());
@@ -140,7 +172,8 @@ fn tool_search_notebook(c: &Connection, args: &serde_json::Value) -> Result<Stri
     Ok(out)
 }
 
-fn tool_get_source(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_get_source(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let id = args.get("source_id").and_then(|v| v.as_str()).unwrap_or("");
     if id.trim().is_empty() {
         return Ok("缺少 source_id 参数".into());
@@ -150,7 +183,8 @@ fn tool_get_source(c: &Connection, args: &serde_json::Value) -> Result<String> {
     Ok(format!("「{}」（kind={}, status={}）\n\n{}", s.name, s.kind, s.status, snippet(text, 3000)))
 }
 
-fn tool_search_notes(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_search_notes(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
     if query.trim().is_empty() {
         return Ok("缺少 query 参数".into());
@@ -158,22 +192,29 @@ fn tool_search_notes(c: &Connection, args: &serde_json::Value) -> Result<String>
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(TOOL_HITS as i64) as usize;
     let pat = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
     let mut stmt = c.prepare(
-        "SELECT title, substr(body, 1, 240) FROM notes \
+        "SELECT id, title, substr(body, 1, 240) FROM notes \
          WHERE title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\' \
          ORDER BY updated_at DESC LIMIT ?2",
     )?;
-    let rows: Vec<(String, String)> = stmt
+    let rows: Vec<(String, String, String)> = stmt
         .query_map(params![pat, limit.max(1) as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     if rows.is_empty() {
         return Ok("没有命中的笔记。".into());
     }
-    Ok(rows.iter().map(|(t, b)| format!("- {t}：{b}")).collect::<Vec<_>>().join("\n"))
+    // The id is in the line on purpose: get_note/update_note address a note by
+    // id, and a search result without one leaves the model to guess by title.
+    Ok(rows
+        .iter()
+        .map(|(id, t, b)| format!("- [{id}] {t}：{b}"))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
-fn tool_knowledge_tree(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_knowledge_tree(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let id = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("");
     if id.trim().is_empty() {
         return Ok("缺少 subject_id 参数（可先用 list_notebooks 查到）".into());
@@ -197,7 +238,8 @@ fn tool_knowledge_tree(c: &Connection, args: &serde_json::Value) -> Result<Strin
 /// Write tool: create a note. Append-only by design — no update/delete
 /// surface, bounded sizes, optional subject/topic placement with the same
 /// belongs-check the UI path enforces.
-fn tool_save_note(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_save_note(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
     let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
     if title.is_empty() || body.is_empty() {
@@ -229,13 +271,26 @@ fn tool_save_note(c: &Connection, args: &serde_json::Value) -> Result<String> {
         return Ok("提供了 topic_id 但缺少 subject_id，笔记未保存".into());
     }
     let id = repo::insert_note(c, subject_id, topic_id, title, body)?;
-    Ok(format!("已保存笔记（id={id}）：「{title}」"))
+    // The row is only the index; the Markdown file is the note. A create that
+    // skipped the file would look fine until the next reindex read the disk and
+    // made the note disappear from search.
+    crate::note_links::rebuild(c, &id, body)?;
+    if let Err(e) = crate::note_knowledge::rebuild(c, &id) {
+        eprintln!("[coverage] could not index agent note {id}: {e}");
+    }
+    let note = repo::get_note(c, &id)?;
+    let on_disk = mirror_note(ctx, &note);
+    Ok(format!(
+        "已保存笔记（id={id}）：「{title}」{}",
+        if on_disk { "" } else { "（数据库已写入，但 vault 文件写入失败——下次启动会补写）" }
+    ))
 }
 
 /// Write tool: save a Q/A deck as a flashcards material — the same
 /// `repo::save_material` path the UI's save_flashcards command uses, so the
 /// result appears in the normal materials list and SRS seeding flows.
-fn tool_save_flashcards(c: &Connection, args: &serde_json::Value) -> Result<String> {
+fn tool_save_flashcards(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
     let subject_id = args.get("subject_id").and_then(|v| v.as_str()).unwrap_or("").trim();
     if subject_id.is_empty() {
         return Ok("缺少 subject_id 参数（可先用 list_notebooks 查到），卡片未保存".into());
@@ -281,6 +336,235 @@ fn tool_save_flashcards(c: &Connection, args: &serde_json::Value) -> Result<Stri
     let meta = format!("{count} cards · agent");
     repo::save_material(c, subject_id, topic_id, "flashcards", &title, &meta, &serde_json::Value::Array(clean))?;
     Ok(format!("已保存 {count} 张卡片到「{title}」"))
+}
+
+// ------------------------------------------- reading and editing a note
+
+/// Push a note to its Markdown file. Returns whether the file is now on disk:
+/// the caller reports a failure instead of swallowing it, because a note that
+/// exists only in SQLite will vanish from search at the next reindex.
+fn mirror_note(ctx: &ToolCtx, note: &Note) -> bool {
+    let Some(root) = crate::vault::root_for(ctx.conn, ctx.data_dir) else {
+        return false;
+    };
+    match crate::vault::write_note(ctx.conn, &root, note) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("[vault] agent write could not mirror note {}: {e}", note.id);
+            false
+        }
+    }
+}
+
+/// Which note a call means. `note_id` is preferred; an exact title is accepted
+/// because a model that just ran `search_notes` has the title in hand, and an
+/// id is one more thing for it to get wrong. Ambiguity is refused rather than
+/// guessed — two notes can share a title, and editing the wrong one is not
+/// something the caller can notice afterwards.
+fn resolve_note(c: &Connection, args: &serde_json::Value) -> std::result::Result<Note, String> {
+    let id = args
+        .get("note_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let title = args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match (id, title) {
+        (Some(_), Some(_)) => Err("note_id 和 title 只能给一个（title 仅在不知道 id 时用）".into()),
+        (None, None) => Err("缺少 note_id（可先用 search_notes 查到，结果行首就是 id）".into()),
+        (Some(id), None) => repo::get_note(c, id)
+            .map_err(|_| format!("note_id {id} 不存在（可先用 search_notes 查到）")),
+        (None, Some(want)) => {
+            let mut hits: Vec<Note> = repo::list_notes(c, None)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|n| n.title == want)
+                .collect();
+            match hits.len() {
+                0 => Err(format!("没有标题为「{want}」的笔记（可先用 search_notes 查）")),
+                1 => Ok(hits.remove(0)),
+                n => Err(format!(
+                    "有 {n} 条笔记都叫「{want}」，无法确定改哪一条；请改用 note_id"
+                )),
+            }
+        }
+    }
+}
+
+/// Read tool: one note's text. The body is head-truncated with the real length
+/// stated, because the transcript budget truncates every tool result at 2400
+/// chars anyway — better to say "only the first N of M chars" than to hand back
+/// a silently clipped note the model believes it has read in full.
+fn tool_get_note(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
+    let note = match resolve_note(c, args) {
+        Ok(n) => n,
+        Err(msg) => return Ok(msg),
+    };
+    let mut out = format!("笔记 {} 「{}」\n", note.id, note.title);
+    if let Some(sid) = note.subject_id.as_deref() {
+        let name: Option<String> = c
+            .query_row("SELECT name FROM subjects WHERE id=?1", params![sid], |r| r.get(0))
+            .ok();
+        out.push_str(&format!("科目：{}\n", name.unwrap_or_else(|| sid.to_string())));
+    }
+    if let Some(vp) = note.vault_path.as_deref() {
+        out.push_str(&format!("文件：{vp}\n"));
+    }
+    let total = note.body.chars().count();
+    out.push_str(&format!("正文（{total} 字）：\n{}\n", snippet(&note.body, 1800)));
+    if total > 1800 {
+        out.push_str(&format!(
+            "（只显示了前 1800 字，共 {total} 字。改动用 find/replace 逐字匹配，不要凭这段节选整篇重写）\n"
+        ));
+    }
+    let revs = repo::note_revisions(c, &note.id, 5)?;
+    if !revs.is_empty() {
+        out.push_str("\n修订记录（新→旧，撤销用 update_note restore_revision）：\n");
+        for r in &revs {
+            out.push_str(&format!(
+                "- {} · 改前 {} 字 · {}\n",
+                r.id,
+                r.body.chars().count(),
+                r.reason.as_deref().unwrap_or("—")
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Write tool: edit an existing note — the first write surface that is not
+/// append-only, so it is the first one that has to be undoable.
+///
+/// Three ways to say what to change, exactly one per call:
+/// `find`+`replace` (targeted, the default), `body` (whole rewrite),
+/// `restore_revision` (undo). Two at once is a caller that is guessing, and a
+/// refusal is the honest answer to a guess.
+///
+/// Before anything is written the current title and body are snapshotted, so
+/// every edit can be undone from the tool itself. `find` must match exactly
+/// once: zero matches means the model's memory of the text is wrong, and
+/// multiple matches means it did not read enough context — in both cases
+/// writing would be inventing an edit the caller did not describe.
+fn tool_update_note(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
+    let note = match resolve_note(c, args) {
+        Ok(n) => n,
+        Err(msg) => return Ok(msg),
+    };
+
+    let body_arg = args.get("body").and_then(|v| v.as_str());
+    let find = args.get("find").and_then(|v| v.as_str());
+    let replace = args.get("replace").and_then(|v| v.as_str());
+    let restore = args
+        .get("restore_revision")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let new_title = args
+        .get("new_title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let requested = [body_arg.is_some(), find.is_some() || replace.is_some(), restore.is_some()]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if requested != 1 {
+        return Ok("请给且只给一种改法：\n- 精确替换：find + replace\n- 整篇重写：body\n- 撤销：restore_revision".into());
+    }
+    if find.is_some() != replace.is_some() {
+        return Ok("find 和 replace 必须成对出现（删掉一段就 replace 成空串）".into());
+    }
+
+    // Plan first, write second: the plan is what every refusal above inspects.
+    let (planned_title, planned_body, what) = if let Some(rev_id) = restore {
+        let rev = match repo::get_note_revision(c, rev_id) {
+            Ok(r) => r,
+            Err(_) => return Ok(format!("修订 {rev_id} 不存在，未改动")),
+        };
+        if rev.note_id != note.id {
+            return Ok(format!("修订 {rev_id} 不属于这条笔记，未改动"));
+        }
+        (rev.title, rev.body, format!("撤销到修订 {rev_id}"))
+    } else if let Some(b) = body_arg {
+        (
+            new_title.unwrap_or(note.title.as_str()).to_string(),
+            b.to_string(),
+            "整篇重写".to_string(),
+        )
+    } else {
+        let f = find.unwrap_or_default();
+        let r = replace.unwrap_or_default();
+        if f.is_empty() {
+            return Ok("find 不能是空串，未改动".into());
+        }
+        let hits = note.body.matches(f).count();
+        if hits == 0 {
+            return Ok(format!(
+                "正文里找不到「{}」——未改动。先用 get_note 看清原文，不要凭记忆改写",
+                snippet(f, 60)
+            ));
+        }
+        if hits > 1 {
+            return Ok(format!(
+                "「{}」在正文里出现 {hits} 次，不唯一，未改动。请把 find 扩到能唯一定位的一段",
+                snippet(f, 60)
+            ));
+        }
+        (
+            new_title.unwrap_or(note.title.as_str()).to_string(),
+            note.body.replacen(f, r, 1),
+            "替换 1 处".to_string(),
+        )
+    };
+
+    if planned_title.is_empty() || planned_title.chars().count() > 200 {
+        return Ok("标题为空或超过 200 字，未改动".into());
+    }
+    if planned_body.trim().is_empty() {
+        return Ok("改完正文为空，未改动（要删笔记请用界面，工具不删）".into());
+    }
+    if planned_body.chars().count() > 20_000 {
+        return Ok("改完正文超过 20000 字，未改动（请拆成多条笔记）".into());
+    }
+    if planned_body == note.body && planned_title == note.title {
+        return Ok("内容没有变化，未改动，也没有产生修订".into());
+    }
+
+    let before = note.body.chars().count();
+    let after = planned_body.chars().count();
+    let actor = format!("agent:{}", ctx.run_id);
+    let rev = repo::insert_note_revision(
+        c,
+        &note.id,
+        &note.title,
+        &note.body,
+        Some(&actor),
+        Some(&what),
+    )?;
+    repo::update_note(c, &note.id, &planned_title, &planned_body)?;
+    crate::note_links::rebuild(c, &note.id, &planned_body)?;
+    if let Err(e) = crate::note_knowledge::rebuild(c, &note.id) {
+        eprintln!("[coverage] could not reindex note {}: {e}", note.id);
+    }
+    let saved = repo::get_note(c, &note.id)?;
+    let on_disk = mirror_note(ctx, &saved);
+
+    Ok(format!(
+        "已改「{title}」：{what}，正文 {before} → {after} 字。\n改前全文存在修订 {rev}，撤销：update_note {{\"note_id\":\"{id}\",\"restore_revision\":\"{rev}\"}}{}",
+        if on_disk { "" } else { "\n注意：数据库已改，但 vault 文件写入失败——下次启动会补写" },
+        title = short_title(&saved.title),
+        id = saved.id,
+    ))
+}
+
+fn short_title(t: &str) -> String {
+    snippet(t, 80)
 }
 
 /// Char-boundary-safe truncation with an ellipsis marker.
@@ -460,6 +744,7 @@ pub fn execute_run(
     agent: &Agent,
     run_id: &str,
     model: &dyn Llm,
+    data_dir: Option<&std::path::Path>,
 ) -> Result<crate::agents::AgentRun> {
     let tools = resolve_tools(c, user_id, agent)?;
     let mcp_tools = resolve_mcp_tools(c, user_id, agent)?;
@@ -476,6 +761,7 @@ pub fn execute_run(
         .collect();
     let mut mcp_sessions: HashMap<String, crate::mcp_client::McpSession> = HashMap::new();
 
+    let ctx = ToolCtx::new(c, data_dir, run_id);
     let mut final_answer: Option<String> = None;
     let mut run_error: Option<String> = None;
 
@@ -514,7 +800,7 @@ pub fn execute_run(
                 continue;
             }
             let output = if let Some(t) = impl_tool {
-                match (t.run)(c, &args) {
+                match (t.run)(&ctx, &args) {
                     Ok(o) => o,
                     Err(e) => format!("工具执行失败：{e}"),
                 }
@@ -635,6 +921,12 @@ mod tests {
         .unwrap()
     }
 
+    /// Tool bodies need a context; tests run without a data dir (nothing is
+    /// mirrored to disk) and with a fixed run id (revisions are attributable).
+    fn tctx<'a>(c: &'a Connection) -> ToolCtx<'a> {
+        ToolCtx::new(c, None, "test-run")
+    }
+
     fn agent_with(c: &Connection, tools: &[&str], skills: &[&str], max_steps: i64) -> Agent {
         upsert_agent(
             c,
@@ -688,7 +980,7 @@ mod tests {
         let t = repo::insert_topic(&c, &s, "特征值", None, &[]).unwrap();
 
         // save_note: full placement path
-        let out = tool_save_note(&c, &serde_json::json!({
+        let out = tool_save_note(&tctx(&c), &serde_json::json!({
             "title": "特征值笔记", "body": "特征值是不变方向。",
             "subject_id": s, "topic_id": t,
         }))
@@ -700,7 +992,7 @@ mod tests {
         assert_eq!(notes[0].topic_id.as_deref(), Some(t.as_str()));
 
         // save_flashcards: same payload shape the UI saves
-        let out = tool_save_flashcards(&c, &serde_json::json!({
+        let out = tool_save_flashcards(&tctx(&c), &serde_json::json!({
             "subject_id": s, "title": "Agent 卡组",
             "cards": [
                 {"front": "特征值是什么", "back": "不变方向"},
@@ -718,11 +1010,11 @@ mod tests {
         assert_eq!(payload[0]["q"], "特征值是什么");
 
         // validation: topic/subject mismatch, missing cards, bad subject
-        let out = tool_save_note(&c, &serde_json::json!({"title": "t", "body": "b", "subject_id": "nope"})).unwrap();
+        let out = tool_save_note(&tctx(&c), &serde_json::json!({"title": "t", "body": "b", "subject_id": "nope"})).unwrap();
         assert!(out.contains("未保存") || out.contains("失败"), "{out}");
-        let out = tool_save_flashcards(&c, &serde_json::json!({"subject_id": s, "cards": []})).unwrap();
+        let out = tool_save_flashcards(&tctx(&c), &serde_json::json!({"subject_id": s, "cards": []})).unwrap();
         assert!(out.contains("没有一张完整"));
-        let out = tool_save_flashcards(&c, &serde_json::json!({"subject_id": s, "cards": [{"front": "a"}]})).unwrap();
+        let out = tool_save_flashcards(&tctx(&c), &serde_json::json!({"subject_id": s, "cards": [{"front": "a"}]})).unwrap();
         assert!(out.contains("没有一张完整"));
     }
 
@@ -765,7 +1057,7 @@ mod tests {
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
         };
-        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted).unwrap();
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted, None).unwrap();
         assert_eq!(done.status, "success");
         let notes = repo::list_notes(&c, Some(&s)).unwrap();
         assert_eq!(notes.len(), 1, "the agent's tool call wrote a real note");
@@ -806,7 +1098,7 @@ mod tests {
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
         };
-        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted).unwrap();
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted, None).unwrap();
         assert_eq!(done.status, "success");
         assert!(done.result.unwrap().contains("特征值讲义"));
         let msgs = list_messages(&c, crate::agents::DEFAULT_USER, &run.id, 50).unwrap();
@@ -837,7 +1129,7 @@ mod tests {
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
         };
-        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted).unwrap();
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted, None).unwrap();
         assert_eq!(done.status, "success");
         let msgs = list_messages(&c, crate::agents::DEFAULT_USER, &run.id, 50).unwrap();
         let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
@@ -859,7 +1151,7 @@ mod tests {
             ),
             prompts: std::sync::Mutex::new(Vec::new()),
         };
-        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted).unwrap();
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted, None).unwrap();
         assert_eq!(done.status, "error");
         assert!(done.error.unwrap().contains("最大步数"));
     }
@@ -927,5 +1219,248 @@ mod tests {
         assert!(sp.contains("mcp__homelab__query_db"), "MCP usage lands in prompt");
         assert!(sp.contains(r#""sql": string*"#), "schema summary in usage: {}", sp);
         assert!(sp.contains("list_notebooks"));
+    }
+
+    // ------------------------------------------------- note read / edit
+
+    fn note_fixture(c: &Connection, title: &str, body: &str) -> String {
+        repo::insert_note(c, None, None, title, body).unwrap()
+    }
+
+    #[test]
+    fn update_note_rewrites_one_place_and_keeps_the_previous_text() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "极限", "极限是局部的。\nε-δ 定义说明了趋近。");
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({
+                "note_id": id, "find": "极限是局部的。", "replace": "极限只关心某点附近。",
+            }),
+        )
+        .unwrap();
+        assert!(out.contains("替换 1 处"), "{out}");
+        assert!(out.contains("撤销"), "the receipt must name the undo path: {out}");
+
+        let note = repo::get_note(&c, &id).unwrap();
+        assert!(note.body.contains("某点附近"));
+        assert!(note.body.contains("ε-δ 定义"), "the rest of the note is untouched");
+
+        // The pre-edit text survives, attributed to the run that replaced it.
+        let revs = repo::note_revisions(&c, &id, 10).unwrap();
+        assert_eq!(revs.len(), 1);
+        assert!(revs[0].body.contains("极限是局部的。"));
+        assert_eq!(revs[0].actor.as_deref(), Some("agent:test-run"));
+    }
+
+    #[test]
+    fn update_note_refuses_an_ambiguous_find_instead_of_guessing() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "重复", "同一句。\n同一句。");
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": id, "find": "同一句。", "replace": "改掉的。"}),
+        )
+        .unwrap();
+        assert!(out.contains("出现 2 次"), "{out}");
+        assert_eq!(repo::get_note(&c, &id).unwrap().body, "同一句。\n同一句。");
+        assert!(repo::note_revisions(&c, &id, 10).unwrap().is_empty(), "a refusal writes nothing, not even a revision");
+    }
+
+    #[test]
+    fn update_note_refuses_a_find_the_model_misremembered() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "记忆", "原文是这样写的。");
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": id, "find": "原文似乎是这样写", "replace": "x"}),
+        )
+        .unwrap();
+        assert!(out.contains("找不到"), "{out}");
+        assert_eq!(repo::get_note(&c, &id).unwrap().body, "原文是这样写的。");
+    }
+
+    #[test]
+    fn update_note_accepts_exactly_one_way_of_saying_what_changed() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "两种", "正文");
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": id, "body": "重写", "find": "正文", "replace": "改"}),
+        )
+        .unwrap();
+        assert!(out.contains("只给一种改法"), "{out}");
+        let out = tool_update_note(&tctx(&c), &serde_json::json!({"note_id": id})).unwrap();
+        assert!(out.contains("只给一种改法"), "{out}");
+        let out = tool_update_note(&tctx(&c), &serde_json::json!({"note_id": id, "find": "正文"})).unwrap();
+        assert!(out.contains("成对出现"), "{out}");
+        assert_eq!(repo::get_note(&c, &id).unwrap().body, "正文");
+    }
+
+    #[test]
+    fn update_note_can_undo_its_own_edit() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "可撤销", "原始正文");
+        tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": id, "find": "原始正文", "replace": "被改坏的正文"}),
+        )
+        .unwrap();
+        let rev = repo::note_revisions(&c, &id, 1).unwrap().remove(0);
+
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": id, "restore_revision": rev.id}),
+        )
+        .unwrap();
+        assert!(out.contains("撤销到修订"), "{out}");
+        assert_eq!(repo::get_note(&c, &id).unwrap().body, "原始正文");
+
+        // The undo is itself an edit: the bad version is still recoverable.
+        let revs = repo::note_revisions(&c, &id, 10).unwrap();
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[0].body, "被改坏的正文");
+    }
+
+    #[test]
+    fn update_note_refuses_a_revision_from_another_note() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let a = note_fixture(&c, "甲", "甲的正文");
+        let b = note_fixture(&c, "乙", "乙的正文");
+        tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": a, "find": "甲的正文", "replace": "甲改"}),
+        )
+        .unwrap();
+        let rev_a = repo::note_revisions(&c, &a, 1).unwrap().remove(0);
+
+        let out = tool_update_note(
+            &tctx(&c),
+            &serde_json::json!({"note_id": b, "restore_revision": rev_a.id}),
+        )
+        .unwrap();
+        assert!(out.contains("不属于这条笔记"), "{out}");
+        assert_eq!(repo::get_note(&c, &b).unwrap().body, "乙的正文");
+    }
+
+    #[test]
+    fn get_note_refuses_a_title_two_notes_share() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        note_fixture(&c, "同名", "第一份");
+        note_fixture(&c, "同名", "第二份");
+        let out = tool_get_note(&tctx(&c), &serde_json::json!({"title": "同名"})).unwrap();
+        assert!(out.contains("无法确定"), "{out}");
+        // A unique title is enough — the id is not required when it is unambiguous.
+        let one = note_fixture(&c, "唯一", "只有这一份");
+        let out = tool_get_note(&tctx(&c), &serde_json::json!({"title": "唯一"})).unwrap();
+        assert!(out.contains("只有这一份") && out.contains(&one), "{out}");
+    }
+
+    #[test]
+    fn get_note_admits_when_it_only_shows_the_head() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let long: String = "长".repeat(3000);
+        let id = note_fixture(&c, "长笔记", &long);
+        let out = tool_get_note(&tctx(&c), &serde_json::json!({"note_id": id})).unwrap();
+        assert!(out.contains("共 3000 字"), "{out}");
+        assert!(out.contains("只显示了前 1800 字"), "a clipped read must say so: {out}");
+    }
+
+    #[test]
+    fn update_note_writes_the_vault_file_not_just_the_row() {
+        let dir = std::env::temp_dir().join(format!("cortex-agent-note-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "极限", "旧正文");
+        let ctx = ToolCtx::new(&c, Some(&dir), "run-1");
+        let out = tool_update_note(
+            &ctx,
+            &serde_json::json!({"note_id": id, "find": "旧正文", "replace": "新正文"}),
+        )
+        .unwrap();
+        assert!(!out.contains("写入失败"), "{out}");
+        // The Markdown file is the note; a row-only edit would be undone by the
+        // next reindex, so this is the assertion that matters.
+        let file = dir.join("vault").join("notes").join("极限.md");
+        assert!(file.exists(), "expected {file:?}");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("新正文") && !text.contains("旧正文"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn revisions_are_pruned_to_the_newest_twenty() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "剪枝", "正文");
+        for i in 0..25 {
+            repo::insert_note_revision(&c, &id, "剪枝", &format!("v{i}"), None, None).unwrap();
+        }
+        let revs = repo::note_revisions(&c, &id, 100).unwrap();
+        assert_eq!(revs.len(), repo::NOTE_REVISION_KEEP as usize);
+        assert_eq!(revs[0].body, "v24", "newest first");
+        assert!(revs.iter().all(|r| r.body != "v0"), "the oldest were pruned");
+    }
+
+    #[test]
+    fn the_loop_can_edit_a_note_it_just_read() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let id = note_fixture(&c, "口述笔记", "逆矩阵存在当且仅当行列式非零。");
+        // Seeded by 0086 — if the registry rows are missing the tools never
+        // resolve and the model is never told they exist.
+        let agent = upsert_agent(
+            &c,
+            crate::agents::DEFAULT_USER,
+            None,
+            "编辑",
+            None,
+            "修正笔记里的笔误。",
+            &[],
+            &["get_note".to_string(), "update_note".to_string()],
+            None,
+            0.3,
+            6,
+            true,
+            "write",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_tools(&c, crate::agents::DEFAULT_USER, &agent).unwrap().len(),
+            2,
+            "0086 must seed both tools into agent_tools"
+        );
+        let run = start_run(&c, crate::agents::DEFAULT_USER, &agent.id, "把「行列式」改成「det」").unwrap();
+        let scripted = Scripted {
+            replies: std::sync::Mutex::new(
+                vec![
+                    format!(r#"TOOL get_note {{"note_id": "{id}"}}"#),
+                    format!(r#"TOOL update_note {{"note_id": "{id}", "find": "当且仅当行列式非零", "replace": "当且仅当 det 非零"}}"#),
+                    "ANSWER: 已改。".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        };
+        let done = execute_run(&c, crate::agents::DEFAULT_USER, &agent, &run.id, &scripted, None).unwrap();
+        assert_eq!(done.status, "success");
+        assert_eq!(
+            repo::get_note(&c, &id).unwrap().body,
+            "逆矩阵存在当且仅当 det 非零。"
+        );
+        let msgs = list_messages(&c, crate::agents::DEFAULT_USER, &run.id, 50).unwrap();
+        assert!(
+            msgs.iter().any(|m| m.role == "tool" && m.content.contains("已改")),
+            "the edit is in the audit trail"
+        );
     }
 }

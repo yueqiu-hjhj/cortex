@@ -656,6 +656,24 @@ pub struct Note {
     pub vault_path: Option<String>,
 }
 
+/// The pre-edit state of a note, kept so an edit can be undone.
+///
+/// A log, not a second truth: the live body stays in `notes` and in the vault
+/// file. This row answers only "what did it look like before, and who changed
+/// it" — which is what makes an agent write reversible without making the
+/// database the owner of the note.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NoteRevision {
+    pub id: String,
+    pub note_id: String,
+    pub title: String,
+    pub body: String,
+    pub created_at: i64,
+    /// Who made the edit: `agent:<run_id>` for tool writes, `user` otherwise.
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+}
+
 // ---- calendar events / tasks ------------------------------------------
 
 /// A calendar event or task. `kind` is "event" or "task"; reminders are an

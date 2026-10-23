@@ -308,3 +308,42 @@ by trailing week with blocked folded into failed, out-of-window rows excluded,
 fixed shape including the nonsense-window case) and `selfcheck.rs` (an
 unhealthy window warns while `ok` stays true; an empty library raises no
 warning).
+
+## 13. An agent's write is bounded, attributed and undoable (0076/0086)
+
+Agents may create notes and, since 0086, edit them — but never delete, and
+never without a trail. The rules that make that safe:
+
+- **The file is the note.** Every tool write goes `notes` row → link index →
+  `[[link]]` rebuild → vault Markdown. A row-only write looks correct until the
+  next reindex reads the disk and makes the note disappear, so the mirror is
+  part of the write, and a failed mirror is reported in the tool result rather
+  than swallowed.
+- **A refusal is the default answer.** `update_note` takes exactly one way of
+  saying what changed (`find`+`replace`, `body`, or `restore_revision`). Two at
+  once is a guess; so is a `find` that matches zero times (the model
+  misremembered the text) or more than once (it did not read enough context).
+  All three refuse and write nothing — no revision, no `updated_at` bump.
+- **Every edit is undoable from the tool itself.** The pre-edit title and body
+  are snapshotted into `note_revisions` before the write, attributed to
+  `agent:<run_id>`, and pruned to the newest 20 per note. The receipt returns
+  the revision id, so undo is one more tool call and not a database dive. An
+  undo is itself an edit, so the bad version stays recoverable too.
+- **Editing needs reading.** `get_note` returns the note with its real length
+  and says when it is showing only the head (the transcript budget clips every
+  tool result at 2400 chars). A clipped read that pretends to be complete is
+  how a model "rewrites" a note from a third of its text.
+- **Ambiguous addressing is refused, not resolved by luck.** A note can be
+  named by `note_id` or by a title that matches exactly one note; two notes
+  sharing a title get a refusal listing the problem, not a coin flip.
+- External agents (MCP) still cannot write at all: their only writable table is
+  `agent_proposals`. Direct editing is the in-app agent's privilege, gated by
+  the agent's `tool_tier` and recorded in the run transcript.
+
+Enforced by: `agent_exec.rs` (targeted replace keeps the rest of the note;
+ambiguous/missing `find` refuses without a revision; exactly one edit mode;
+undo restores and is itself undoable; a revision from another note is refused;
+title shared by two notes is refused; head-truncation is admitted; the vault
+file is written and holds the new text; revisions prune to 20 newest-first;
+the loop resolves both tools through the 0086 registry seeds) and
+`repo.rs` (`insert_note_revision` / `note_revisions` / `get_note_revision`).

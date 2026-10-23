@@ -2675,6 +2675,75 @@ pub fn delete_note(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+// ---- note revisions (undo trail for edits) ----------------------------
+
+/// How many revisions to keep per note. Every agent edit appends one, and
+/// nobody ever reads the 200th-oldest version — so the log is pruned instead of
+/// growing without a bound the user never agreed to.
+pub const NOTE_REVISION_KEEP: i64 = 20;
+
+const REVISION_COLS: &str =
+    "id, note_id, title, body, created_at, actor, reason";
+
+fn map_revision(r: &rusqlite::Row) -> rusqlite::Result<NoteRevision> {
+    Ok(NoteRevision {
+        id: r.get(0)?,
+        note_id: r.get(1)?,
+        title: r.get(2)?,
+        body: r.get(3)?,
+        created_at: r.get(4)?,
+        actor: r.get(5)?,
+        reason: r.get(6)?,
+    })
+}
+
+/// Snapshot a note's current state before it is overwritten. Returns the new
+/// revision id, which the caller hands back to the model so an undo does not
+/// require reading the database by hand.
+pub fn insert_note_revision(
+    conn: &Connection,
+    note_id: &str,
+    title: &str,
+    body: &str,
+    actor: Option<&str>,
+    reason: Option<&str>,
+) -> Result<String> {
+    let id = new_id();
+    conn.execute(
+        "INSERT INTO note_revisions (id, note_id, title, body, created_at, actor, reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![id, note_id, title, body, now_ms(), actor, reason],
+    )?;
+    // Prune beyond the newest KEEP rows for this note. Ordered with rowid as
+    // the tiebreak: several edits inside one millisecond still have a definite
+    // order, and "keep the newest" must not depend on SQLite's mood.
+    conn.execute(
+        "DELETE FROM note_revisions WHERE note_id=?1 AND id NOT IN (
+             SELECT id FROM note_revisions WHERE note_id=?1
+             ORDER BY created_at DESC, rowid DESC LIMIT ?2)",
+        params![note_id, NOTE_REVISION_KEEP],
+    )?;
+    Ok(id)
+}
+
+/// Newest first — how a caller finds something to restore.
+pub fn note_revisions(conn: &Connection, note_id: &str, limit: i64) -> Result<Vec<NoteRevision>> {
+    let sql = format!(
+        "SELECT {REVISION_COLS} FROM note_revisions WHERE note_id=?1
+         ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![note_id, limit.clamp(1, 100)], map_revision)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn get_note_revision(conn: &Connection, id: &str) -> Result<NoteRevision> {
+    let sql = format!("SELECT {REVISION_COLS} FROM note_revisions WHERE id=?1");
+    conn.query_row(&sql, params![id], map_revision)
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("note revision {id}")))
+}
+
 // ---- calendar events / tasks ------------------------------------------
 
 /// Tags are stored as a ';'-separated text list (tags shouldn't contain ';').

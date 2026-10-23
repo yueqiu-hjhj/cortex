@@ -6677,7 +6677,16 @@ pub async fn agents_execute_run(
                 .ok_or_else(|| Error::NotFound(format!("run {id}")))?,
             None => crate::agents::start_run(&conn, crate::agents::DEFAULT_USER, &agent_id, &input)?,
         };
-        crate::agent_exec::execute_run(&conn, crate::agents::DEFAULT_USER, &agent, &run.id, model.as_ref())
+        // data_dir so a note write reaches the vault: SQLite is the index, the
+        // Markdown file is the note.
+        crate::agent_exec::execute_run(
+            &conn,
+            crate::agents::DEFAULT_USER,
+            &agent,
+            &run.id,
+            model.as_ref(),
+            state.data_dir.as_deref(),
+        )
     })
     .await
     .map_err(|e| Error::Other(format!("agent task failed: {e}")))?
