@@ -159,7 +159,9 @@ fn platform_default_db() -> PathBuf {
     PathBuf::from(base).join("app.study.cortex").join("cortex.db")
 }
 
-/// Idempotent: the app may not have a migration for this table yet.
+/// Idempotent: works whether the app has migrated yet or not, and upgrades a
+/// table created by an older build of this tool (SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`, so each column is checked first).
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS paper_quality (
@@ -172,12 +174,40 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
            oa_status       TEXT,
            oa_pdf_url      TEXT,
            checked_at      INTEGER NOT NULL,
-           error           TEXT
+           error           TEXT,
+           journal         TEXT,
+           issn            TEXT,
+           in_doaj         INTEGER,
+           is_core         INTEGER,
+           journal_type    TEXT,
+           journal_quality TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_paper_quality_retracted
            ON paper_quality(retracted);",
     )
-    .map_err(|e| format!("建表失败: {e}"))
+    .map_err(|e| format!("建表失败: {e}"))?;
+
+    let have: std::collections::HashSet<String> = conn
+        .prepare("PRAGMA table_info(paper_quality)")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|e| e.to_string())?;
+    for (name, ty) in [
+        ("journal", "TEXT"),
+        ("issn", "TEXT"),
+        ("in_doaj", "INTEGER"),
+        ("is_core", "INTEGER"),
+        ("journal_type", "TEXT"),
+        ("journal_quality", "TEXT"),
+    ] {
+        if !have.contains(name) {
+            conn.execute_batch(&format!("ALTER TABLE paper_quality ADD COLUMN {name} {ty}"))
+                .map_err(|e| format!("升级表结构失败（{name}）: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 struct PaperRow {
@@ -264,13 +294,15 @@ fn upsert(
     doi: &str,
     ret: &Retraction,
     oa: &Oa,
+    journal: &Journal,
     error: Option<&str>,
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO paper_quality
            (paper_id, doi, retracted, retraction_doi, retraction_kind, is_notice,
-            oa_status, oa_pdf_url, checked_at, error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            oa_status, oa_pdf_url, checked_at, error,
+            journal, issn, in_doaj, is_core, journal_type, journal_quality)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(paper_id) DO UPDATE SET
            doi = excluded.doi,
            retracted = excluded.retracted,
@@ -280,7 +312,13 @@ fn upsert(
            oa_status = excluded.oa_status,
            oa_pdf_url = excluded.oa_pdf_url,
            checked_at = excluded.checked_at,
-           error = excluded.error",
+           error = excluded.error,
+           journal = excluded.journal,
+           issn = excluded.issn,
+           in_doaj = excluded.in_doaj,
+           is_core = excluded.is_core,
+           journal_type = excluded.journal_type,
+           journal_quality = excluded.journal_quality",
         params![
             paper_id,
             doi,
@@ -291,7 +329,13 @@ fn upsert(
             oa.status,
             oa.pdf_url,
             now_ms(),
-            error
+            error,
+            journal.name,
+            journal.issn,
+            journal.in_doaj as i64,
+            journal.is_core as i64,
+            journal.jtype,
+            journal.quality
         ],
     )
     .map(|_| ())
@@ -401,6 +445,94 @@ fn parse_unpaywall(v: &Value) -> Oa {
     }
 }
 
+/// Journal-level signals from OpenAlex. Deliberately advisory: DOAJ is a
+/// positive whitelist, `core` is OpenAlex's curated collection, and `journal`
+/// only means "a journal we could not confirm in either" — a new or niche
+/// title looks identical to a dubious one, so it is never called predatory.
+///
+/// OpenAlex's nested source object is dehydrated: it has `is_in_doaj`,
+/// `is_core` and `type`, but no `works_count` / `cited_by_count`.
+struct Journal {
+    name: Option<String>,
+    issn: Option<String>,
+    in_doaj: bool,
+    is_core: bool,
+    jtype: Option<String>,
+    quality: String,
+}
+
+impl Default for Journal {
+    fn default() -> Self {
+        Self {
+            name: None,
+            issn: None,
+            in_doaj: false,
+            is_core: false,
+            jtype: None,
+            quality: "unknown".to_string(),
+        }
+    }
+}
+
+fn openalex(client: &reqwest::blocking::Client, doi: &str, email: &str) -> Result<Journal, String> {
+    let url = format!(
+        "https://api.openalex.org/works/doi:{doi}?mailto={}",
+        urlencode(email)
+    );
+    let resp = client.get(&url).send().map_err(|e| e.to_string())?;
+    if resp.status().as_u16() == 404 {
+        return Ok(Journal::default());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let v: Value = resp.json().map_err(|e| format!("解析失败: {e}"))?;
+    Ok(parse_openalex(&v))
+}
+
+fn parse_openalex(v: &Value) -> Journal {
+    let src = v.get("primary_location").and_then(|l| l.get("source"));
+    let Some(src) = src.filter(|s| !s.is_null()) else {
+        return Journal::default();
+    };
+    let name = src
+        .get("display_name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let issn = src
+        .get("issn_l")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let in_doaj = src
+        .get("is_in_doaj")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let is_core = src
+        .get("is_core")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let jtype = src.get("type").and_then(Value::as_str).map(str::to_string);
+    let quality = if in_doaj {
+        "doaj"
+    } else if is_core {
+        "core"
+    } else if jtype.as_deref() == Some("journal") {
+        "journal"
+    } else if name.is_some() {
+        "other"
+    } else {
+        "unknown"
+    };
+    Journal {
+        name,
+        issn,
+        in_doaj,
+        is_core,
+        jtype,
+        quality: quality.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // commands
 // ---------------------------------------------------------------------------
@@ -418,6 +550,7 @@ fn check(conn: &Connection, args: &Args) -> Result<(), String> {
     let mut skipped = 0usize;
     let mut retracted: Vec<(String, String, Option<String>)> = Vec::new();
     let mut oa_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut journal_quality: BTreeMap<String, usize> = BTreeMap::new();
     let mut errors: Vec<(String, String)> = Vec::new();
 
     for row in &rows {
@@ -449,7 +582,18 @@ fn check(conn: &Connection, args: &Args) -> Result<(), String> {
             }
         };
 
-        upsert(conn, &row.id, &doi, &ret, &oa, err.as_deref())?;
+        let journal = match openalex(&client, &doi, &email) {
+            Ok(j) => j,
+            Err(e) => {
+                err = Some(match err {
+                    Some(prev) => format!("{prev}; openalex: {e}"),
+                    None => format!("openalex: {e}"),
+                });
+                Journal::default()
+            }
+        };
+
+        upsert(conn, &row.id, &doi, &ret, &oa, &journal, err.as_deref())?;
         checked += 1;
         if ret.retracted {
             retracted.push((row.label.clone(), doi.clone(), ret.retraction_doi.clone()));
@@ -457,6 +601,7 @@ fn check(conn: &Connection, args: &Args) -> Result<(), String> {
         if let Some(s) = &oa.status {
             *oa_counts.entry(s.clone()).or_insert(0) += 1;
         }
+        *journal_quality.entry(journal.quality.clone()).or_insert(0) += 1;
         if let Some(e) = err {
             errors.push((row.label.clone(), e));
         }
@@ -471,6 +616,7 @@ fn check(conn: &Connection, args: &Args) -> Result<(), String> {
                 "paper": label, "doi": doi, "retraction_doi": notice
             })).collect::<Vec<_>>(),
             "oa": oa_counts,
+            "journal_quality": journal_quality,
             "errors": errors.iter().map(|(label, e)| serde_json::json!({
                 "paper": label, "error": e
             })).collect::<Vec<_>>(),
@@ -505,6 +651,15 @@ fn check(conn: &Connection, args: &Args) -> Result<(), String> {
             .collect();
         println!("\n开放获取 {oa_total} 篇（{}）", parts.join(" · "));
         println!("  用 --fetch-oa 下载 PDF");
+    }
+    let q_parts: Vec<String> = journal_quality
+        .iter()
+        .filter(|(k, _)| k.as_str() != "unknown")
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect();
+    if !q_parts.is_empty() {
+        println!("\n期刊信号：{}", q_parts.join(" · "));
+        println!("  doaj=DOAJ 收录 · core=OpenAlex 核心库 · journal=期刊但未进核心/DOAJ（非质量结论）");
     }
     if !errors.is_empty() {
         println!("\n查询失败 {} 篇（下次 --check 会重试）", errors.len());
@@ -609,6 +764,8 @@ struct QualityRow {
     oa: Option<String>,
     checked: Option<i64>,
     error: Option<String>,
+    journal: Option<String>,
+    quality: Option<String>,
 }
 
 fn report(conn: &Connection, args: &Args) -> Result<(), String> {
@@ -616,7 +773,7 @@ fn report(conn: &Connection, args: &Args) -> Result<(), String> {
         .prepare(
             "SELECT p.id, COALESCE(NULLIF(TRIM(p.cite_key), ''), p.title), COALESCE(q.doi, p.doi),
                     q.retracted, q.retraction_doi, q.is_notice, q.oa_status, q.oa_pdf_url,
-                    q.checked_at, q.error
+                    q.checked_at, q.error, q.journal, q.journal_quality
              FROM papers p LEFT JOIN paper_quality q ON q.paper_id = p.id
              ORDER BY q.retracted DESC, q.checked_at DESC",
         )
@@ -633,6 +790,8 @@ fn report(conn: &Connection, args: &Args) -> Result<(), String> {
                 oa: r.get(6)?,
                 checked: r.get(8)?,
                 error: r.get(9)?,
+                journal: r.get(10)?,
+                quality: r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -649,6 +808,8 @@ fn report(conn: &Connection, args: &Args) -> Result<(), String> {
                     "retraction_doi": &r.notice,
                     "is_notice": r.is_notice,
                     "oa_status": &r.oa,
+                    "journal": &r.journal,
+                    "journal_quality": &r.quality,
                     "checked_at": &r.checked, "error": &r.error
                 })
             })
@@ -681,6 +842,12 @@ fn report(conn: &Connection, args: &Args) -> Result<(), String> {
         }
         if matches!(r.oa.as_deref(), Some(s) if s != "closed") {
             flags.push("OA");
+        }
+        if r.quality.as_deref() == Some("doaj") {
+            flags.push("DOAJ");
+        }
+        if r.quality.as_deref() == Some("journal") {
+            flags.push("期刊未核心收录");
         }
         let suffix = match (flags.is_empty(), r.error.as_deref()) {
             (true, Some(e)) => format!("  [error: {e}]"),
@@ -928,5 +1095,58 @@ mod tests {
     #[test]
     fn safe_name_never_escapes_the_output_dir() {
         assert_eq!(safe_name("../../etc/passwd"), "______etc_passwd");
+    }
+
+    #[test]
+    fn doaj_source_is_marked_doaj() {
+        let v = json!({ "primary_location": { "source": {
+            "display_name": "PLOS ONE", "issn_l": "1932-6203",
+            "is_in_doaj": true, "is_core": true, "type": "journal"
+        }}});
+        let j = parse_openalex(&v);
+        assert_eq!(j.quality, "doaj");
+        assert_eq!(j.name.as_deref(), Some("PLOS ONE"));
+        assert_eq!(j.issn.as_deref(), Some("1932-6203"));
+        assert!(j.in_doaj);
+    }
+
+    #[test]
+    fn core_journal_is_core_not_doaj() {
+        // The real shape for 10.1038/nature14539.
+        let v = json!({ "primary_location": { "source": {
+            "display_name": "Nature", "issn_l": "0028-0836",
+            "is_in_doaj": false, "is_core": true, "type": "journal",
+            "host_organization_name": "Nature Portfolio"
+        }}});
+        let j = parse_openalex(&v);
+        assert_eq!(j.quality, "core");
+        assert!(j.is_core);
+    }
+
+    #[test]
+    fn non_core_journal_is_flagged_but_never_called_predatory() {
+        let v = json!({ "primary_location": { "source": {
+            "display_name": "Some New Journal", "is_in_doaj": false,
+            "is_core": false, "type": "journal"
+        }}});
+        assert_eq!(parse_openalex(&v).quality, "journal");
+    }
+
+    #[test]
+    fn conference_is_other_not_a_journal_warning() {
+        let v = json!({ "primary_location": { "source": {
+            "display_name": "NeurIPS", "is_in_doaj": false,
+            "is_core": false, "type": "conference"
+        }}});
+        assert_eq!(parse_openalex(&v).quality, "other");
+    }
+
+    #[test]
+    fn missing_source_is_unknown() {
+        assert_eq!(
+            parse_openalex(&json!({ "primary_location": { "source": null } })).quality,
+            "unknown"
+        );
+        assert_eq!(parse_openalex(&json!({})).quality, "unknown");
     }
 }

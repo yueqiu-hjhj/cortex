@@ -1,11 +1,12 @@
-# cortex-paper-meta — 撤稿校验与开放全文
+# cortex-paper-meta — 撤稿校验、开放全文与期刊信号
 
-补上深度对比里标出的两个真实短板（`docs/competitive-deep-dive-2026-10-22.md` §5B）：
+补上深度对比里标出的短板（`docs/competitive-deep-dive-2026-10-22.md` §5B）：
 
 | 短板 | 对手参照 | 本工具 |
 |---|---|---|
 | 不知道引用的论文是否已撤稿 | PaperQA2（Crossref 元数据 + 撤稿检查） | `--check` 查 Crossref |
 | 搜到论文却拿不到合法全文 | PaperQA2（Unpaywall） | `--fetch-oa` 下载 OA PDF |
+| 不知道期刊是否被正经收录 | LDR（DOAJ / 掠夺性期刊库） | `--check` 查 OpenAlex（DOAJ 白名单 + 收录量） |
 
 ## 为什么是独立工具而不是入库时检查
 
@@ -16,7 +17,7 @@
 ## 用法
 
 ```bash
-# 1. 批量查：Crossref（撤稿）+ Unpaywall（开放获取）
+# 1. 批量查：Crossref（撤稿）+ Unpaywall（开放获取）+ OpenAlex（期刊信号）
 cargo run --bin cortex-paper-meta -- --check
 
 # 2. 下载已发现的开放全文（默认 ~/Downloads/cortex-oa）
@@ -46,8 +47,8 @@ cargo run --bin cortex-paper-meta -- --report
 
 ## 结果写在哪
 
-表 `paper_quality`（迁移 `0083_paper_quality.sql`；工具运行时也会 `CREATE TABLE IF NOT EXISTS`，
-所以数据库还没迁移过也能先跑）：
+表 `paper_quality`（迁移 `0083_paper_quality.sql` + `0084_paper_journal.sql`；工具运行时也会
+建表并补齐缺列，所以数据库还没迁移过也能先跑）：
 
 | 列 | 含义 |
 |---|---|
@@ -58,6 +59,11 @@ cargo run --bin cortex-paper-meta -- --report
 | `is_notice` | 1 = 这篇本身就是撤稿声明 |
 | `oa_status` | `gold` / `green` / `hybrid` / `bronze` / `closed` |
 | `oa_pdf_url` | 开放获取 PDF 直链 |
+| `journal` / `issn` | OpenAlex 给出的期刊名与 ISSN-L |
+| `in_doaj` | 1 = 期刊在 DOAJ 白名单 |
+| `is_core` | 1 = 期刊在 OpenAlex 核心库 |
+| `journal_type` | `journal` / `conference` / `repository` 等 |
+| `journal_quality` | `doaj` / `core` / `journal` / `other` / `unknown` |
 | `checked_at` | 上次检查时间（ms） |
 | `error` | 单篇失败原因，不阻塞其他篇 |
 
@@ -70,6 +76,23 @@ Crossref 有三种暴露方式，全部做了防御性解析：
 3. `message.type == "retraction"` —— 这篇本身是撤稿声明（记为 `is_notice`，**不**算"这篇被撤稿"）。
 
 `correction`（勘误）只记 `retraction_kind`，不会误报为撤稿。
+
+## 期刊信号怎么判定
+
+OpenAlex 按 DOI 返回 `primary_location.source`。注意它是**脱水对象**：只有
+`is_in_doaj`、`is_core`、`type`，**没有** `works_count` / `cited_by_count`
+（那两个只在 `/sources` 端点上）。所以判定只用实际存在的字段：
+
+| 值 | 条件 | 怎么读 |
+|---|---|---|
+| `doaj` | `is_in_doaj = true` | 正向白名单 |
+| `core` | `is_core = true` | OpenAlex 核心库（如 Nature） |
+| `journal` | `type = journal`，但既不在 DOAJ 也不在核心库 | **不是质量结论**：新刊、小众刊同样如此 |
+| `other` | 会议、仓库、电子书等非期刊 | 不提示 |
+| `unknown` | 找不到 source | 无法判断 |
+
+> 刻意不叫 "predatory"：我们没有掠夺性期刊库，也不该凭收录情况给人定罪。
+> 应用内只在 `journal` 时提示"未被核心库收录，先看一眼来源"，`doaj` 时显示正向标签。
 
 ## 下载行为
 
@@ -98,12 +121,14 @@ cortex-paper-meta --report
 cd src-tauri && cargo test --bin cortex-paper-meta
 ```
 
-覆盖：`updated-by` 撤稿、`is-retracted-by` 关系、撤稿声明标记、勘误不误报、
-Unpaywall PDF 直链、closed 无链接、DOI 前缀归一化、URL 编码、文件名防穿越。
+覆盖（13 个）：`updated-by` 撤稿、`is-retracted-by` 关系、撤稿声明标记、勘误不误报、
+Unpaywall PDF 直链、closed 无链接、DOI 前缀归一化、URL 编码、文件名防穿越，
+以及 OpenAlex 的 DOAJ / 正常收录 / 小刊 / 无 source 四种期刊判定。
 
 ## 已知边界
 
-- **应用内的显示**：论文列表与详情页会在 `retracted = 1` 时显示「⚠ 已撤稿」角标（`Paper.retracted`
-  由 `papers.rs` 的派生列给出）。检查本身仍是批处理，不在导入时联网。
-- Crossref/Unpaywall 覆盖不全：没有 DOI 的论文查不了（工具会跳过并计数）。
+- **应用内的显示**：论文列表与详情页会在 `retracted = 1` 时显示「⚠ 已撤稿」角标；
+  详情页在 `journal_quality = doaj` 时显示 DOAJ 标签、`small` 时显示一句提示。
+  检查本身仍是批处理，不在导入时联网。
+- Crossref/Unpaywall/OpenAlex 覆盖不全：没有 DOI 的论文查不了（工具会跳过并计数）。
 - 查询失败不会丢数据：错误写进 `error`，下次 `--check` 自动重试。

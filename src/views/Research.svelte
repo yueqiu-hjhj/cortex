@@ -1571,6 +1571,13 @@
               <code>cortex-paper-meta --report</code> 查看。
             </p>
           {/if}
+          {#if selected.journal_quality === "doaj"}
+            <p class="journal-note good">DOAJ 收录期刊。</p>
+          {:else if selected.journal_quality === "journal"}
+            <p class="journal-note">
+              期刊未被 OpenAlex 核心库或 DOAJ 收录——这不是质量结论，只是提醒你先看一眼期刊来源。
+            </p>
+          {/if}
         </div>
 
         <div class="actions">
@@ -2679,6 +2686,15 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--danger, #e24b4a);
+  }
+  .journal-note {
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg-faint);
+  }
+  .journal-note.good {
+    color: var(--accent);
   }
 
   .detail {

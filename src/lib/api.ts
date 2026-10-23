@@ -2718,6 +2718,8 @@ export interface Paper {
   open_task_count: number;
   /** Crossref reports this work as retracted (filled by cortex-paper-meta). */
   retracted: boolean;
+  /** OpenAlex journal signal: doaj | core | journal | other | unknown (advisory). */
+  journal_quality: string | null;
 }
 
 export interface Excerpt {

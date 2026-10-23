@@ -57,6 +57,9 @@ pub struct Paper {
     /// Derived: Crossref says this work has been retracted. Filled by
     /// `cortex-paper-meta --check`; false when never checked or still valid.
     pub retracted: bool,
+    /// Derived: journal signal from OpenAlex — `doaj` / `indexed` / `small` /
+    /// `unknown`. Advisory only; `small` is not an accusation.
+    pub journal_quality: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,7 +117,8 @@ const PAPER_COLUMNS: &str = "p.id, p.title, p.authors, p.year, p.venue, p.doi, p
      (SELECT COUNT(*) FROM item_links l JOIN work_items w ON w.id = l.item_id \
         WHERE l.entity_table = 'papers' AND l.entity_id = p.id \
           AND w.status IN ('open','doing','blocked')), \
-     COALESCE((SELECT q.retracted FROM paper_quality q WHERE q.paper_id = p.id), 0)";
+     COALESCE((SELECT q.retracted FROM paper_quality q WHERE q.paper_id = p.id), 0), \
+     (SELECT q.journal_quality FROM paper_quality q WHERE q.paper_id = p.id)";
 
 fn row_to_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
     Ok(Paper {
@@ -137,6 +141,7 @@ fn row_to_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
         excerpt_count: row.get(16)?,
         open_task_count: row.get(17)?,
         retracted: row.get::<_, i64>(18)? != 0,
+        journal_quality: row.get(19)?,
     })
 }
 
