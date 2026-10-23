@@ -463,15 +463,35 @@ export const envProbe = () => invoke<Record<string, boolean>>("env_probe");
     listen<{ downloaded: number; total: number }>("onnx-progress", (e) => cb(e.payload));
 
 // ---- AI ----
-export const chatAnswer = (
+/**
+ * Scoped retrieval-augmented chat, streamed. Text lands in `onChatDelta` while
+ * the model is still writing, and `cancelChat` stops it mid-sentence. The
+ * resolved value is still the post-processed answer — the stream is a preview
+ * of it, so the bubble must be replaced (not appended to) when this returns.
+ */
+export const chatAnswerStream = (
+  runId: string,
   subjectId: string,
-  /** "none" = explicit no-retrieval scope (Gloss 三态): model-only answer. */
   level: "subject" | "topic" | "source" | "none",
   query: string,
   sourceId?: string,
   sourceIds?: string[],
   web?: boolean
-) => invoke<ChatAnswer>("chat_answer", { subjectId, level, query, sourceId, sourceIds, web });
+) =>
+  invoke<ChatAnswer>("chat_answer_stream", { runId, subjectId, level, query, sourceId, sourceIds, web });
+
+/** Stop a running generation. False when it already finished (then it is a no-op). */
+export const cancelChat = (runId: string) => invoke<boolean>("chat_cancel", { runId });
+
+/** One coalesced piece of streamed text. `run_id` lets the UI ignore a stale run. */
+export interface ChatDelta {
+  run_id: string;
+  text: string;
+}
+
+export const onChatDelta = (cb: (p: ChatDelta) => void): Promise<UnlistenFn> =>
+  listen<ChatDelta>("chat:delta", (e) => cb(e.payload));
+
 export const generateCheatsheet = (subjectId: string, topicId?: string, withImages?: boolean) =>
   invoke<CheatsheetData>("generate_cheatsheet", { subjectId, topicId, withImages });
 /** Regenerate every topic's sheet (+ ungrouped "General"), then return the composed whole-subject sheet. */

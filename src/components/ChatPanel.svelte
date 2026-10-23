@@ -1040,7 +1040,11 @@
 
       {#if streaming !== null}
         <div class="bubble assistant" data-clip-scope="chat" data-clip-label={`AI 回答 · ${modelLabel()}`}>
-          <RichText text={streaming} /><span class="cursor-blink">▋</span>
+          {#if streaming === ""}
+            <span class="faint">{app.chatStage === "retrieval" ? "检索资料中…" : "生成中…"}</span>
+          {:else}
+            <RichText text={streaming} />
+          {/if}<span class="cursor-blink">▋</span>
         </div>
       {/if}
     {/if}

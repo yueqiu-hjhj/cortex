@@ -230,6 +230,27 @@ pub struct ChatAnswer {
     pub rolled_over: Option<RolloverInfo>,
 }
 
+impl ChatAnswer {
+    /// The answer to a generation that was stopped before it began: no text, no
+    /// citations, state `aborted`. A caller that cancelled discards it — it
+    /// exists so "stopped" is a state, not an error the UI has to apologize for.
+    pub fn stopped() -> Self {
+        Self {
+            text: String::new(),
+            citations: Vec::new(),
+            model: String::new(),
+            images: Vec::new(),
+            uncited: false,
+            abstained: false,
+            fabricated_dropped: 0,
+            retrieval: RetrievalMeta::default(),
+            answer_state: crate::llm::AnswerState::Aborted,
+            finish_reason: None,
+            rolled_over: None,
+        }
+    }
+}
+
 /// Details of an auto-rollover that happened while answering (0082).
 #[derive(Debug, Clone, Serialize)]
 pub struct RolloverInfo {

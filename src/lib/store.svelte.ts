@@ -567,9 +567,12 @@ class AppStore {
   // reloads history when `chatMsgNonce` bumps, so closing/reopening the chat (or
   // switching between the dock and the fullscreen Chats tab) never interrupts a
   // reply — it keeps generating in the background and persists when done.
-  chatStreaming = $state<string | null>(null); // live typed-out text, or null
+  chatStreaming = $state<string | null>(null); // live text, or null
   chatGenSubject = $state<string | null>(null); // subject the in-flight reply is for
   chatBusy = $state(false);
+  /// What the in-flight answer is doing, for the placeholder line: retrieval
+  /// runs before the first token, so an empty bubble would otherwise look stuck.
+  chatStage = $state<"retrieval" | "writing">("retrieval");
   chatMsgNonce = $state(0); // bump → open panels reload persisted history
   chatSuggestions = $state<string[]>([]); // next-step chips from the last reply
   chatLastImages = $state<api.WebImage[]>([]); // web-mode images from the last reply
@@ -582,6 +585,12 @@ class AppStore {
   chatJumpTo = $state<number | null>(null);
   #chatTypeIv: ReturnType<typeof setInterval> | null = null;
   #chatCancelled = false;
+  /// Id of the generation in flight. Deltas carry it back, so a run that was
+  /// stopped (and a new one started) cannot write into the newer bubble.
+  #chatRunId: string | null = null;
+  /// Raw streamed text for this run. The bubble shows a cleaned preview of it;
+  /// the finished answer replaces it wholesale.
+  #chatLive = "";
 
   /// Open the chat (if closed) and ask the panel to scroll to one message.
   /// The caller is responsible for having switched the active thread first
@@ -645,11 +654,22 @@ class AppStore {
     this.chatRollover = null;
     this.chatBusy = true;
     this.chatGenSubject = subjectId;
+    this.chatStage = "retrieval";
     this.chatStreaming = "";
     this.chatSuggestions = [];
+    this.#chatRunId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.#chatLive = "";
+    let unlisten: (() => void) | null = null;
     try {
-      const result = await api.chatAnswer(subjectId, level, query, sourceId, sourceIds, web);
-      if (this.#chatCancelled) return;
+      // Subscribe BEFORE the request: the first delta can land before the invoke
+      // resolves, and a missing subscription would drop the start of the answer.
+      unlisten = await api.onChatDelta((p) => {
+        if (p.run_id !== this.#chatRunId || this.#chatCancelled) return;
+        this.#chatLive += p.text;
+        this.chatStage = "writing";
+        this.chatStreaming = this.#previewLive(this.#chatLive);
+      });
+      const result = await api.chatAnswerStream(this.#chatRunId, subjectId, level, query, sourceId, sourceIds, web);
       // Auto-rollover (0082): the answer above already triggered it, the new
       // thread is active, and the inherited summary is persisted as its first
       // system message — the reload below will show it. Surface the notice.
@@ -663,31 +683,41 @@ class AppStore {
         ? "> ⚠️ 知识库零命中 —— 以下为通用回答，不含你的资料。\n\n"
         : "";
       const { body, sugg } = this.#splitChatSuggestions(badge + result.text);
-      await new Promise<void>((resolve) => {
-        let i = 0;
-        this.#chatTypeIv = setInterval(() => {
-          if (this.#chatCancelled) {
-            this.#clearChatIv();
-            this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped, "aborted");
-            resolve();
-            return;
-          }
-          i += 6;
-          this.chatStreaming = body.slice(0, i);
-          if (i >= body.length) {
-            this.#clearChatIv();
-            this.#finishAssistant(subjectId, body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped, result.answer_state);
-            resolve();
-          }
-          // ~30fps (6 chars/33ms) reveals at the same speed as 3 chars/16ms but
-          // halves the re-render wakeups during streaming.
-        }, 33);
-      });
+
+      // Stopped by the user. Keep the backend's partial, which is the
+      // post-processed one (citation tokens already stripped and verified) —
+      // the raw preview is only a fallback for a run stopped before any
+      // post-processing could happen.
+      if (this.#chatCancelled) {
+        const partial = (result.text ? badge + result.text : this.#chatLive).trim();
+        if (partial) {
+          this.#finishAssistant(subjectId, partial, imgs, [], citations, result.retrieval, result.fabricated_dropped, "aborted");
+        }
+        return;
+      }
+
+      // Every real provider streams (OpenAI-compatible, Gemini, Claude, and a
+      // fallback chain that re-enters at the next model). What still lands here
+      // is the offline stub and any endpoint that ignores `stream`: those deliver
+      // the whole answer at once, so keep the typewriter and it still arrives in
+      // reading order instead of as a wall of text after a long silence.
+      if (!this.#chatLive) {
+        await this.#typeOut(subjectId, body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped, result.answer_state);
+        return;
+      }
+
+      // Real streaming: the bubble already shows (very nearly) this text.
+      // Replace it with the verified version — fabricated citation tokens were
+      // dropped after generation, so the two can differ.
+      this.#finishAssistant(subjectId, body, imgs, sugg, citations, result.retrieval, result.fabricated_dropped, result.answer_state);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await api.addChatMessage(subjectId, "system", msg).catch(() => {}); // persist error
       this.chatMsgNonce++;
     } finally {
+      unlisten?.();
+      this.#chatRunId = null;
+      this.#chatLive = "";
       this.#clearChatIv();
       this.chatStreaming = null;
       this.chatGenSubject = null;
@@ -696,18 +726,63 @@ class AppStore {
     }
   }
 
-  // Stop the current generation, keeping whatever has streamed so far. The
-  // running typewriter tick sees the flag, persists the partial, and resolves.
+  // Reveal an already-finished answer at reading speed. Only used when the
+  // provider didn't stream: a 6-char tick at ~30fps halves the re-render
+  // wakeups of 3 chars at 60fps while looking the same to a reader.
+  #typeOut(
+    subjectId: string,
+    body: string,
+    imgs: api.WebImage[],
+    sugg: string[],
+    citations: api.Citation[],
+    retrieval?: api.RetrievalMeta,
+    fabricatedDropped?: number,
+    answerState?: api.AnswerState
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let i = 0;
+      this.#chatTypeIv = setInterval(() => {
+        if (this.#chatCancelled) {
+          this.#clearChatIv();
+          this.#finishAssistant(subjectId, body.slice(0, i) || body, imgs, sugg, citations, retrieval, fabricatedDropped, "aborted");
+          resolve();
+          return;
+        }
+        i += 6;
+        this.chatStreaming = body.slice(0, i);
+        if (i >= body.length) {
+          this.#clearChatIv();
+          this.#finishAssistant(subjectId, body, imgs, sugg, citations, retrieval, fabricatedDropped, answerState);
+          resolve();
+        }
+      }, 33);
+    });
+  }
+
+  /// What the bubble shows while the model is still writing.
+  ///
+  /// The raw stream still contains ⟦source · loc⟧ citation tokens (the backend
+  /// verifies and strips them once generation ends) and can end with a
+  /// SUGGESTIONS: line meant for the chips below the box. Showing either and
+  /// then having it vanish would look like the answer changed its mind, so the
+  /// preview drops both — including a half-arrived token at the very end.
+  #previewLive(raw: string): string {
+    let out = raw.replace(/⟦[^⟧]*⟧/g, "");
+    const open = out.lastIndexOf("⟦");
+    if (open >= 0) out = out.slice(0, open);
+    const marker = out.search(/(^|\n)\s*SUGGESTIONS?:/i);
+    return marker >= 0 ? out.slice(0, marker) : out;
+  }
+
+  // Stop the current generation, keeping whatever has streamed so far. With a
+  // live stream the backend is told right away — the provider stops at its next
+  // token instead of finishing an answer nobody will read — and the awaited
+  // result persists the partial. The typewriter path has no run left to stop,
+  // so its own tick persists what it had revealed.
   stopChat() {
     if (!this.chatBusy) return;
     this.#chatCancelled = true;
-    // If we're still waiting on the network (no partial yet), nothing to keep —
-    // the awaited result will hit the `#chatCancelled` guard and clean up.
-    if (this.chatStreaming && this.chatGenSubject && !this.#chatTypeIv) {
-      this.#finishAssistant(this.chatGenSubject, this.chatStreaming, [], [], [], undefined, undefined, "aborted");
-      this.chatStreaming = null;
-      this.chatBusy = false;
-    }
+    if (this.#chatRunId) api.cancelChat(this.#chatRunId).catch(() => {});
   }
   // Backing state for the music panel. Exposed via get/set so opening it can
   // prewarm the resolved-stream cache for EVERY station (built-in + custom) —

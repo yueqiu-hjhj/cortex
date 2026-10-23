@@ -109,6 +109,27 @@ pub trait Llm: Send + Sync {
         let text = self.complete(system, user)?;
         Ok(RawReply { content: text.clone(), text, finish_reason: None, usage: None })
     }
+    /// Stream one completion: hand each NEW piece of visible text to `on_delta`
+    /// as it arrives, and return the same [`RawReply`] `complete_raw` would.
+    /// `on_delta` returns `false` when the caller wants generation to STOP (the
+    /// chat panel's Stop button) — providers must honour that between chunks and
+    /// return what they have so far.
+    ///
+    /// Default: no incremental transport, so the finished answer is handed over
+    /// as one delta. Every provider therefore stays correct; only the ones that
+    /// override this are actually incremental.
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        let reply = self.complete_raw(system, user)?;
+        if !reply.text.is_empty() {
+            let _ = on_delta(&reply.text);
+        }
+        Ok(reply)
+    }
     /// Cap output tokens for this provider's request. Wiring the per-task token
     /// budget here is what stops OpenRouter from defaulting to a huge max_tokens
     /// (its model default) and 402-ing when the key's credit limit can't cover it.
@@ -198,6 +219,70 @@ pub struct GeminiLlm {
 }
 
 impl GeminiLlm {
+    /// The request body both `generateContent` and `streamGenerateContent` take
+    /// — one definition, so streaming cannot drift from non-streaming.
+    fn request_body(&self, system: &str, user: &str) -> serde_json::Value {
+        // Gemini 2.5 models reason with hidden "thinking" tokens that draw from
+        // the SAME maxOutputTokens budget. A small budget is routinely exhausted
+        // by thinking before any answer text is emitted, leaving an empty
+        // response with a MAX_TOKENS finishReason — the real cause of
+        // "generation doesn't work at all" for cheatsheet/material.
+        // Two defenses: a roomy budget, and — for flash models, which allow it —
+        // disable thinking entirely so every token goes to the actual output.
+        // (gemini-2.5-pro rejects thinkingBudget:0, so only set it for flash.)
+        // Roomy output budget: a full 7-section cheatsheet (or a merged subject
+        // digest) easily exceeds a small cap, and the model would otherwise stop
+        // mid-answer — e.g. a table cut off halfway. 2.5 models support 65536.
+        let mut generation_config = serde_json::json!({
+            "temperature": 0.3,
+            "maxOutputTokens": self.max_tokens.unwrap_or(65536)
+        });
+        if self.model.contains("flash") {
+            generation_config["thinkingConfig"] = serde_json::json!({ "thinkingBudget": 0 });
+        }
+        serde_json::json!({
+            "system_instruction": { "parts": [{ "text": system }] },
+            "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+            "generationConfig": generation_config
+        })
+    }
+
+    /// Streaming generateContent: same body, `:streamGenerateContent?alt=sse`.
+    fn stream_generate(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+            self.model, self.api_key
+        );
+        let resp = llm_client()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(900))
+            .json(&self.request_body(system, user))
+            .send()?;
+        let mut acc = String::new();
+        let mut shown = String::new();
+        let mut finish: Option<String> = None;
+        let mut usage: Option<serde_json::Value> = None;
+        read_sse("gemini", resp, |json| {
+            let piece = gemini_piece(json);
+            if let Some(u) = piece.usage {
+                usage = Some(u);
+            }
+            if let Some(f) = piece.finish {
+                finish = Some(f);
+            }
+            if let Some(c) = piece.content {
+                acc.push_str(&c);
+                return Ok(emit_visible(&acc, &mut shown, on_delta));
+            }
+            Ok(true)
+        })?;
+        Ok(RawReply { content: acc.clone(), text: acc, finish_reason: finish, usage })
+    }
     /// One generateContent round-trip: (concatenated text, finishReason).
     /// Split out of `complete` so `complete_raw` can hand an EMPTY reply
     /// back for state classification instead of erroring — a MAX_TOKENS
@@ -220,19 +305,7 @@ impl GeminiLlm {
         // Roomy output budget: a full 7-section cheatsheet (or a merged subject
         // digest) easily exceeds a small cap, and the model would otherwise stop
         // mid-answer — e.g. a table cut off halfway. 2.5 models support 65536.
-        let mut generation_config = serde_json::json!({
-            "temperature": 0.3,
-            "maxOutputTokens": self.max_tokens.unwrap_or(65536)
-        });
-        if self.model.contains("flash") {
-            generation_config["thinkingConfig"] = serde_json::json!({ "thinkingBudget": 0 });
-        }
-        let body = serde_json::json!({
-            "system_instruction": { "parts": [{ "text": system }] },
-            "contents": [{ "role": "user", "parts": [{ "text": user }] }],
-            "generationConfig": generation_config
-        });
-        let json = send_json("gemini", client.post(&url).json(&body))?;
+        let json = send_json("gemini", client.post(&url).json(&self.request_body(system, user)))?;
         // Concatenate every text part (some responses split across parts).
         let text: String = json["candidates"][0]["content"]["parts"]
             .as_array()
@@ -275,6 +348,14 @@ impl Llm for GeminiLlm {
     fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
         let (text, finish, usage) = self.generate(system, user)?;
         Ok(RawReply { content: text.clone(), text, finish_reason: finish, usage })
+    }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        self.stream_generate(system, user, on_delta)
     }
     fn name(&self) -> String {
         format!("gemini:{}", self.model)
@@ -391,6 +472,186 @@ fn parse_affordable(msg: &str) -> Option<u32> {
     let tail = &msg[idx..];
     let digits: String = tail.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<u32>().ok().filter(|n| *n > 0)
+}
+
+/// One provider chunk of a streamed answer, normalized. Providers disagree on
+/// where the text lives (`delta.content` vs `candidates[].content.parts[].text`)
+/// and on how the finishReason travels, so each adapter's parser fills this in
+/// and the accumulation logic stays shared.
+#[derive(Debug, Default, PartialEq)]
+struct StreamPiece {
+    /// Visible answer text carried by this chunk (empty on role-only or
+    /// finish-only chunks).
+    content: Option<String>,
+    /// Hidden reasoning (`reasoning` / `reasoning_content`). Never shown while
+    /// streaming — the model thinking aloud is not the answer.
+    reasoning: Option<String>,
+    /// finishReason, when this chunk carries it (normally the last one).
+    finish: Option<String>,
+    /// usage payload, when the provider reports it mid- or end-of-stream.
+    usage: Option<serde_json::Value>,
+    /// A refusal that arrived inside the stream, after a 200. Only Anthropic
+    /// reports these (an overloaded model can fail mid-answer), but it belongs
+    /// here: the parser normalizes the chunk, the reader decides what to do.
+    error: Option<String>,
+}
+
+/// Payload of one SSE `data:` line, or None for comments, blanks and the
+/// `[DONE]` sentinel. SSE permits multi-line `data:` fields; neither OpenAI nor
+/// Gemini uses them, and concatenating them would merge two JSON documents.
+fn sse_payload(line: &str) -> Option<&str> {
+    let body = line.trim_end_matches(['\r', '\n']);
+    let body = body.strip_prefix("data:")?.trim();
+    if body.is_empty() || body == "[DONE]" {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// Walk an SSE body chunk by chunk. Stops when `on_chunk` returns false (the
+/// user pressed Stop) or the body ends. A non-2xx reply becomes an error with
+/// the same shape `send_json` uses, so a 402 still reads as a 402.
+fn read_sse(
+    provider: &str,
+    resp: reqwest::blocking::Response,
+    mut on_chunk: impl FnMut(&serde_json::Value) -> Result<bool>,
+) -> Result<()> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(Error::Other(format!("{provider} {status}: {}", truncate(body.trim(), 300))));
+    }
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(resp);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        // read_line splits on \n only, and a multi-byte UTF-8 character never
+        // contains 0x0A — so a token split across TCP packets still arrives whole.
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| Error::Other(format!("{provider}: stream broke mid-answer: {e}")))?;
+        if n == 0 {
+            return Ok(());
+        }
+        let Some(payload) = sse_payload(&line) else { continue };
+        let json: serde_json::Value = serde_json::from_str(payload).map_err(|e| {
+            Error::Other(format!(
+                "{provider}: unreadable stream event ({e}): {}",
+                truncate(payload, 200)
+            ))
+        })?;
+        if !on_chunk(&json)? {
+            return Ok(());
+        }
+    }
+}
+
+/// Withhold a trailing fragment that may be the beginning of a `<think>` tag
+/// whose remaining characters are still in flight — otherwise "<thi" + "nk>"
+/// flashes raw reasoning markup in the middle of the answer.
+fn trim_partial_think_tag(s: &str) -> &str {
+    const TAG: &str = "<think>";
+    for cut in 1..TAG.len().min(s.len() + 1) {
+        if s.ends_with(&TAG[..cut]) {
+            return &s[..s.len() - cut];
+        }
+    }
+    s
+}
+
+/// Emit only the text the caller has not seen yet.
+///
+/// `<think>` stripping must run on the WHOLE accumulated text (a tag can open in
+/// one chunk and close in another), so the visible text grows monotonically and
+/// `shown` is a prefix of it in every normal chunk. If that stops being true
+/// (the provider rewound, or a reasoning block closed over already-shown text)
+/// nothing is emitted: the caller keeps what it has, and the finished reply
+/// replaces the bubble. Returns false = stop generating.
+fn emit_visible(acc: &str, shown: &mut String, on_delta: &mut dyn FnMut(&str) -> bool) -> bool {
+    let visible = strip_think(acc);
+    let safe = trim_partial_think_tag(&visible);
+    let Some(new) = safe.strip_prefix(shown.as_str()) else { return true };
+    if new.is_empty() {
+        return true;
+    }
+    if !on_delta(new) {
+        return false;
+    }
+    shown.push_str(new);
+    true
+}
+
+/// Normalize one OpenAI-compatible SSE chunk.
+fn openai_piece(v: &serde_json::Value) -> StreamPiece {
+    let choice = &v["choices"][0];
+    let delta = &choice["delta"];
+    let text_of = |key: &str| delta[key].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    StreamPiece {
+        content: text_of("content"),
+        // OpenRouter/DeepSeek spell it `reasoning`; some gateways `reasoning_content`.
+        reasoning: text_of("reasoning").or_else(|| text_of("reasoning_content")),
+        finish: choice["finish_reason"].as_str().map(str::to_string),
+        usage: (!v["usage"].is_null()).then(|| v["usage"].clone()),
+        error: None,
+    }
+}
+
+/// Normalize one Gemini `streamGenerateContent` chunk: text lives in
+/// `candidates[].content.parts[].text` and can be split across several parts.
+/// `thought: true` parts are 2.5's thinking, not answer text, so they are skipped.
+fn gemini_piece(v: &serde_json::Value) -> StreamPiece {
+    let cand = &v["candidates"][0];
+    let text: String = cand["content"]["parts"]
+        .as_array()
+        .map(|ps| {
+            ps.iter()
+                .filter(|p| p["thought"].as_bool() != Some(true))
+                .filter_map(|p| p["text"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    StreamPiece {
+        content: (!text.is_empty()).then_some(text),
+        reasoning: None,
+        finish: cand["finishReason"].as_str().map(str::to_string),
+        usage: (!v["usageMetadata"].is_null()).then(|| v["usageMetadata"].clone()),
+        error: None,
+    }
+}
+
+/// Normalize one Anthropic `/v1/messages` stream event. Anthropic frames whole
+/// events rather than a delta per chunk: `content_block_delta` carries text,
+/// `message_delta` the stop reason, `message_start`/`message_delta` the token
+/// counts (input on the first, output on the second), and `error` a refusal
+/// that arrived after the 200.
+fn claude_piece(v: &serde_json::Value) -> StreamPiece {
+    match v["type"].as_str().unwrap_or_default() {
+        "content_block_delta" => StreamPiece {
+            content: v["delta"]["text"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            ..StreamPiece::default()
+        },
+        "message_delta" => StreamPiece {
+            finish: v["delta"]["stop_reason"].as_str().map(str::to_string),
+            usage: (!v["usage"].is_null()).then(|| v["usage"].clone()),
+            ..StreamPiece::default()
+        },
+        "message_start" => StreamPiece {
+            usage: (!v["message"]["usage"].is_null()).then(|| v["message"]["usage"].clone()),
+            ..StreamPiece::default()
+        },
+        "error" => StreamPiece {
+            error: Some(
+                v["error"]["message"]
+                    .as_str()
+                    .unwrap_or("the stream reported an error")
+                    .to_string(),
+            ),
+            ..StreamPiece::default()
+        },
+        _ => StreamPiece::default(),
+    }
 }
 
 fn build_client(use_proxy: bool) -> reqwest::blocking::Client {
@@ -569,6 +830,78 @@ impl OpenAiCompatLlm {
             .map(strip_think)
             .ok_or_else(|| Error::Other(format!("{}: empty response", self.label)))
     }
+    /// One streaming chat/completions attempt: the same request as `chat_json`
+    /// with `stream: true`. The answer arrives as SSE chunks, each carrying a
+    /// piece of `delta.content`; the return value is the concatenation, exactly
+    /// like a non-streamed call, so the caller's post-processing is unchanged.
+    fn stream_once(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: Option<u32>,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        let key = self.api_key.trim();
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
+            ],
+            "temperature": 0.3,
+            "stream": true
+        });
+        if let Some(n) = max_tokens {
+            body["max_tokens"] = serde_json::json!(n);
+        }
+        let resp = llm_client_for(&self.base_url)
+            .post(&url)
+            .header("Authorization", format!("Bearer {key}"))
+            .header("HTTP-Referer", "https://cortex.study")
+            .header("X-Title", "Cortex")
+            // A stream is read for as long as the model keeps talking; the
+            // client's 300s budget covers one blocking response, not a long one
+            // arriving in pieces.
+            .timeout(std::time::Duration::from_secs(900))
+            .json(&body)
+            .send()
+            .map_err(|e| Error::Other(format!("{}: {e}", self.label)))?;
+
+        let mut acc = String::new();
+        let mut reasoning = String::new();
+        let mut shown = String::new();
+        let mut finish: Option<String> = None;
+        let mut usage: Option<serde_json::Value> = None;
+        read_sse(self.label, resp, |json| {
+            let piece = openai_piece(json);
+            if let Some(u) = piece.usage {
+                usage = Some(u);
+            }
+            if let Some(f) = piece.finish {
+                finish = Some(f);
+            }
+            if let Some(r) = piece.reasoning {
+                reasoning.push_str(&r);
+            }
+            if let Some(c) = piece.content {
+                acc.push_str(&c);
+                return Ok(emit_visible(&acc, &mut shown, on_delta));
+            }
+            Ok(true)
+        })?;
+
+        // A reasoning model can spend the whole stream in `reasoning` and emit no
+        // content at all; `complete_raw` falls back to that text, so the streamed
+        // path has to do the same or it would return an empty answer.
+        let raw = if acc.trim().is_empty() { reasoning } else { acc };
+        Ok(RawReply {
+            text: strip_think(&raw),
+            finish_reason: finish,
+            usage,
+            content: raw,
+        })
+    }
 }
 
 impl Llm for OpenAiCompatLlm {
@@ -601,6 +934,41 @@ impl Llm for OpenAiCompatLlm {
     }
     fn name(&self) -> String {
         format!("{}:{}", self.label, self.model)
+    }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        if self.api_key.trim().is_empty() {
+            return Err(Error::Other(format!(
+                "{}: API key is empty — paste it in Settings → API keys and click Save keys.",
+                self.label
+            )));
+        }
+        // Cell, not a local bool: the retry guard below reads it while the
+        // closure that writes it is still borrowed by `stream_once`.
+        let emitted = std::cell::Cell::new(false);
+        let mut sink = |d: &str| {
+            emitted.set(true);
+            on_delta(d)
+        };
+        match self.stream_once(system, user, self.max_tokens, &mut sink) {
+            Ok(r) => Ok(r),
+            // Same 402 story as `complete` — but only when nothing reached the
+            // screen yet: retrying after partial text would repeat the answer.
+            Err(Error::Other(msg)) if !emitted.get() && msg.contains("402") => {
+                match parse_affordable(&msg) {
+                    Some(afford) => {
+                        let retry = afford.saturating_sub(512).max(256);
+                        self.stream_once(system, user, Some(retry), &mut sink)
+                    }
+                    None => Err(Error::Other(msg)),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
     fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
         if self.api_key.trim().is_empty() {
@@ -785,6 +1153,79 @@ impl ClaudeLlm {
         let usage = if json["usage"].is_null() { None } else { Some(json["usage"].clone()) };
         Ok((text, stop, usage))
     }
+
+    /// One streaming messages round-trip: the same request with `stream: true`,
+    /// read as SSE. Returns exactly what `messages` would have, so the pipeline
+    /// cannot tell the two apart apart from having already shown the text.
+    fn stream_messages(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "system": system,
+            "messages": [{ "role": "user", "content": user }],
+            "stream": true
+        });
+        let resp = llm_client()
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            // The stream is read for as long as the model keeps talking; the
+            // shared client's 300s budget covers one blocking response, not a
+            // long one arriving in pieces.
+            .timeout(std::time::Duration::from_secs(900))
+            .json(&body)
+            .send()
+            .map_err(|e| Error::Other(format!("claude: {e}")))?;
+
+        let mut acc = String::new();
+        let mut finish: Option<String> = None;
+        let mut usage: Option<serde_json::Value> = None;
+        let mut error: Option<String> = None;
+        read_sse("claude", resp, |ev| {
+            let piece = claude_piece(ev);
+            if let Some(e) = piece.error {
+                error = Some(e);
+                return Ok(false); // nothing more is coming
+            }
+            if let Some(f) = piece.finish {
+                finish = Some(f);
+            }
+            if let Some(u) = piece.usage {
+                // input_tokens arrives on message_start, output_tokens on
+                // message_delta: merge instead of letting the second replace
+                // the first, or the accounting only ever records half.
+                match usage.as_mut() {
+                    Some(serde_json::Value::Object(m)) if u.is_object() => {
+                        if let Some(new) = u.as_object() {
+                            for (k, v) in new {
+                                m.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    _ => usage = Some(u),
+                }
+            }
+            if let Some(t) = piece.content {
+                acc.push_str(&t);
+                return Ok(on_delta(&t));
+            }
+            Ok(true)
+        })?;
+        if let Some(e) = error {
+            return Err(Error::Other(format!("claude: {e}")));
+        }
+        if acc.is_empty() {
+            return Err(Error::Other("claude: empty response".into()));
+        }
+        Ok(RawReply { content: acc.clone(), text: acc, finish_reason: finish, usage })
+    }
 }
 
 impl Llm for ClaudeLlm {
@@ -804,6 +1245,14 @@ impl Llm for ClaudeLlm {
     fn complete_raw(&self, system: &str, user: &str) -> Result<RawReply> {
         let (text, stop, usage) = self.messages(system, user, self.max_tokens.unwrap_or(32000))?;
         Ok(RawReply { content: text.clone(), text, finish_reason: stop, usage })
+    }
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        self.stream_messages(system, user, self.max_tokens.unwrap_or(32000), on_delta)
     }
     fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
         let mut content = Vec::new();
@@ -997,6 +1446,37 @@ impl Llm for FallbackLlm {
             .load(std::sync::atomic::Ordering::Relaxed);
         self.chain[i.min(self.chain.len() - 1)].name()
     }
+    /// Stream through the chain. A provider that dies BEFORE showing any text is
+    /// swapped for the next one — the same contract as `delegate`, and the reason
+    /// a 429 stays invisible. Once text has left for the UI a retry would repeat
+    /// it, so from that point the error is the answer.
+    fn complete_stream(
+        &self,
+        system: &str,
+        user: &str,
+        on_delta: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<RawReply> {
+        let mut last: Option<Error> = None;
+        for (i, m) in self.chain.iter().enumerate() {
+            // Cell, not a local bool: the guard reads it while the closure that
+            // writes it is still borrowed by the provider call.
+            let emitted = std::cell::Cell::new(false);
+            let mut sink = |d: &str| {
+                emitted.set(true);
+                on_delta(d)
+            };
+            match m.complete_stream(system, user, &mut sink) {
+                Ok(reply) => {
+                    self.served
+                        .store(i, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(reply);
+                }
+                Err(e) if emitted.get() => return Err(e),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Other("stream: empty model chain".into())))
+    }
     fn set_max_tokens(&mut self, max: u32) {
         for m in &mut self.chain {
             m.set_max_tokens(max);
@@ -1187,6 +1667,7 @@ fn repair_json(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn loopback_urls_are_recognised_so_they_bypass_the_env_proxy() {
@@ -1207,8 +1688,6 @@ mod tests {
             assert!(!is_loopback(remote), "{remote}");
         }
     }
-
-    use super::*;
 
     #[test]
     fn ocr_cards_trim_deduplicate_and_skip_incomplete() {
@@ -1408,6 +1887,73 @@ mod tests {
         assert_eq!(f.name(), "second");
     }
 
+    /// A provider that streams fixed chunks and can fail at the END, which is
+    /// what separates "down before it said anything" (switch models) from "died
+    /// mid-answer" (retrying would repeat what is already on screen).
+    struct StreamFake {
+        tag: &'static str,
+        chunks: &'static [&'static str],
+        fail: bool,
+    }
+    impl Llm for StreamFake {
+        fn complete(&self, _s: &str, _u: &str) -> Result<String> {
+            Ok(self.chunks.concat())
+        }
+        fn name(&self) -> String {
+            self.tag.to_string()
+        }
+        fn complete_stream(
+            &self,
+            _s: &str,
+            _u: &str,
+            on_delta: &mut dyn FnMut(&str) -> bool,
+        ) -> Result<RawReply> {
+            for c in self.chunks {
+                if !on_delta(c) {
+                    break;
+                }
+            }
+            if self.fail {
+                return Err(Error::Other(format!("{} died mid-answer", self.tag)));
+            }
+            let text = self.chunks.concat();
+            Ok(RawReply { content: text.clone(), text, finish_reason: Some("end_turn".into()), usage: None })
+        }
+    }
+
+    #[test]
+    fn fallback_switches_only_before_the_ui_has_anything() {
+        let mut got = String::new();
+        let mut sink = |d: &str| {
+            got.push_str(d);
+            true
+        };
+        // Nothing shown → the next model takes over, and the user never learns.
+        let f = FallbackLlm::new(vec![
+            Box::new(StreamFake { tag: "silent-dead", chunks: &[], fail: true }),
+            Box::new(StreamFake { tag: "second", chunks: &["乙", "案"], fail: false }),
+        ]);
+        let reply = f.complete_stream("s", "u", &mut sink).unwrap();
+        assert_eq!(got, "乙案");
+        assert_eq!(reply.text, "乙案");
+        assert_eq!(f.name(), "second");
+
+        // Half an answer on screen → switching would print it twice, so the
+        // failure is surfaced instead.
+        let mut got = String::new();
+        let mut sink = |d: &str| {
+            got.push_str(d);
+            true
+        };
+        let f = FallbackLlm::new(vec![
+            Box::new(StreamFake { tag: "primary", chunks: &["甲", "案"], fail: true }),
+            Box::new(StreamFake { tag: "second", chunks: &["乙"], fail: false }),
+        ]);
+        let err = f.complete_stream("s", "u", &mut sink).unwrap_err().to_string();
+        assert_eq!(got, "甲案", "what the user already saw is not replayed by another model");
+        assert!(err.contains("died mid-answer"), "{err}");
+    }
+
     #[test]
     fn fallback_reports_the_last_error_when_every_model_fails() {
         let f = FallbackLlm::new(vec![
@@ -1442,5 +1988,201 @@ mod tests {
         let offline = Keys { offline: true, ..online };
         let chain = build_chain("openrouter:deepseek/deepseek-v4-flash", &offline).unwrap();
         assert_eq!(chain.len(), 1, "offline never gains cloud fallbacks");
+    }
+    // ---- streaming (a real socket, not a mock) ---------------------------
+
+    /// Serve ONE canned HTTP response to one request, then close. A real socket
+    /// rather than a mock, because the thing under test is "read a response body
+    /// line by line while it is still arriving" — the part `send_json`, which
+    /// buffers the whole body before parsing, never exercised.
+    fn serve_once(status: &'static str, content_type: &'static str, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            // Answer up to three attempts: the 402 retry path sends a second
+            // request, and a one-shot server would turn that into a transport
+            // error instead of the refusal under test.
+            for _ in 0..3 {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf); // request head; the contents don't matter
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes());
+                let _ = sock.write_all(body.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn sse_test_llm(url: String) -> OpenAiCompatLlm {
+        OpenAiCompatLlm {
+            base_url: url,
+            api_key: "k".into(),
+            model: "m".into(),
+            label: "test",
+            max_tokens: None,
+        }
+    }
+
+    #[test]
+    fn sse_payload_skips_comments_blanks_and_the_done_sentinel() {
+        assert_eq!(sse_payload("data: {\"a\":1}\r\n"), Some("{\"a\":1}"));
+        assert_eq!(sse_payload("data:[DONE]"), None);
+        assert_eq!(sse_payload("data:   "), None);
+        assert_eq!(sse_payload(": keep-alive"), None);
+        assert_eq!(sse_payload("event: ping"), None);
+    }
+
+    #[test]
+    fn openai_stream_forwards_each_delta_and_reports_the_real_end() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"光合\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"作用\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"total_tokens\":7}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let llm = sse_test_llm(serve_once("200 OK", "text/event-stream", body));
+        let mut got: Vec<String> = Vec::new();
+        let reply = llm
+            .complete_stream("s", "u", &mut |d| {
+                got.push(d.to_string());
+                true
+            })
+            .unwrap();
+        assert_eq!(got, vec!["光合", "作用"], "each chunk reaches the UI as it lands");
+        assert_eq!(reply.text, "光合作用");
+        assert_eq!(reply.finish_reason.as_deref(), Some("length"));
+        assert_eq!(reply.usage.unwrap()["total_tokens"], 7);
+    }
+
+    #[test]
+    fn openai_stream_holds_back_inline_reasoning_instead_of_flashing_it() {
+        // Reasoning models that inline <think> must not leak the markup — or the
+        // reasoning itself — while the tag is still half-arrived.
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"nk>secret plan\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"</think>答案\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let llm = sse_test_llm(serve_once("200 OK", "text/event-stream", body));
+        let mut got = String::new();
+        let reply = llm
+            .complete_stream("s", "u", &mut |d| {
+                got.push_str(d);
+                true
+            })
+            .unwrap();
+        assert_eq!(got, "答案", "reasoning never reaches the bubble");
+        assert_eq!(reply.text, "答案");
+    }
+
+    #[test]
+    fn openai_stream_stops_reading_when_the_user_presses_stop() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"第一句\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"第二句\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let llm = sse_test_llm(serve_once("200 OK", "text/event-stream", body));
+        let mut got = String::new();
+        let reply = llm
+            .complete_stream("s", "u", &mut |d| {
+                got.push_str(d);
+                false // the caller stopped after the first chunk
+            })
+            .unwrap();
+        assert_eq!(got, "第一句");
+        assert_eq!(reply.text, "第一句", "nothing past the stop is kept");
+    }
+
+    #[test]
+    fn openai_stream_surfaces_a_refused_request_instead_of_an_empty_answer() {
+        let llm = sse_test_llm(serve_once(
+            "402 Payment Required",
+            "application/json",
+            "{\"error\":\"can only afford 900 tokens\"}",
+        ));
+        let err = llm.complete_stream("s", "u", &mut |_| true).unwrap_err().to_string();
+        assert!(err.contains("402"), "{err}");
+        assert!(err.contains("afford"), "the provider's own reason survives: {err}");
+    }
+
+    #[test]
+    fn gemini_stream_chunks_keep_parts_and_skip_thoughts() {
+        let chunk = serde_json::json!({
+            "candidates": [{ "content": { "parts": [
+                { "text": "甲" }, { "text": "乙" }, { "text": "想想", "thought": true }
+            ]}, "finishReason": "STOP" }],
+            "usageMetadata": { "totalTokenCount": 3 }
+        });
+        let p = gemini_piece(&chunk);
+        assert_eq!(p.content.as_deref(), Some("甲乙"), "thought parts are not answer text");
+        assert_eq!(p.finish.as_deref(), Some("STOP"));
+        assert_eq!(p.usage.unwrap()["totalTokenCount"], 3);
+    }
+
+    #[test]
+    fn claude_stream_events_carry_text_stop_usage_and_refusals() {
+        let text = serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "光合" }
+        });
+        assert_eq!(claude_piece(&text).content.as_deref(), Some("光合"));
+
+        let stop = serde_json::json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "end_turn" },
+            "usage": { "output_tokens": 42 }
+        });
+        let p = claude_piece(&stop);
+        assert_eq!(p.finish.as_deref(), Some("end_turn"));
+        assert_eq!(p.usage.unwrap()["output_tokens"], 42);
+
+        // input_tokens arrives in a different event than output_tokens; both
+        // must survive, or accounting only ever records half the turn.
+        let start = serde_json::json!({
+            "type": "message_start",
+            "message": { "usage": { "input_tokens": 1200 } }
+        });
+        assert_eq!(claude_piece(&start).usage.unwrap()["input_tokens"], 1200);
+
+        let refusal = serde_json::json!({
+            "type": "error",
+            "error": { "type": "overloaded_error", "message": "Overloaded" }
+        });
+        assert_eq!(claude_piece(&refusal).error.as_deref(), Some("Overloaded"));
+
+        // Frames that carry no answer text must not produce a delta.
+        for quiet in [
+            serde_json::json!({ "type": "ping" }),
+            serde_json::json!({ "type": "message_stop" }),
+            serde_json::json!({ "type": "content_block_start", "content_block": { "type": "text", "text": "" } }),
+        ] {
+            let p = claude_piece(&quiet);
+            assert!(p.content.is_none(), "{quiet}");
+            assert!(p.error.is_none(), "{quiet}");
+        }
+    }
+
+    #[test]
+    fn providers_that_cannot_stream_still_hand_over_one_delta() {
+        let llm = StubLlm;
+        let mut got = String::new();
+        let reply = llm
+            .complete_stream("s", "u", &mut |d| {
+                got.push_str(d);
+                true
+            })
+            .unwrap();
+        assert!(!got.is_empty(), "the non-streaming fallback must not swallow the answer");
+        assert_eq!(got, reply.text);
     }
 }

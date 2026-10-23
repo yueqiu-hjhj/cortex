@@ -23,6 +23,7 @@ mod anki;
 mod asr;
 mod backup;
 mod calendar;
+mod chat_live;
 mod clip_host;
 mod clip_server;
 mod commands;
@@ -503,7 +504,8 @@ pub fn run() {
             commands::seed_demo,
             commands::env_probe,
             commands::clip_server_status,
-            commands::chat_answer,
+            commands::chat_answer_stream,
+            commands::chat_cancel,
             commands::add_chat_message,
             commands::list_chat_messages,
             commands::clear_chat,

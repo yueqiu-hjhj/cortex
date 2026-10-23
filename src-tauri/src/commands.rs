@@ -2117,7 +2117,7 @@ fn summarize_for_rollover(model: &dyn crate::llm::Llm, transcript: &str) -> Stri
 /// Rewrite the inherited rollover summary from the archived thread it came
 /// from. The summary is a machine's account of a conversation the user
 /// actually had, so it can be wrong — and a wrong summary poisons every later
-/// turn, because chat_answer prepends it to the system prompt. Re-summarizing
+/// turn, because the chat pipeline prepends it to the system prompt. Re-summarizing
 /// is the only repair, and the user can only ask for it if they can read the
 /// summary first (which is why it is shown, not just fed to the model).
 ///
@@ -2172,9 +2172,16 @@ pub async fn regenerate_rollover_summary(
 /// Scoped retrieval-augmented chat. Embeds the query, retrieves top-k chunks
 /// (optionally narrowed to a single source), and asks the configured LLM to
 /// answer from that context with inline ⟦source · loc⟧ citations.
+///
+/// Text arrives as `chat:delta` events while the model is still writing, and
+/// `chat_cancel` stops it mid-sentence. The returned [`ChatAnswer`] is still the
+/// post-processed one — the stream is a preview of the text, not a second
+/// pipeline — so a stopped generation comes back with whatever had been written
+/// so far and `answer_state = "aborted"`.
 #[tauri::command]
-pub async fn chat_answer(
+pub async fn chat_answer_stream(
     app: AppHandle,
+    run_id: String,
     subject_id: String,
     level: String,
     source_id: Option<String>,
@@ -2182,7 +2189,45 @@ pub async fn chat_answer(
     query: String,
     web: Option<bool>,
 ) -> Result<ChatAnswer> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<ChatAnswer> {
+    let live = crate::chat_live::start(app.clone(), &run_id);
+    let id = run_id.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        chat_pipeline(app, live, subject_id, level, source_id, source_ids, query, web)
+    })
+    .await;
+    // Unregister before interpreting the join result: a panicked worker would
+    // otherwise `?` out of here and leave a stoppable id behind, so the next run
+    // reusing that id would inherit a stale Stop.
+    crate::chat_live::end(&id);
+    out.map_err(|e| Error::Other(format!("background task failed: {e}")))?
+}
+
+/// Stop a running generation. False when the run already finished — by then the
+/// answer is persisted, and "stop" after the fact is a no-op rather than a error.
+#[tauri::command]
+pub fn chat_cancel(run_id: String) -> bool {
+    crate::chat_live::cancel(&run_id)
+}
+
+/// The chat pipeline: retrieve → prompt → generate → verify citations →
+/// persist. `live` is the delta channel and the Stop flag; the pipeline never
+/// reads the UI, it just asks that channel whether to keep going.
+fn chat_pipeline(
+    app: AppHandle,
+    live: crate::chat_live::LiveRun,
+    subject_id: String,
+    level: String,
+    source_id: Option<String>,
+    source_ids: Option<Vec<String>>,
+    query: String,
+    web: Option<bool>,
+) -> Result<ChatAnswer> {
+    // Stopped before retrieval even started: returning here keeps a Stop from
+    // costing a full retrieval, and the caller (which knows it cancelled)
+    // discards the empty answer instead of showing it.
+    if live.cancelled() {
+        return Ok(ChatAnswer::stopped());
+    }
     let state = app.state::<AppState>();
     let (embed_provider, ollama_url, chat_spec, keys, preamble, searxng, rerank_on, embed_model) = {
         let c = state.db.lock().unwrap();
@@ -2522,12 +2567,20 @@ pub async fn chat_answer(
     }
     let system = system.as_str();
 
-    // complete_raw (not complete): the finishReason decides the answer's
-    // terminal state — a length-capped half answer is still shown (marked
-    // truncated, continuation invited), and an empty reply becomes a Failed
-    // state instead of an opaque error.
-    let reply = model.complete_raw(system, &user)?;
-    let answer_state = crate::llm::classify_answer(reply.finish_reason.as_deref(), &reply.text);
+    // complete_raw / complete_stream (not complete): the finishReason decides the
+    // answer's terminal state — a length-capped half answer is still shown
+    // (marked truncated, continuation invited), and an empty reply becomes a
+    // Failed state instead of an opaque error. With a live channel the text also
+    // leaves for the UI as it arrives; the reply returned here is still the one
+    // this pipeline post-processes.
+    let reply = model.complete_stream(system, &user, &mut |d| live.push(d))?;
+    live.flush(); // the last <60ms of text would otherwise sit in the buffer
+    let mut answer_state = crate::llm::classify_answer(reply.finish_reason.as_deref(), &reply.text);
+    // A stopped generation is not a truncated one: the user ended it, and the
+    // partial text is kept only so nothing already written is lost.
+    if live.cancelled() {
+        answer_state = crate::llm::AnswerState::Aborted;
+    }
     let crate::llm::RawReply { text, finish_reason: reply_finish, .. } = reply;
     // Token accounting (0049, estimate): chat is the daily driver.
     { let c = state.db.lock().unwrap(); crate::tokens::record(&c, "chat", &model.name(), &format!("{system}\n{user}"), &text, Some(&subject_id)); }
@@ -2610,9 +2663,6 @@ pub async fn chat_answer(
         finish_reason: reply_finish,
         rolled_over,
     })
-    })
-    .await
-    .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
 
 // ---- per-subject module framework -------------------------------------
@@ -7740,7 +7790,7 @@ mod trace_tests {
     }
 }
 
-/// Run the same retrieval path `chat_answer` uses, but return the intermediate
+/// Run the same retrieval path `chat_answer_stream` uses, but return the intermediate
 /// stages instead of a prompt. Read-only: this never writes a chunk or a token.
 #[tauri::command]
 pub async fn retrieval_trace(

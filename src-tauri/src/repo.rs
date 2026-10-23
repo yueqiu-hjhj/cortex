@@ -1917,7 +1917,7 @@ pub fn rollover_thread(
     Ok(id)
 }
 
-/// The active thread's inherited rollover summary, if it has one. chat_answer
+/// The active thread's inherited rollover summary, if it has one. The chat
 /// prepends it to the system prompt — that is what makes a rollover inherit
 /// context instead of resetting the conversation.
 pub fn active_rollover_summary(conn: &Connection, subject_id: &str) -> Result<Option<String>> {
