@@ -163,6 +163,8 @@ export interface RetrievalMeta {
   /** subject | topic | source | sources | none */
   scope: string;
   abstained: boolean;
+  /** Earlier user turns of this thread fed back into the prompt. */
+  history_turns?: number;
 }
 export interface CsItem { t: string; d: string }
 export interface CsSection { id: string; title: string; state: string; items: CsItem[]; image?: string | null }

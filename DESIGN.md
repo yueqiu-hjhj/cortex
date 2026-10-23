@@ -119,20 +119,43 @@ next answer summarizes the thread and continues in a fresh one:
 Enforced by: `repo.rs` (archive-nothing/carry-question/lineage, no-steal,
 budget + off switch, head+tail window, inherited-summary visibility).
 
-## 8. Chat must not silently fall back to a reasoning model
+## 8. Recent turns are fed back into the prompt — windowed, never duplicated
+
+The transcript was stored but never shown to the model, so "它 / 刚才 / 那个"
+only ever resolved inside a single turn. `repo::recent_chat_history` closes
+that:
+
+- the window is token-budgeted (`chat_history_tokens`, default 4k, `0`
+  disables) and sheds the **oldest** turns first — the tail is what "刚才"
+  resolves to, so it is the last thing to go;
+- the current question is excluded: the panel persists it *before* asking, so
+  without the exclusion it would sit in the prompt twice. Only when it is
+  genuinely the newest row — a same-text older question is real history;
+- system messages are skipped (the rollover summary rides in separately);
+- one over-budget message is tail-clipped, not dropped — "继续" after a
+  truncated answer must still see what it continues;
+- the window is context, never a source (never citable), and the count of
+  earlier questions is persisted per answer (`RetrievalMeta.history_turns`)
+  and shown as a chip — the user can see when the model is flying on history
+  alone.
+
+Enforced by: `repo.rs` (sheds-oldest-first, current-question exclusion,
+system-skip, tail-clip, off switch, empty-after-rollover).
+
+## 9. Chat must not silently fall back to a reasoning model
 
 `DEFAULT_CHAT_MODEL` is a fast non-reasoning model on purpose: reasoning
 models make the tutor feel slow. `model_spec_for(c, "chat")` plus
 `guard_offline_llm` enforce this at the command boundary.
 
-## 9. Windows CRLF fidelity
+## 10. Windows CRLF fidelity
 
 Several files (`cortex-gateway.rs`, `embed.rs`, `eval.rs`, `notes.rs`,
 `selfcheck.rs`, …) are CRLF. An edit that flips line endings produces a
 whole-file diff that buries the real change — restore byte-level CRLF before
 committing. (This has bitten twice; both times the fix was `amend`.)
 
-## 10. Migrations are append-only
+## 11. Migrations are append-only
 
 Schema changes are new numbered files in `src-tauri/migrations/`, registered
 in `db.rs`; `user_version` is the count of applied migrations. Never edit a

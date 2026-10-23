@@ -310,7 +310,7 @@ mod tests {
             "assistant",
             text,
             &cites,
-            Some(&crate::models::RetrievalMeta { hits, scope: "subject".into(), abstained: false }),
+            Some(&crate::models::RetrievalMeta { hits, scope: "subject".into(), abstained: false, history_turns: 0 }),
             fabricated,
             state,
         )

@@ -166,6 +166,10 @@ pub struct RetrievalMeta {
     /// True when retrieval came back empty and the answer is ungrounded.
     #[serde(default)]
     pub abstained: bool,
+    /// Earlier user turns of this thread that were fed back into the prompt
+    /// (0 = none included or disabled). Drives the UI's honesty chip.
+    #[serde(default)]
+    pub history_turns: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

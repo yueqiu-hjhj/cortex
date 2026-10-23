@@ -797,6 +797,14 @@
             {:else if state === "aborted"}
               <span class="retr-badge state-aborted" title="你按下了停止，这里保留的是中断前已经生成的部分。">已中止</span>
             {/if}
+            {#if (m.retrieval?.history_turns ?? 0) > 0}
+              {@const historyTurns = m.retrieval?.history_turns ?? 0}
+              <span
+                class="retr-badge state-history"
+                title="本轮的 prompt 带入了此前 {historyTurns} 个问题及回答作为上下文——「它 / 刚才 / 那个」因此能贯穿整个对话，而不只限于单轮。"
+                >上文 · {historyTurns} 轮</span
+              >
+            {/if}
             <RichText text={m.text} />
             {#if cites.length}
               <div class="evidence">
@@ -1168,6 +1176,11 @@
     color: var(--fg-muted);
     background: color-mix(in oklab, var(--fg-muted) 12%, transparent);
     border-color: color-mix(in oklab, var(--fg-muted) 35%, transparent);
+  }
+  .retr-badge.state-history {
+    color: var(--fg-muted);
+    background: color-mix(in oklab, var(--fg-muted) 8%, transparent);
+    border-color: color-mix(in oklab, var(--fg-muted) 25%, transparent);
   }
   .retr-stat {
     display: inline-flex;

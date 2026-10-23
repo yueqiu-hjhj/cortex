@@ -1864,6 +1864,109 @@ pub fn active_rollover_summary(conn: &Connection, subject_id: &str) -> Result<Op
     Ok(row)
 }
 
+/// Per-message cap for the history window (chars): a pasted 20k-char source
+/// must not eat the whole window — several readable turns beat one monster.
+const HISTORY_PER_MESSAGE_CHARS: usize = 4_000;
+
+/// Default history window: estimated tokens of recent conversation fed
+/// back into the chat prompt — several exchanges' worth, small enough to leave
+/// the context budget to the sources.
+pub const DEFAULT_HISTORY_TOKENS: i64 = 4_000;
+
+/// The history-window budget. Setting `chat_history_tokens` overrides it; "0"
+/// (or a negative) disables history injection entirely.
+pub fn history_token_budget(conn: &Connection) -> Result<i64> {
+    let budget = match get_setting(conn, "chat_history_tokens")?.as_deref() {
+        Some(v) => v.trim().parse().unwrap_or(DEFAULT_HISTORY_TOKENS),
+        None => DEFAULT_HISTORY_TOKENS,
+    };
+    Ok(budget.max(0))
+}
+
+/// The recent-conversation window fed back into the chat prompt, as
+/// `用户:`/`助手:` lines, oldest → newest. Returns (window, earlier user
+/// questions) — the count of prior user turns the model can see, for the UI's
+/// honesty chip.
+///
+/// Why this exists: chat answers are retrieval-stateless — the transcript is
+/// stored but never shown to the model, so "它 / 刚才 / 那个" only ever
+/// resolved inside a single turn and every follow-up asked the model to
+/// re-derive context the conversation had already established.
+///
+/// Semantics:
+/// - System messages are skipped: the rollover summary is injected separately
+///   (`active_rollover_summary`) and error notices are not model context.
+/// - `exclude_latest_user` drops the newest user row when it matches the text
+///   — the panel persists the current question BEFORE asking, so without this
+///   the question would sit in the prompt twice. Only when it is genuinely the
+///   newest row: if the newest row is an assistant reply, a same-text user
+///   message belongs to an older turn and must stay.
+/// - The token budget sheds the OLDEST turns first (newest-first walk), so the
+///   tail — what "刚才" resolves to — is the last thing to go.
+/// - A single over-budget message is tail-clipped rather than dropped:
+///   "继续" after a truncated answer must still see what it continues.
+pub fn recent_chat_history(
+    conn: &Connection,
+    thread_id: &str,
+    budget_tokens: i64,
+    exclude_latest_user: Option<&str>,
+) -> Result<(String, i64)> {
+    if budget_tokens <= 0 {
+        return Ok((String::new(), 0));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT role, text FROM chat_messages WHERE thread_id=?1
+         ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let rows = stmt.query_map(params![thread_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut msgs: Vec<(String, String)> = rows.collect::<rusqlite::Result<_>>()?;
+    if let Some(q) = exclude_latest_user {
+        if msgs
+            .last()
+            .is_some_and(|(role, text)| role == "user" && text == q)
+        {
+            msgs.pop();
+        }
+    }
+    msgs.retain(|(role, _)| role == "user" || role == "assistant");
+    if msgs.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let mut kept: Vec<String> = Vec::new();
+    let mut user_turns = 0i64;
+    let mut used = 0i64;
+    for (role, text) in msgs.iter().rev() {
+        let label = if role == "user" { "用户" } else { "助手" };
+        let body: String = text.chars().take(HISTORY_PER_MESSAGE_CHARS).collect();
+        let cost = crate::tokens::estimate(&body);
+        if used + cost > budget_tokens {
+            if kept.is_empty() {
+                // Even the newest turn alone overflows: keep a conservative
+                // tail clip (budget chars ≈ budget tokens for CJK, the
+                // expensive case) so a follow-up still has something to
+                // resolve against.
+                let cap = budget_tokens.max(1) as usize;
+                let total = body.chars().count();
+                let tail: String = body.chars().skip(total.saturating_sub(cap)).collect();
+                kept.push(format!("{label}: {tail}"));
+                if role == "user" {
+                    user_turns = 1;
+                }
+            }
+            break;
+        }
+        used += cost;
+        if role == "user" {
+            user_turns += 1;
+        }
+        kept.push(format!("{label}: {body}"));
+    }
+    kept.reverse();
+    Ok((kept.join("\n"), user_turns))
+}
+
 /// Append a message to the subject's active thread and bump its updated_at.
 pub fn add_chat_message(
     conn: &Connection,
@@ -5215,6 +5318,7 @@ mod tests {
             hits: 3,
             scope: "subject".into(),
             abstained: false,
+            history_turns: 2,
         };
         add_chat_message_full(&c, &sid, "assistant", "回答 [1]", &[], Some(&meta), None, None).unwrap();
         add_chat_message_full(
@@ -5223,7 +5327,7 @@ mod tests {
             "assistant",
             "零命中回答",
             &[],
-            Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true }),
+            Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true, history_turns: 0 }),
             None,
             None,
         )
@@ -5384,6 +5488,161 @@ mod tests {
         rollover_thread(&c, &sid, &old, "讨论了特征值。").unwrap();
         let seen = active_rollover_summary(&c, &sid).unwrap();
         assert!(seen.as_deref().is_some_and(|s| s.contains("讨论了特征值。")));
+    }
+
+    // ── history window ───────────────────────────────────────────────────
+
+    /// The window sheds the OLDEST turns first: the tail — what "刚才"
+    /// resolves to — is the last thing to go.
+    #[test]
+    fn history_window_sheds_the_oldest_turns_first() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "第一问").unwrap();
+        add_chat_message(&c, &sid, "assistant", "第一答").unwrap();
+        add_chat_message(&c, &sid, "user", "最近一问").unwrap();
+        add_chat_message(&c, &sid, "assistant", "最近一答").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        // A budget that fits one exchange (2 lines ≈ 12 est. tokens) but not two.
+        let (w, turns) = recent_chat_history(&c, &tid, 12, None).unwrap();
+        assert!(w.contains("最近一问") && w.contains("最近一答"), "{w}");
+        assert!(!w.contains("第一问"), "the oldest turn is shed first: {w}");
+        assert_eq!(turns, 1, "one earlier question is visible");
+    }
+
+    /// The panel persists the current question BEFORE asking, so the newest
+    /// user row is normally this very question — it must not appear twice.
+    /// But when the newest row is an assistant reply, a same-text question
+    /// belongs to an older turn and must stay.
+    #[test]
+    fn history_excludes_only_the_current_question() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        add_chat_message(&c, &sid, "assistant", "特征值是……").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        // The panel just persisted this question; asking it now.
+        add_chat_message(&c, &sid, "user", "它和特征向量什么关系？").unwrap();
+        let (w, turns) =
+            recent_chat_history(&c, &tid, 4000, Some("它和特征向量什么关系？")).unwrap();
+        assert!(
+            !w.contains("它和特征向量什么关系？"),
+            "the current question must not be history: {w}"
+        );
+        assert!(w.contains("什么是特征值？"), "the earlier turn stays: {w}");
+        assert_eq!(turns, 1);
+
+        // Newest row is an ASSISTANT reply: the same-text user message is an
+        // older turn (the question was asked twice) and must remain visible.
+        add_chat_message(&c, &sid, "user", "它和特征向量什么关系？").unwrap();
+        add_chat_message(&c, &sid, "assistant", "特征向量是……").unwrap();
+        let (w2, _) = recent_chat_history(&c, &tid, 4000, Some("它和特征向量什么关系？")).unwrap();
+        assert!(
+            w2.contains("它和特征向量什么关系？"),
+            "an older same-text question is real history: {w2}"
+        );
+    }
+
+    /// System messages are not model context: the rollover summary is
+    /// injected separately (`active_rollover_summary`) and error notices
+    /// never were history.
+    #[test]
+    fn history_skips_system_messages() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "问题").unwrap();
+        add_chat_message(&c, &sid, "system", "（系统通知）索引完成").unwrap();
+        add_chat_message(&c, &sid, "assistant", "答案").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        let (w, turns) = recent_chat_history(&c, &tid, 4000, None).unwrap();
+        assert!(!w.contains("系统通知"), "system notices are not history: {w}");
+        assert!(w.contains("问题") && w.contains("答案"), "{w}");
+        assert_eq!(turns, 1);
+    }
+
+    /// A single over-budget message is tail-clipped, not dropped: "继续"
+    /// after a truncated answer must still see what it continues.
+    #[test]
+    fn history_tail_clips_one_huge_message() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "继续").unwrap();
+        add_chat_message(&c, &sid, "assistant", &"很长的回答".repeat(500)).unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        let (w, turns) = recent_chat_history(&c, &tid, 40, None).unwrap();
+        assert!(!w.is_empty(), "the newest turn is never dropped");
+        assert!(w.starts_with("助手:"), "the newest turn is the kept one: {w}");
+        let body = w.lines().last().unwrap();
+        assert!(
+            crate::tokens::estimate(body) <= 48,
+            "tail-clipped into budget (label included): {}",
+            body.chars().count()
+        );
+        assert_eq!(turns, 0, "no earlier question survived the monster answer");
+    }
+
+    /// "0" disables history entirely — the same contract as rollover's off
+    /// switch — and the setting is what the command layer reads.
+    #[test]
+    fn history_zero_budget_disables_the_window() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "问题").unwrap();
+        add_chat_message(&c, &sid, "assistant", "答案").unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        assert_eq!(recent_chat_history(&c, &tid, 0, None).unwrap(), (String::new(), 0));
+        assert_eq!(history_token_budget(&c).unwrap(), DEFAULT_HISTORY_TOKENS);
+        set_setting(&c, "chat_history_tokens", "0").unwrap();
+        assert_eq!(history_token_budget(&c).unwrap(), 0);
+        set_setting(&c, "chat_history_tokens", "2500").unwrap();
+        assert_eq!(history_token_budget(&c).unwrap(), 2500);
+        set_setting(&c, "chat_history_tokens", "垃圾").unwrap();
+        assert_eq!(history_token_budget(&c).unwrap(), DEFAULT_HISTORY_TOKENS, "garbage falls back");
+    }
+
+    /// Right after a rollover the new thread holds only the summary (system —
+    /// injected separately) and the carried question (the current one): the
+    /// window is empty and the summary is what carries the old thread. The
+    /// old thread keeps its full history — nothing is archived away.
+    #[test]
+    fn history_is_empty_right_after_a_rollover() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        add_chat_message(&c, &sid, "assistant", "特征值是……").unwrap();
+        let old = current_thread(&c, &sid).unwrap();
+        // The panel persists the question, THEN the answer rolls over.
+        add_chat_message(&c, &sid, "user", "它和特征向量什么关系？").unwrap();
+        rollover_thread(&c, &sid, &old, "讨论了特征值与特征向量。").unwrap();
+        let new_tid = current_thread(&c, &sid).unwrap();
+        assert_ne!(new_tid, old);
+        let (w, turns) =
+            recent_chat_history(&c, &new_tid, 4000, Some("它和特征向量什么关系？")).unwrap();
+        assert_eq!(w, "", "summary is system (not history) and the question is current");
+        assert_eq!(turns, 0);
+        let (old_w, _) = recent_chat_history(&c, &old, 4000, None).unwrap();
+        assert!(
+            old_w.contains("什么是特征值？"),
+            "the old thread keeps its history: {old_w}"
+        );
+    }
+
+    #[test]
+    fn history_of_an_empty_thread_is_empty() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        let tid = current_thread(&c, &sid).unwrap();
+        assert_eq!(
+            recent_chat_history(&c, &tid, 4000, Some("问题")).unwrap(),
+            (String::new(), 0)
+        );
     }
 
     #[test]

@@ -2168,6 +2168,20 @@ pub async fn chat_answer(
         }
     }
 
+    // Recent turns of THIS thread fed back into the prompt. Chat
+    // answers are retrieval-stateless: without this, "它 / 刚才 / 那个" only
+    // ever resolved inside a single turn, and every follow-up asked the model
+    // to re-derive context the conversation had already established. The
+    // window is token-budgeted (oldest turns shed first) and excludes the
+    // current question — the panel persisted it moments ago, so it would
+    // otherwise sit in the prompt twice.
+    let (history, history_turns) = {
+        let c = state.db.lock().unwrap();
+        let tid = repo::current_thread(&c, &subject_id)?;
+        let budget = repo::history_token_budget(&c)?;
+        repo::recent_chat_history(&c, &tid, budget, Some(&query))?
+    };
+
     // Scope: source-level chats are restricted to a single source's chunks; the
     // keyword path applies this in SQL, the vector path filters its results.
     let scoped_source = if level == "source" { source_id.as_deref() } else { None };
@@ -2377,6 +2391,16 @@ pub async fn chat_answer(
              never be cited):\n{summary}"
         ));
     }
+    // Earlier turns of THIS thread (the summary above covers the previous one).
+    // Context for resolving references — never citable, and the QUESTION at
+    // the end is the one to answer.
+    if !history.is_empty() {
+        system.push_str(&format!(
+            "\n\nRECENT CONVERSATION (oldest → newest — earlier turns are context for resolving \
+             references like \"它 / 刚才 / 那个\"; they are NOT sources and must never be cited; \
+             the QUESTION at the end is the one to answer):\n{history}"
+        ));
+    }
     if web_on {
         // Override the strict sources-only rule above: web mode permits using the
         // WEB RESULTS block and light general knowledge, cited as ⟦web · host⟧.
@@ -2470,6 +2494,7 @@ pub async fn chat_answer(
             level.clone()
         },
         abstained,
+        history_turns,
     };
 
     Ok(ChatAnswer {
