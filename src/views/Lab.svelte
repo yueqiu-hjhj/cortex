@@ -51,6 +51,73 @@
     void app.activeSubjectId;
     void loadHealth();
   });
+  // Citation ledger: the rows behind the drift rate above. On demand — a full
+  // audit re-checks every frozen quote against its source, which is fine to ask
+  // for and wrong to run on every tab switch.
+  let audit = $state<api.CitationAudit | null>(null);
+  let auditErr = $state<string | null>(null);
+  let auditLoading = $state(false);
+  let repairing = $state(false);
+  async function runAudit() {
+    auditLoading = true;
+    auditErr = null;
+    try {
+      audit = await api.auditCitations(app.activeSubjectId ?? null, healthDays);
+    } catch (e) {
+      auditErr = String(e);
+    } finally {
+      auditLoading = false;
+    }
+  }
+  async function repairAll() {
+    repairing = true;
+    auditErr = null;
+    try {
+      const r = await api.repairDriftedCitations(app.activeSubjectId ?? null, healthDays);
+      await runAudit();
+      await loadHealth();
+      app.pushToast({
+        kind: r.repaired > 0 ? "info" : "error",
+        title: r.repaired > 0 ? `重锚 ${r.repaired} 条引用` : "没有可重锚的引用",
+        body:
+          r.refused > 0
+            ? `${r.refused} 条没有诚实的锚点，保持原样（不猜相似段落）`
+            : "引文已按现文重新冻结，旧引文留痕可查",
+      });
+    } catch (e) {
+      auditErr = String(e);
+    } finally {
+      repairing = false;
+    }
+  }
+  async function repairOne(row: api.AuditedCitation) {
+    auditErr = null;
+    try {
+      const out = await api.refreezeMessageCitation(row.message_id, row.citation.chunk_id);
+      if (!out.citation) {
+        const why =
+          out.reanchor.kind === "unanchorable" ? out.reanchor.reason : out.reanchor.kind;
+        app.pushToast({ kind: "error", title: "无法重锚", body: why });
+        return;
+      }
+      // Re-audit instead of patching optimistically: a "fixed" badge that isn't
+      // fixed is worse than the drift it replaced.
+      await runAudit();
+      await loadHealth();
+    } catch (e) {
+      auditErr = String(e);
+    }
+  }
+  const AUDIT_GROUPS = [
+    { key: "drifted", label: "与现文不符", tone: "warn" },
+    { key: "source_gone", label: "来源已删", tone: "warn" },
+    { key: "unchecked", label: "不可核验（无快照）", tone: "mute" },
+    { key: "moved", label: "已移位（引文仍成立）", tone: "ok" },
+    { key: "exact", label: "与现文一致", tone: "ok" },
+  ] as const;
+  function rowsOf(a: api.CitationAudit, key: string) {
+    return a.rows.filter((r) => (key === "unchecked" ? r.check === null : r.check?.kind === key));
+  }
   const STATE_LABEL: Record<string, string> = {
     completed: "正常结束",
     truncated: "长度截断",
@@ -434,6 +501,83 @@
               {health.snapshots.exact} / 移位 {health.snapshots.moved} / 与现文不符
               {health.snapshots.drifted} / 来源已删 {health.snapshots.gone} / 已重锚
               {health.snapshots.reanchored} / 无快照 {health.snapshots.unchecked}
+            </div>
+
+            <div class="ah-ledger">
+              <div class="lab-sec-h">
+                <h3 class="lab-sec-t">引用台账</h3>
+                <span class="lab-hint">
+                  逐条核验库里冻结的引文——上面的漂移率就是这张表算出来的，两者不会打架
+                </span>
+              </div>
+              <div class="ah-ledger-bar">
+                <button class="btn btn--sm" onclick={() => void runAudit()} disabled={auditLoading}>
+                  <Icon name="search" size={11} />
+                  {auditLoading ? "核验中…" : "核验全库引用"}
+                </button>
+                {#if audit && audit.drifted > 0}
+                  <button class="btn btn--sm" onclick={() => void repairAll()} disabled={repairing}>
+                    {repairing ? "重锚中…" : `重锚 ${audit.drifted} 条`}
+                  </button>
+                {/if}
+                {#if audit}
+                  <span class="lab-hint mono">
+                    {new Date(audit.audited_at).toLocaleTimeString()} 核验
+                  </span>
+                {/if}
+              </div>
+              {#if auditErr}
+                <div class="lab-err">{auditErr}</div>
+              {/if}
+              {#if audit}
+                <div class="ah-ledger-sum mono">
+                  {audit.citations} 条引文 / {audit.answers} 个回答 · 一致 {audit.exact} · 移位
+                  {audit.moved} · 不符 {audit.drifted} · 来源已删 {audit.source_gone} · 不可核验
+                  {audit.unchecked} · 已重锚 {audit.reanchored}
+                </div>
+                {#if audit.citations === 0}
+                  <div class="lab-hint">这个窗口里没有带引文的回答。</div>
+                {:else}
+                  {#each AUDIT_GROUPS as g (g.key)}
+                    {@const rows = rowsOf(audit, g.key)}
+                    {#if rows.length}
+                      <details
+                        class="ah-grp"
+                        open={g.key === "drifted" || g.key === "source_gone"}
+                      >
+                        <summary class="ah-grp-sum">
+                          <span
+                            class="ah-dot"
+                            class:warn={g.tone === "warn"}
+                            class:ok={g.tone === "ok"}
+                          ></span>
+                          {g.label}
+                          <span class="faint mono">{rows.length}</span>
+                        </summary>
+                        <ul class="ah-rows">
+                          {#each rows as r, i (r.message_id + "|" + r.citation.chunk_id + "|" + i)}
+                            <li class="ah-row">
+                              <span class="ah-row-src">{r.citation.source_name}</span>
+                              {#if r.citation.loc}<span class="faint mono">{r.citation.loc}</span
+                                >{/if}
+                              <span class="ah-row-quote">
+                                {r.citation.quote || r.citation.snippet || "（无冻结引文）"}
+                              </span>
+                              {#if r.reanchored}<span class="ah-row-tag">已重锚</span>{/if}
+                              {#if g.key === "drifted"}
+                                <button
+                                  class="btn btn--sm btn--ghost"
+                                  onclick={() => void repairOne(r)}>重锚这条</button
+                                >
+                              {/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      </details>
+                    {/if}
+                  {/each}
+                {/if}
+              {/if}
             </div>
           {/if}
         {/if}
@@ -1120,6 +1264,41 @@
   .ah-facts {
     margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--border);
     font-size: var(--t-2xs); color: var(--fg-faint); line-height: 1.6;
+  }
+
+  /* ── 引用台账 ── */
+  .ah-ledger { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .ah-ledger-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .ah-ledger-sum {
+    font-size: var(--t-2xs); color: var(--fg-muted); line-height: 1.6;
+    padding: 7px 9px; border-radius: 8px; background: var(--surface);
+  }
+  .ah-grp { margin-top: 8px; }
+  .ah-grp-sum {
+    display: flex; align-items: center; gap: 7px; cursor: pointer;
+    font-size: var(--t-xs); color: var(--fg); padding: 4px 0;
+  }
+  .ah-grp-sum .ah-dot { margin-top: 0; }
+  .ah-grp-sum .ah-dot.warn { background: var(--warn, #f5a623); }
+  .ah-grp-sum .ah-dot.ok { background: var(--ok, #3fb950); }
+  .ah-rows {
+    list-style: none; margin: 4px 0 0; padding: 0 0 0 4px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .ah-row {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: var(--t-2xs); line-height: 1.5;
+    padding: 5px 8px; border-radius: 7px;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .ah-row-src { flex: none; color: var(--fg-bright); }
+  .ah-row-quote {
+    flex: 1; min-width: 0; color: var(--fg-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ah-row-tag {
+    flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px;
+    color: var(--fg-faint); border: 1px solid var(--border);
   }
 
   @media (max-width: 860px) {

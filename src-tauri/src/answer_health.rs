@@ -116,7 +116,6 @@ pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<
     let mut fabricated_total = 0i64;
     let mut fabricated_answers = 0i64;
     let mut rolled: HashSet<String> = HashSet::new();
-    let mut snap = SnapshotHealth::default();
 
     let mut read_row = |citations: Option<String>,
                         retrieval: Option<String>,
@@ -154,33 +153,6 @@ pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<
         if cites.iter().any(|c| c.cited) {
             cited_answers += 1;
         }
-        if cites.is_empty() {
-            return;
-        }
-        for (c, check) in cites.iter().zip(crate::citesnap::verify_message(conn, &cites)) {
-            if c.reanchored_at.is_some() {
-                snap.reanchored += 1;
-            }
-            match check {
-                None => snap.unchecked += 1,
-                Some(crate::citesnap::QuoteCheck::Exact) => {
-                    snap.checked += 1;
-                    snap.exact += 1;
-                }
-                Some(crate::citesnap::QuoteCheck::Moved { .. }) => {
-                    snap.checked += 1;
-                    snap.moved += 1;
-                }
-                Some(crate::citesnap::QuoteCheck::Drifted) => {
-                    snap.checked += 1;
-                    snap.drifted += 1;
-                }
-                Some(crate::citesnap::QuoteCheck::SourceGone) => {
-                    snap.checked += 1;
-                    snap.gone += 1;
-                }
-            }
-        }
     };
 
     if let Some(sid) = subject_id {
@@ -196,6 +168,20 @@ pub fn health(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<
             read_row(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?);
         }
     }
+
+    // Snapshot health is read from citesnap's ledger rather than re-derived
+    // here: the evidence badge, the Lab verdict and the startup check must never
+    // be able to disagree about how many quotes drifted.
+    let audit = crate::citesnap::audit_subject(conn, subject_id, days)?;
+    let snap = SnapshotHealth {
+        checked: (audit.exact + audit.moved + audit.drifted + audit.source_gone) as i64,
+        exact: audit.exact as i64,
+        moved: audit.moved as i64,
+        drifted: audit.drifted as i64,
+        gone: audit.source_gone as i64,
+        unchecked: audit.unchecked as i64,
+        reanchored: audit.reanchored as i64,
+    };
 
     let mut states: Vec<StateCount> = STATE_ORDER
         .iter()

@@ -82,35 +82,46 @@ pub fn verify_quote(source_text: &str, quote: &str, recorded: Option<(i64, i64)>
     QuoteCheck::Drifted
 }
 
-/// Re-check every citation of one message, in citation order. Sources are
-/// fetched once per distinct id (an answer's citations often share one).
-/// `None` for a citation that carries no snapshot (pre-0078 answers) —
-/// showing those as drifted would be a lie; they simply can't be checked.
-pub fn verify_message(conn: &Connection, citations: &[Citation]) -> Vec<Option<QuoteCheck>> {
-    let mut cache: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+/// Source text per source id, so a subject-wide audit reads each source once
+/// instead of once per citation.
+type TextCache = std::collections::HashMap<String, Option<String>>;
+
+/// Re-check citations in order, reusing `cache` across calls. `None` for a
+/// citation with no frozen quote — uncheckable is not the same as passing.
+fn verify_with_cache(
+    conn: &Connection,
+    cache: &mut TextCache,
+    citations: &[Citation],
+) -> Vec<Option<QuoteCheck>> {
     citations
         .iter()
         .map(|c| {
             if c.quote.trim().is_empty() {
                 return None;
             }
-            let content = cache
-                .entry(c.source_id.clone())
-                .or_insert_with(|| {
-                    conn.query_row(
-                        "SELECT content FROM sources WHERE id=?1",
-                        rusqlite::params![c.source_id],
-                        |r| r.get::<_, Option<String>>(0),
-                    )
-                    .ok()
-                    .flatten()
-                });
+            let content = cache.entry(c.source_id.clone()).or_insert_with(|| {
+                conn.query_row(
+                    "SELECT content FROM sources WHERE id=?1",
+                    rusqlite::params![c.source_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+            });
             Some(match content {
                 None => QuoteCheck::SourceGone,
                 Some(text) => verify_quote(text, &c.quote, c.char_start.zip(c.char_end)),
             })
         })
         .collect()
+}
+
+/// Re-check every citation of one message, in citation order. Sources are
+/// fetched once per distinct id (an answer's citations often share one).
+/// `None` for a citation that carries no snapshot (pre-0078 answers) —
+/// showing those as drifted would be a lie; they simply can't be checked.
+pub fn verify_message(conn: &Connection, citations: &[Citation]) -> Vec<Option<QuoteCheck>> {
+    verify_with_cache(conn, &mut TextCache::new(), citations)
 }
 
 /// Re-check one answer's frozen citation quotes against the sources' CURRENT
@@ -298,6 +309,205 @@ pub fn refreeze_citation(
     crate::repo::update_message_citations(&c, &subject_id, created_at, &cites)?;
     let citation = cites[idx].clone();
     Ok(RefreezeOutcome { reanchor: plan, citation: Some(citation) })
+}
+
+/// Repair one citation addressed by MESSAGE ID rather than (subject,
+/// created_at). The ledger spans archived threads, where `refreeze_citation`'s
+/// `current_thread` lookup would resolve to a different thread and miss the
+/// very row being repaired.
+#[tauri::command]
+pub fn refreeze_message_citation(
+    state: State<AppState>,
+    message_id: String,
+    chunk_id: String,
+) -> Result<RefreezeOutcome> {
+    let c = state.db.lock().unwrap();
+    let mut cites = crate::repo::citations_by_message_id(&c, &message_id)?
+        .ok_or_else(|| crate::error::Error::NotFound("answer".into()))?;
+    let idx = cites
+        .iter()
+        .position(|x| x.chunk_id == chunk_id)
+        .ok_or_else(|| crate::error::Error::NotFound("citation".into()))?;
+
+    let plan = plan_reanchor(&c, &cites[idx]);
+    if !apply_reanchor(&mut cites[idx], &plan, crate::db::now_ms()) {
+        return Ok(RefreezeOutcome { reanchor: plan, citation: None });
+    }
+    crate::repo::update_citations_by_message_id(&c, &message_id, &cites)?;
+    let citation = cites[idx].clone();
+    Ok(RefreezeOutcome { reanchor: plan, citation: Some(citation) })
+}
+
+// ---- audit: every frozen quote in a subject, checked in one pass ----
+
+/// One row of the citation ledger. The message id travels with it because a
+/// repair has to find the row it came from — and the ledger spans archived
+/// threads, so (subject, created_at) is no longer enough.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditedCitation {
+    pub message_id: String,
+    pub thread_id: String,
+    pub created_at: i64,
+    pub citation: Citation,
+    /// This run's verdict; `None` when the citation carries no frozen quote,
+    /// which cannot be checked and must not be counted as healthy.
+    pub check: Option<QuoteCheck>,
+    /// Already repaired at some point. Kept separate from the verdict so
+    /// "was verified as fine" never gets confused with "had to be fixed".
+    pub reanchored: bool,
+}
+
+/// A subject's whole ledger as it stands right now. Nothing is persisted: this
+/// is a measurement, and a stored copy would immediately become a second truth
+/// that drifts from the citations it describes.
+#[derive(Debug, Clone, Serialize)]
+pub struct CitationAudit {
+    pub answers: usize,
+    pub citations: usize,
+    pub unchecked: usize,
+    pub exact: usize,
+    pub moved: usize,
+    pub drifted: usize,
+    pub source_gone: usize,
+    pub reanchored: usize,
+    pub audited_at: i64,
+    /// Newest first. The UI groups by `check`; exact rows stay in the payload
+    /// because a ledger that hides its healthy rows can't prove it looked.
+    pub rows: Vec<AuditedCitation>,
+}
+
+fn window_floor(days: i64, now: i64) -> i64 {
+    if days <= 0 {
+        0
+    } else {
+        now - days * 86_400_000
+    }
+}
+
+/// Check every frozen quote in a subject against the sources as they are now.
+/// `days` = 0 means all history.
+pub fn audit_subject(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<CitationAudit> {
+    let now = crate::db::now_ms();
+    let msgs = crate::repo::all_answer_citations(conn, subject_id, window_floor(days, now))?;
+    let answers = msgs.len();
+    let mut cache = TextCache::new();
+    let mut rows: Vec<AuditedCitation> = Vec::new();
+    let (mut unchecked, mut exact, mut moved, mut drifted, mut source_gone, mut reanchored) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for (message_id, thread_id, created_at, cites) in msgs {
+        let checks = verify_with_cache(conn, &mut cache, &cites);
+        for (citation, check) in cites.into_iter().zip(checks) {
+            match check {
+                None => unchecked += 1,
+                Some(QuoteCheck::Exact) => exact += 1,
+                Some(QuoteCheck::Moved { .. }) => moved += 1,
+                Some(QuoteCheck::Drifted) => drifted += 1,
+                Some(QuoteCheck::SourceGone) => source_gone += 1,
+            }
+            if citation.reanchored_at.is_some() {
+                reanchored += 1;
+            }
+            rows.push(AuditedCitation {
+                message_id: message_id.clone(),
+                thread_id: thread_id.clone(),
+                created_at,
+                check,
+                reanchored: citation.reanchored_at.is_some(),
+                citation,
+            });
+        }
+    }
+    Ok(CitationAudit {
+        answers,
+        citations: rows.len(),
+        unchecked,
+        exact,
+        moved,
+        drifted,
+        source_gone,
+        reanchored,
+        audited_at: now,
+        rows,
+    })
+}
+
+/// The citation ledger for one subject (0 days = all history).
+#[tauri::command]
+pub fn audit_citations(
+    state: State<AppState>,
+    subject_id: Option<String>,
+    days: i64,
+) -> Result<CitationAudit> {
+    let c = state.db.lock().unwrap();
+    audit_subject(&c, subject_id.as_deref(), days)
+}
+
+/// One citation the batch actually tried, and what it decided.
+#[derive(Debug, Clone, Serialize)]
+pub struct RepairRow {
+    pub message_id: String,
+    pub chunk_id: String,
+    pub reanchor: Reanchor,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchRepair {
+    pub repaired: usize,
+    pub refused: usize,
+    pub outcomes: Vec<RepairRow>,
+    pub repaired_at: i64,
+}
+
+/// Repair every DRIFTED citation in a subject, one plan at a time.
+///
+/// Scope is deliberately narrow. `Moved` citations already hold (the words are
+/// still there, only the coordinates shifted) and `Exact` ones obviously do, so
+/// rewriting those would erase the distinction between "was verified healthy"
+/// and "had to be fixed" — which is the whole reason the ledger exists. Only
+/// `Drifted` rows are touched, and every one of them still goes through
+/// [`plan_reanchor`], the same decision the single-citation button makes.
+pub fn repair_drifted(conn: &Connection, subject_id: Option<&str>, days: i64) -> Result<BatchRepair> {
+    let now = crate::db::now_ms();
+    let msgs = crate::repo::all_answer_citations(conn, subject_id, window_floor(days, now))?;
+    let mut cache = TextCache::new();
+    let (mut repaired, mut refused) = (0usize, 0usize);
+    let mut outcomes: Vec<RepairRow> = Vec::new();
+    for (message_id, _thread_id, _created_at, mut cites) in msgs {
+        let checks = verify_with_cache(conn, &mut cache, &cites);
+        let mut touched = false;
+        for (cite, check) in cites.iter_mut().zip(checks) {
+            if !matches!(check, Some(QuoteCheck::Drifted)) {
+                continue;
+            }
+            let plan = plan_reanchor(conn, cite);
+            if apply_reanchor(cite, &plan, now) {
+                repaired += 1;
+                touched = true;
+            } else {
+                refused += 1;
+            }
+            outcomes.push(RepairRow {
+                message_id: message_id.clone(),
+                chunk_id: cite.chunk_id.clone(),
+                reanchor: plan,
+            });
+        }
+        if touched {
+            crate::repo::update_citations_by_message_id(conn, &message_id, &cites)?;
+        }
+    }
+    Ok(BatchRepair { repaired, refused, outcomes, repaired_at: now })
+}
+
+/// Repair every drifted citation in one subject (0 days = all history).
+#[tauri::command]
+pub fn repair_drifted_citations(
+    state: State<AppState>,
+    subject_id: Option<String>,
+    days: i64,
+) -> Result<BatchRepair> {
+    let c = state.db.lock().unwrap();
+    repair_drifted(&c, subject_id.as_deref(), days)
 }
 
 #[cfg(test)]
@@ -580,5 +790,183 @@ mod tests {
             verify_message(&c, &after[0].citations)[0],
             Some(QuoteCheck::Exact)
         ));
+    }
+
+    // ---- audit: the subject-wide ledger ----
+
+    fn ledger_msg(conn: &Connection, id: &str, tid: &str, cites: &[Citation], at: i64) {
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, text, citations, created_at)
+             VALUES (?1, ?2, 'assistant', '答案', ?3, ?4)",
+            rusqlite::params![id, tid, serde_json::to_string(cites).unwrap(), at],
+        )
+        .unwrap();
+    }
+
+    fn thread(conn: &Connection, id: &str, sid: &str, at: i64) {
+        conn.execute(
+            "INSERT INTO chat_threads (id, subject_id, scope, created_at, updated_at)
+             VALUES (?1, ?2, 'subject', ?3, ?3)",
+            rusqlite::params![id, sid, at],
+        )
+        .unwrap();
+    }
+
+    /// Read back one message's citations by id. `message_citations_at` can't be
+    /// used here: it resolves through `current_thread`, which points at the
+    /// live thread — exactly the blind spot the ledger exists to cover.
+    fn cites_of_msg(conn: &Connection, sid: &str, mid: &str) -> Vec<Citation> {
+        crate::repo::all_answer_citations(conn, Some(sid), 0)
+            .unwrap()
+            .into_iter()
+            .find(|(id, ..)| id == mid)
+            .map(|(_, _, _, c)| c)
+            .unwrap_or_else(|| panic!("no citations for {mid}"))
+    }
+
+    #[test]
+    fn audit_covers_archived_threads_and_never_guesses() {
+        let (st, sid, src, chid) = fixture();
+        let c = st.db.lock().unwrap();
+        thread(&c, "t-old", &sid, 1_000);
+        thread(&c, "t-new", &sid, 2_000);
+
+        let quote = "矩阵乘以特征向量等于缩放，这就是特征值的定义。";
+        ledger_msg(
+            &c,
+            "m-old",
+            "t-old",
+            &[cite_of(&src, &chid, "旧线程里已经不存在的话。", (0, 13))],
+            1_000,
+        );
+        ledger_msg(
+            &c,
+            "m-new",
+            "t-new",
+            &[
+                cite_of(&src, &chid, quote, (0, 23)),
+                // Same words, wrong coordinates: moved, not drifted.
+                cite_of(&src, &chid, quote, (0, 5)),
+                cite_of(&src, &chid, "源文里没有这一句。", (0, 9)),
+                // No such source at all.
+                cite_of("no-such-source", &chid, "随便一句。", (0, 5)),
+                // Pre-0078 shape: no frozen quote, so nothing to check.
+                cite_of(&src, &chid, "", (0, 0)),
+            ],
+            2_000,
+        );
+
+        let a = audit_subject(&c, Some(&sid), 0).unwrap();
+        assert_eq!(a.answers, 2, "an archived thread is still part of the ledger");
+        assert_eq!(a.citations, 6);
+        assert_eq!((a.exact, a.moved, a.drifted), (1, 1, 2));
+        assert_eq!(a.source_gone, 1);
+        assert_eq!(a.unchecked, 1, "uncheckable must not be counted as healthy");
+        assert_eq!(a.unchecked + a.exact + a.moved + a.drifted + a.source_gone, a.citations);
+        assert_eq!(a.rows.len(), a.citations);
+        assert_eq!(a.reanchored, 0);
+
+        // A measurement, not a migration: the audit writes nothing.
+        let after = cites_of_msg(&c, &sid, "m-new");
+        assert_eq!(after.len(), 5);
+        assert_eq!(after[2].quote, "源文里没有这一句。");
+        assert!(after.iter().all(|x| x.reanchored_at.is_none()));
+    }
+
+    #[test]
+    fn audit_window_excludes_older_answers() {
+        let (st, sid, src, chid) = fixture();
+        let c = st.db.lock().unwrap();
+        thread(&c, "t-old", &sid, 1_000);
+        thread(&c, "t-new", &sid, crate::db::now_ms());
+        ledger_msg(&c, "m-old", "t-old", &[cite_of(&src, &chid, "旧的。", (0, 3))], 1_000);
+        ledger_msg(
+            &c,
+            "m-new",
+            "t-new",
+            &[cite_of(&src, &chid, "矩阵乘以特征向量等于缩放，这就是特征值的定义。", (0, 23))],
+            crate::db::now_ms(),
+        );
+
+        assert_eq!(audit_subject(&c, Some(&sid), 0).unwrap().answers, 2);
+        let recent = audit_subject(&c, Some(&sid), 1).unwrap();
+        assert_eq!(recent.answers, 1);
+        assert_eq!(recent.rows[0].message_id, "m-new");
+    }
+
+    #[test]
+    fn batch_repair_touches_only_drifted_rows_and_is_idempotent() {
+        let (st, sid, src, chid) = fixture();
+        let c = st.db.lock().unwrap();
+        thread(&c, "t-old", &sid, 1_000);
+        thread(&c, "t-new", &sid, 2_000);
+
+        let quote = "矩阵乘以特征向量等于缩放，这就是特征值的定义。";
+        ledger_msg(
+            &c,
+            "m-old",
+            "t-old",
+            &[cite_of(&src, &chid, "旧线程里已经不存在的话。", (0, 13))],
+            1_000,
+        );
+        ledger_msg(
+            &c,
+            "m-new",
+            "t-new",
+            &[
+                cite_of(&src, &chid, quote, (0, 23)),
+                cite_of(&src, &chid, quote, (0, 5)),
+            ],
+            2_000,
+        );
+
+        let r = repair_drifted(&c, Some(&sid), 0).unwrap();
+        assert_eq!((r.repaired, r.refused), (1, 0));
+        assert_eq!(r.outcomes.len(), 1);
+        assert_eq!(r.outcomes[0].message_id, "m-old");
+
+        // The drifted row now quotes the chunk's current text, with the old
+        // sentence kept as the audit trail.
+        let old = cites_of_msg(&c, &sid, "m-old");
+        assert_eq!(old[0].quote, SRC);
+        assert_eq!(old[0].superseded_quote.as_deref(), Some("旧线程里已经不存在的话。"));
+        assert_eq!(old[0].reanchored_at, Some(r.repaired_at));
+
+        // Healthy rows were not "repaired": their distinction from fixed ones
+        // is the entire point of the ledger.
+        let new = cites_of_msg(&c, &sid, "m-new");
+        assert!(new.iter().all(|x| x.reanchored_at.is_none()));
+        assert_eq!(
+            (new[1].char_start, new[1].char_end),
+            (Some(0), Some(5)),
+            "a moved row keeps the span it was frozen with"
+        );
+
+        // Nothing left to drift: a second pass is a no-op.
+        let again = repair_drifted(&c, Some(&sid), 0).unwrap();
+        assert_eq!((again.repaired, again.refused), (0, 0));
+        assert_eq!(audit_subject(&c, Some(&sid), 0).unwrap().drifted, 0);
+    }
+
+    #[test]
+    fn batch_repair_refuses_a_drifted_row_it_cannot_anchor() {
+        let (st, sid, src, _chid) = fixture();
+        let c = st.db.lock().unwrap();
+        thread(&c, "t1", &sid, 1_000);
+        // Drifted (not in the source) and its chunk no longer exists: no
+        // honest anchor, so the batch must report a refusal, not fabricate one.
+        ledger_msg(
+            &c,
+            "m1",
+            "t1",
+            &[cite_of(&src, "ghost-chunk", "源文里没有这一句。", (0, 9))],
+            1_000,
+        );
+        let r = repair_drifted(&c, Some(&sid), 0).unwrap();
+        assert_eq!((r.repaired, r.refused), (0, 1));
+        assert_eq!(r.outcomes[0].reanchor, Reanchor::Unanchorable { reason: "text_gone".into() });
+        let after = cites_of_msg(&c, &sid, "m1");
+        assert_eq!(after[0].quote, "源文里没有这一句。");
+        assert!(after[0].reanchored_at.is_none());
     }
 }

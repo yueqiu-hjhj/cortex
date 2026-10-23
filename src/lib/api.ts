@@ -924,6 +924,58 @@ export const verifyCitationSnapshots = (subjectId: string, createdAt: number) =>
 export const refreezeCitation = (subjectId: string, createdAt: number, chunkId: string) =>
   invoke<RefreezeOutcome>("refreeze_citation", { subjectId, createdAt, chunkId });
 
+// ---- citation ledger (every frozen quote in a subject, checked at once) ----
+/** One row of the ledger. `check` is null when the citation carries no frozen
+ *  quote (pre-0078) — uncheckable, which is not the same as healthy. */
+export interface AuditedCitation {
+  message_id: string;
+  thread_id: string;
+  created_at: number;
+  citation: Citation;
+  check: QuoteCheck | null;
+  /** Already repaired once. Kept apart from `check` so "verified fine" never
+   *  gets confused with "had to be fixed". */
+  reanchored: boolean;
+}
+export interface CitationAudit {
+  answers: number;
+  citations: number;
+  unchecked: number;
+  exact: number;
+  moved: number;
+  drifted: number;
+  source_gone: number;
+  reanchored: number;
+  audited_at: number;
+  /** Newest first. Exact rows are included on purpose: a ledger that hides
+   *  its healthy rows can't show that it looked. */
+  rows: AuditedCitation[];
+}
+export interface RepairRow {
+  message_id: string;
+  chunk_id: string;
+  reanchor: Reanchor;
+}
+export interface BatchRepair {
+  repaired: number;
+  refused: number;
+  outcomes: RepairRow[];
+  repaired_at: number;
+}
+/** Check every frozen quote in a subject against the sources as they are now.
+ *  `days` = 0 means all history. Nothing is written. */
+export const auditCitations = (subjectId: string | null, days: number) =>
+  invoke<CitationAudit>("audit_citations", { subjectId, days });
+/** Repair every DRIFTED citation. Moved and exact rows are left alone — that
+ *  distinction is the ledger's whole point. */
+export const repairDriftedCitations = (subjectId: string | null, days: number) =>
+  invoke<BatchRepair>("repair_drifted_citations", { subjectId, days });
+/** Repair ONE ledger row by message id. The ledger spans archived threads, so
+ *  the (subject, created_at) form used by the chat evidence chip would resolve
+ *  against a different thread. */
+export const refreezeMessageCitation = (messageId: string, chunkId: string) =>
+  invoke<RefreezeOutcome>("refreeze_message_citation", { messageId, chunkId });
+
 // ---- answer health (all the honest chat signals, aggregated) ----
 export interface StateCount {
   state: string;

@@ -2205,6 +2205,97 @@ pub fn update_message_citations(
     Ok(())
 }
 
+/// Every assistant citation in a subject (or in the whole library when
+/// `subject_id` is None), across ALL threads. A rollover archives its thread
+/// but the answers keep their evidence, and the oldest answers are exactly the
+/// ones most likely to have drifted — an audit that only read the current
+/// thread would systematically miss them. `since` is a created_at floor; 0
+/// means all history. Messages with no citations are dropped rather than
+/// returned as empty rows.
+pub fn all_answer_citations(
+    conn: &Connection,
+    subject_id: Option<&str>,
+    since: i64,
+) -> Result<Vec<(String, String, i64, Vec<Citation>)>> {
+    let mut sql = String::from(
+        "SELECT m.id, m.thread_id, m.created_at, m.citations
+         FROM chat_messages m
+         JOIN chat_threads t ON t.id = m.thread_id
+         WHERE m.role='assistant' AND m.created_at>=?1
+           AND m.citations IS NOT NULL AND m.citations != '[]'",
+    );
+    if subject_id.is_some() {
+        sql.push_str(" AND t.subject_id=?2");
+    }
+    sql.push_str(" ORDER BY m.created_at DESC, m.rowid DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(since)];
+    if let Some(sid) = subject_id {
+        args.push(Box::new(sid.to_string()));
+    }
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+        |r| {
+            let json: Option<String> = r.get(3)?;
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                json.as_deref()
+                    .and_then(|s| serde_json::from_str::<Vec<Citation>>(s).ok())
+                    .unwrap_or_default(),
+            ))
+        },
+    )?;
+    let mut out: Vec<(String, String, i64, Vec<Citation>)> = Vec::new();
+    for row in rows {
+        let item = row?;
+        if !item.3.is_empty() {
+            out.push(item);
+        }
+    }
+    Ok(out)
+}
+
+/// One message's citations, addressed by id (works across archived threads).
+pub fn citations_by_message_id(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<Vec<Citation>>> {
+    let json: Option<Option<String>> = conn
+        .query_row(
+            "SELECT citations FROM chat_messages WHERE id=?1 AND role='assistant'",
+            params![message_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    Ok(json.flatten().as_deref().and_then(|s| serde_json::from_str(s).ok()))
+}
+
+/// Rewrite one message's citations by message id — the ledger addresses rows by
+/// id because it spans archived threads, where `current_thread` would point at
+/// the wrong one (or at none). Assistant-only, so a repair can never overwrite
+/// a question.
+pub fn update_citations_by_message_id(
+    conn: &Connection,
+    message_id: &str,
+    citations: &[Citation],
+) -> Result<()> {
+    let json = if citations.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(citations)?)
+    };
+    let n = conn.execute(
+        "UPDATE chat_messages SET citations=?2 WHERE id=?1 AND role='assistant'",
+        params![message_id, json],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("assistant message {message_id}")));
+    }
+    Ok(())
+}
+
 /// Persist one retrieval-eval run (the four mode reports as JSON). Returns
 /// its created_at, which doubles as the run's id for the adoption rule's
 /// "strictly before" comparison. Timestamps are forced strictly increasing

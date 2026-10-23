@@ -69,11 +69,34 @@ feature; the repair has to be as honest as the check:
   text, answer state and fabrication count stay exactly as the model left
   them, so a repair can never masquerade as a new answer.
 
+**One ledger, one set of numbers** (`citesnap::audit_subject`). The check is
+subject-wide and spans *all* threads, including the ones a rollover archived —
+the oldest answers are the likeliest to have drifted, so an audit that read
+only the current thread would systematically miss them. Three consequences
+are load-bearing:
+
+- Uncheckable is not healthy: citations with no frozen quote are counted
+  separately (`unchecked`) and never folded into `exact`.
+- The audit persists nothing. A stored copy would become a second truth that
+  drifts from the citations it describes; the UI shows the time of the run
+  instead.
+- `answer_health` derives its snapshot numbers *from* this audit rather than
+  re-scanning, so the evidence badge, the Lab verdict and the startup check
+  can never disagree about how many quotes drifted.
+
+Batch repair (`repair_drifted`) is narrow on purpose: only `Drifted` rows are
+touched, each through the same `plan_reanchor` the single-citation button
+uses. `Moved` and `Exact` rows are left alone — rewriting a healthy citation
+would erase the difference between "verified fine" and "had to be fixed",
+which is the only reason the ledger distinguishes them.
+
 Enforced by: `citesnap.rs` (span math, moved/drifted/source-gone, whitespace
 fallback, legacy no-quote, DB roundtrip with re-index; relocate-without-
 rewriting, chunk refresh, refusal on `text_gone`/`source_gone`/`no_snapshot`,
 original quote preserved across repeated repairs, write-back touches only the
-citations column).
+citations column; archived-thread coverage, uncheckable-not-healthy counting,
+audit writes nothing, drifted-only + idempotent batch repair, refusal reported
+rather than fabricated).
 
 ## 4. Retrieval evidence is precise about what counts (0044/0069)
 
