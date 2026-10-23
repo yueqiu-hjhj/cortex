@@ -761,6 +761,7 @@ pub fn run() {
             citesnap::repair_drifted_citations,
             citesnap::refreeze_message_citation,
             answer_health::answer_health,
+            answer_health::answer_health_trend,
             commands::regenerate_rollover_summary,
             commands::source_backrefs,
             commands::question_index,

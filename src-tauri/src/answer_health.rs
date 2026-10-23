@@ -273,6 +273,89 @@ pub fn quick_verdicts(conn: &Connection, days: i64) -> Result<Vec<HealthSignal>>
     ))
 }
 
+/// One trailing 7-day window. `failed` folds blocked into failed: both mean the
+/// answer never reached you, which is the quantity worth trending.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WeekBucket {
+    pub start: i64,
+    pub end: i64,
+    pub answers: i64,
+    pub failed: i64,
+    pub truncated: i64,
+    pub abstained: i64,
+}
+
+/// Failure rate per week, oldest first.
+///
+/// No history table: messages already carry their timestamps, so the trend is a
+/// re-read of rows that exist, and a stored copy would be one more thing that
+/// can silently disagree with them.
+///
+/// Windows are trailing 7-day blocks, not calendar weeks. A calendar boundary
+/// would leave the newest bucket a one- or two-day stub for most of the week,
+/// which reads as a sudden improvement exactly when nothing has improved.
+pub fn trend(conn: &Connection, subject_id: Option<&str>, weeks: i64) -> Result<Vec<WeekBucket>> {
+    let weeks = weeks.clamp(1, 26);
+    let now = crate::db::now_ms();
+    let span = 7 * 86_400_000i64;
+    let start = now - weeks * span;
+    let mut buckets: Vec<WeekBucket> = (0..weeks)
+        .map(|i| WeekBucket {
+            start: start + i * span,
+            end: start + (i + 1) * span,
+            ..Default::default()
+        })
+        .collect();
+
+    let mut sql = String::from(
+        "SELECT m.created_at, m.retrieval, m.answer_state
+         FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id
+         WHERE m.role='assistant' AND m.created_at >= ?1",
+    );
+    if subject_id.is_some() {
+        sql.push_str(" AND t.subject_id=?2");
+    }
+    sql.push_str(" ORDER BY m.created_at");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(start)];
+    if let Some(sid) = subject_id {
+        args.push(Box::new(sid.to_string()));
+    }
+    let mut rows = stmt.query(rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())))?;
+    while let Some(r) = rows.next()? {
+        let at: i64 = r.get(0)?;
+        let retrieval: Option<String> = r.get(1)?;
+        let state: Option<String> = r.get(2)?;
+        let idx = (((at - start) / span).max(0) as usize).min(buckets.len() - 1);
+        let b = &mut buckets[idx];
+        b.answers += 1;
+        match state.as_deref() {
+            Some("failed") | Some("blocked") => b.failed += 1,
+            Some("truncated") => b.truncated += 1,
+            _ => {}
+        }
+        let meta: Option<crate::models::RetrievalMeta> =
+            retrieval.and_then(|s| serde_json::from_str(&s).ok());
+        if let Some(m) = meta {
+            if m.abstained {
+                b.abstained += 1;
+            }
+        }
+    }
+    Ok(buckets)
+}
+
+/// Weekly failure-rate trend for the Lab chart.
+#[tauri::command]
+pub fn answer_health_trend(
+    state: State<AppState>,
+    subject_id: Option<String>,
+    weeks: i64,
+) -> Result<Vec<WeekBucket>> {
+    let c = state.db.lock().unwrap();
+    trend(&c, subject_id.as_deref(), weeks)
+}
+
 /// The mechanical read of the numbers. Ordered worst-first so the first line
 /// is the one worth acting on; a library with nothing wrong still says so,
 /// because silence reads as "not measured".
@@ -590,5 +673,45 @@ mod tests {
         msg(&c, "t0", now + 12, Some("completed"), None, None, None);
         let h = health(&c, Some(&f.sid), 30).unwrap();
         assert_eq!(h.rolled_threads, 1);
+    }
+
+    #[test]
+    fn trend_buckets_by_trailing_week_and_folds_blocked_into_failed() {
+        let f = fixture();
+        let c = f.st.db.lock().unwrap();
+        thread(&c, &f.sid, "t1", None);
+        let now = crate::db::now_ms();
+        let day = 86_400_000i64;
+        // Newest bucket: the answer arrived but two never did.
+        msg(&c, "t1", now - day, Some("failed"), None, None, None);
+        msg(&c, "t1", now - day, Some("blocked"), None, None, None);
+        msg(&c, "t1", now - day, Some("completed"), None, None, None);
+        // Ten days ago: bucket 6 of 8 (windows run [now-14d, now-7d)).
+        msg(&c, "t1", now - 10 * day, Some("failed"), None, None, None);
+        // Older than the window: must not appear at all.
+        msg(&c, "t1", now - 70 * day, Some("completed"), None, None, None);
+
+        let t = trend(&c, Some(&f.sid), 8).unwrap();
+        assert_eq!(t.len(), 8);
+        assert_eq!(t[7].answers, 3, "the last bucket is the trailing 7 days");
+        assert_eq!(t[7].failed, 2, "blocked counts as an answer that never arrived");
+        assert_eq!(t[6].answers, 1);
+        assert_eq!(t[6].failed, 1);
+        assert_eq!(
+            t.iter().map(|b| b.answers).sum::<i64>(),
+            4,
+            "a 70-day-old answer is outside an 8-week window"
+        );
+        assert!(t.windows(2).all(|w| w[0].start < w[1].start), "oldest first");
+    }
+
+    #[test]
+    fn trend_keeps_its_shape_with_no_data() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let t = trend(&c, None, 8).unwrap();
+        assert_eq!(t.len(), 8, "the chart must not resize for a brand-new library");
+        assert!(t.iter().all(|b| b.answers == 0));
+        assert_eq!(trend(&c, None, 0).unwrap().len(), 1, "a nonsense window still yields one bucket");
     }
 }

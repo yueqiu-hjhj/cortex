@@ -34,6 +34,13 @@
   let health = $state<api.AnswerHealth | null>(null);
   let healthErr = $state<string | null>(null);
   let healthLoading = $state(false);
+  // Trend is its own request on a fixed 8-week window: "is this getting worse"
+  // is a different question from "what does the last 30 days look like".
+  let trend = $state<api.WeekBucket[] | null>(null);
+  function fmtDay(ms: number) {
+    const d = new Date(ms);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
   async function loadHealth() {
     healthLoading = true;
     healthErr = null;
@@ -43,6 +50,13 @@
       healthErr = String(e);
     } finally {
       healthLoading = false;
+    }
+    // A failed trend must not take the health report down with it: they answer
+    // different questions and the chart is the optional one.
+    try {
+      trend = await api.answerHealthTrend(app.activeSubjectId ?? null, 8);
+    } catch {
+      trend = null;
     }
   }
   $effect(() => {
@@ -502,6 +516,40 @@
               {health.snapshots.drifted} / 来源已删 {health.snapshots.gone} / 已重锚
               {health.snapshots.reanchored} / 无快照 {health.snapshots.unchecked}
             </div>
+
+            {#if trend && trend.some((w) => w.answers > 0)}
+              <div class="ah-trend-wrap">
+                <div class="ah-trend-h">
+                  <span>近 8 周失败率</span>
+                  <span class="lab-hint">
+                    柱高 = 失败+拦截 / 回答数；空槽表示那 7 天里没有提问
+                  </span>
+                </div>
+                <div class="ah-trend">
+                  {#each trend as w (w.start)}
+                    {@const rate = w.answers > 0 ? (w.failed / w.answers) * 100 : 0}
+                    <div
+                      class="ah-tc"
+                      title={`${fmtDay(w.start)}–${fmtDay(w.end)} · ${w.answers} 个回答 · 失败 ${w.failed} · 截断 ${w.truncated} · 无依据 ${w.abstained}`}
+                    >
+                      {#if w.answers > 0}
+                        <div
+                          class="ah-tb"
+                          class:zero={rate === 0}
+                          style:height={`${Math.max(rate, 4)}%`}
+                        ></div>
+                      {:else}
+                        <div class="ah-tb empty"></div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+                <div class="ah-trend-x mono">
+                  <span>{fmtDay(trend[0].start)}</span>
+                  <span>本周</span>
+                </div>
+              </div>
+            {/if}
 
             <div class="ah-ledger">
               <div class="lab-sec-h">
@@ -1267,6 +1315,25 @@
   }
 
   /* ── 引用台账 ── */
+  .ah-trend-wrap { margin-top: 14px; }
+  .ah-trend-h {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    font-size: var(--t-2xs); color: var(--fg-bright);
+  }
+  .ah-trend { display: flex; align-items: flex-end; gap: 4px; height: 54px; margin-top: 6px; }
+  .ah-tc { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+  .ah-tb {
+    width: 100%; min-height: 3px; border-radius: 3px 3px 0 0;
+    background: var(--warn, #f5a623);
+  }
+  /* A week with answers but no failures is the good case — don't paint it the
+     same colour as a bad one. */
+  .ah-tb.zero { background: color-mix(in oklab, var(--ok, #3fb950) 70%, transparent); }
+  .ah-tb.empty { background: var(--border); height: 3px; }
+  .ah-trend-x {
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: var(--fg-faint); margin-top: 3px;
+  }
   .ah-ledger { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
   .ah-ledger-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
   .ah-ledger-sum {

@@ -1016,6 +1016,23 @@ export interface AnswerHealth {
 export const answerHealth = (subjectId: string | null, days: number) =>
   invoke<AnswerHealth>("answer_health", { subjectId, days });
 
+/** One trailing 7-day window. `failed` folds blocked into failed: both mean the
+ *  answer never reached you, which is the quantity worth trending. */
+export interface WeekBucket {
+  start: number;
+  end: number;
+  answers: number;
+  failed: number;
+  truncated: number;
+  abstained: number;
+}
+/** Failure rate per trailing week, oldest first. No history table — the
+ *  messages already carry their timestamps, so this is a re-read of rows that
+ *  exist. Always returns exactly `weeks` buckets so the chart keeps its shape
+ *  for a brand-new library. */
+export const answerHealthTrend = (subjectId: string | null, weeks: number) =>
+  invoke<WeekBucket[]>("answer_health_trend", { subjectId, weeks });
+
 // ---- reverse provenance (KnowNote borrow) ----
 /** One answer that cited a passage, with the question that provoked it. */
 export interface AnswerRef {

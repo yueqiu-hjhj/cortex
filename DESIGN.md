@@ -291,9 +291,20 @@ Data quality fails nothing. `Check.warn` exists so a check can **pass and
 still be surfaced**: a library whose answers are failing is not a reason to
 refuse to start, but it is not something to leave in the dark either.
 
+**Trend needs no history table.** `answer_health::trend` re-reads the messages
+into trailing 7-day buckets, because they already carry their timestamps; a
+snapshot table would be one more thing that can disagree with the rows it
+summarises. Buckets are trailing windows, not calendar weeks — a calendar
+boundary leaves the newest bucket a one-day stub for most of the week, which
+reads as a sudden improvement exactly when nothing has improved. The result
+always contains the full set of buckets, empty ones included, so a brand-new
+library draws a flat line rather than a differently-shaped chart.
+
 Enforced by: `answer_health.rs` (empty window; state counts only for states
 that occurred; failure / abstention / fabrication / truncation each raise
 their own line; drift counted against rewritten source with reanchored
-flagged; window + subject scoping; rolled threads counted once) and
-`selfcheck.rs` (an unhealthy window warns while `ok` stays true; an empty
-library raises no warning).
+flagged; window + subject scoping; rolled threads counted once; buckets placed
+by trailing week with blocked folded into failed, out-of-window rows excluded,
+fixed shape including the nonsense-window case) and `selfcheck.rs` (an
+unhealthy window warns while `ok` stays true; an empty library raises no
+warning).
