@@ -10,12 +10,72 @@
   // 检索: what RAG actually did with the question — tokenization, both channels,
   // rank fusion, the final cut — plus the 4-mode retrieval evaluation. Same
   // page because "why was this answer wrong" has one answer chain, not four.
+  // 回答: the honest signals every answer already records — terminal state,
+  // grounding, stripped fabrications, rollover lineage, frozen-quote drift —
+  // aggregated, because separately they are trivia and together they say
+  // whether the failure is the model, the question, or the library.
   import { app } from "../lib/store.svelte";
   import Icon from "../components/Icon.svelte";
   import * as api from "../lib/api";
 
-  type Tab = "bench" | "eval" | "retrieval";
+  type Tab = "bench" | "eval" | "retrieval" | "health";
   let tab = $state<Tab>("bench");
+
+  // Answer health: one read-only aggregate per (window, subject). Refetched
+  // when either changes — the Lab is not a live dashboard, it is a snapshot
+  // you take on purpose.
+  let healthDays = $state(30);
+  const HEALTH_WINDOWS = [
+    { d: 7, label: "7d" },
+    { d: 30, label: "30d" },
+    { d: 90, label: "90d" },
+    { d: 0, label: "全部" },
+  ];
+  let health = $state<api.AnswerHealth | null>(null);
+  let healthErr = $state<string | null>(null);
+  let healthLoading = $state(false);
+  async function loadHealth() {
+    healthLoading = true;
+    healthErr = null;
+    try {
+      health = await api.answerHealth(app.activeSubjectId ?? null, healthDays);
+    } catch (e) {
+      healthErr = String(e);
+    } finally {
+      healthLoading = false;
+    }
+  }
+  $effect(() => {
+    if (tab !== "health") return;
+    void healthDays;
+    void app.activeSubjectId;
+    void loadHealth();
+  });
+  const STATE_LABEL: Record<string, string> = {
+    completed: "正常结束",
+    truncated: "长度截断",
+    blocked: "安全拦截",
+    aborted: "手动中止",
+    failed: "失败",
+    unrecorded: "未记录",
+  };
+  const HEALTH_TONE: Record<string, string> = {
+    completed: "ok",
+    truncated: "warn",
+    blocked: "warn",
+    aborted: "info",
+    failed: "warn",
+    unrecorded: "info",
+  };
+  function share(n: number, d: number) {
+    return d > 0 ? Math.round((n / d) * 100) : 0;
+  }
+  /** Share of checkable snapshots that no longer hold — same definition as
+   *  `SnapshotHealth::drift_pct` on the backend, so the badge and the verdict
+   *  line can never disagree. */
+  function driftPct(s: api.SnapshotHealth) {
+    return share(s.drifted + s.gone, s.checked);
+  }
 
   let infos = $state<api.PromptInfo[]>([]);
   let loading = $state(true);
@@ -279,6 +339,9 @@
       <button class="seg-btn" class:on={tab === "retrieval"} onclick={() => (tab = "retrieval")} role="tab" aria-selected={tab === "retrieval"}>
         <Icon name="search" size={12} /> 检索
       </button>
+      <button class="seg-btn" class:on={tab === "health"} onclick={() => (tab = "health")} role="tab" aria-selected={tab === "health"}>
+        <Icon name="check" size={12} /> 回答
+      </button>
     </div>
   </header>
 
@@ -286,6 +349,96 @@
     <div class="lab-err">{loadErr}</div>
   {:else if loading}
     <div class="lab-empty">正在读取提示词…</div>
+  {:else if tab === "health"}
+    <section class="lab-main lab-wide">
+      <div class="lab-sec first">
+        <div class="lab-sec-h">
+          <h3 class="lab-sec-t">回答健康度</h3>
+          <div class="seg" role="tablist" aria-label="统计窗口">
+            {#each HEALTH_WINDOWS as w (w.d)}
+              <button
+                class="seg-opt"
+                class:on={healthDays === w.d}
+                onclick={() => (healthDays = w.d)}
+                role="tab"
+                aria-selected={healthDays === w.d}>{w.label}</button
+              >
+            {/each}
+          </div>
+        </div>
+        <div class="lab-hint">
+          每个回答本来就在记五件事：怎么结束的、有没有检索到依据、有没有编造引用、是不是接在上一次对话之后、引用快照还对不对得上。分开看都是琐事，合起来能说清问题出在模型、问题，还是库。
+        </div>
+
+        {#if healthErr}
+          <div class="lab-err">{healthErr}</div>
+        {:else if healthLoading && !health}
+          <div class="lab-empty">正在统计…</div>
+        {:else if health}
+          {#if health.answers === 0}
+            <div class="lab-empty">
+              这个窗口里没有回答记录{healthDays > 0 ? `（最近 ${healthDays} 天）` : ""}——先问几个问题再回来看。
+            </div>
+          {:else}
+            <div class="ah-stats">
+              <div class="ah-stat">
+                <span class="ah-v">{health.answers}</span>
+                <span class="ah-k mono">回答</span>
+              </div>
+              <div class="ah-stat">
+                <span class="ah-v">{share(health.grounded, health.answers)}%</span>
+                <span class="ah-k mono">检索有依据</span>
+              </div>
+              <div class="ah-stat">
+                <span class="ah-v">{share(health.cited, health.answers)}%</span>
+                <span class="ah-k mono">行内引用了来源</span>
+              </div>
+              <div class="ah-stat">
+                <span class="ah-v"
+                  >{health.snapshots.checked === 0
+                    ? "—"
+                    : `${100 - driftPct(health.snapshots)}%`}</span
+                >
+                <span class="ah-k mono">引用快照对得上</span>
+              </div>
+            </div>
+
+            <div class="ah-states">
+              {#each health.states as s (s.state)}
+                <div class="ah-row">
+                  <span class="ah-row-k">{STATE_LABEL[s.state] ?? s.state}</span>
+                  <span class="ah-track">
+                    <span
+                      class="ah-fill"
+                      class:warn={HEALTH_TONE[s.state] === "warn"}
+                      class:info={HEALTH_TONE[s.state] === "info"}
+                      style:width={`${Math.max(0, share(s.count, health.answers))}%`}
+                    ></span>
+                  </span>
+                  <span class="ah-row-v mono">{s.count}</span>
+                </div>
+              {/each}
+            </div>
+
+            <ul class="ah-signals">
+              {#each health.signals as s, i (i)}
+                <li class="ah-sig" class:warn={s.level === "warn"} class:ok={s.level === "ok"}>
+                  <span class="ah-dot"></span>{s.text}
+                </li>
+              {/each}
+            </ul>
+
+            <div class="ah-facts mono">
+              伪造引用剥离 {health.fabricated_total} 条（{health.fabricated_answers} 个回答） · 无依据回答
+              {health.abstained} 个 · 接续对话 {health.rolled_threads} 段 · 快照：精确
+              {health.snapshots.exact} / 移位 {health.snapshots.moved} / 与现文不符
+              {health.snapshots.drifted} / 来源已删 {health.snapshots.gone} / 已重锚
+              {health.snapshots.reanchored} / 无快照 {health.snapshots.unchecked}
+            </div>
+          {/if}
+        {/if}
+      </div>
+    </section>
   {:else if !infos.length}
     <div class="lab-empty">还没有可编辑的提示词。</div>
   {:else if tab === "retrieval"}
@@ -938,7 +1091,39 @@
     color: var(--err, #c44); font-size: var(--t-2xs); line-height: 1.5;
   }
 
+  /* ── 回答健康度 ── */
+  .ah-stats {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px; background: var(--border); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; margin: 10px 0;
+  }
+  .ah-stat { background: var(--surface); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .ah-v { font-size: 20px; color: var(--fg-bright); font-variant-numeric: tabular-nums; }
+  .ah-k { font-size:var(--t-2xs); color: var(--fg-faint); }
+  .ah-states { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 4px; }
+  .ah-row { display: grid; grid-template-columns: 74px minmax(0, 1fr) 40px; align-items: center; gap: 8px; }
+  .ah-row-k { font-size: var(--t-2xs); color: var(--fg-muted); }
+  .ah-track { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .ah-fill { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+  .ah-fill.warn { background: var(--warn, #f5a623); }
+  .ah-fill.info { background: var(--fg-faint); }
+  .ah-row-v { font-size: var(--t-2xs); color: var(--fg-faint); text-align: right; }
+  .ah-signals { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ah-sig {
+    display: flex; align-items: flex-start; gap: 7px;
+    font-size: var(--t-xs); line-height: 1.55; color: var(--fg-muted);
+  }
+  .ah-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; background: var(--fg-faint); }
+  .ah-sig.warn .ah-dot { background: var(--warn, #f5a623); }
+  .ah-sig.warn { color: var(--fg-bright); }
+  .ah-sig.ok .ah-dot { background: var(--ok, #3fb950); }
+  .ah-facts {
+    margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--border);
+    font-size: var(--t-2xs); color: var(--fg-faint); line-height: 1.6;
+  }
+
   @media (max-width: 860px) {
+    .ah-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .lab-grid { grid-template-columns: 1fr; }
     .lab-rail { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 8px; }
     .lab-group { width: 100%; margin: 4px 0 2px; }

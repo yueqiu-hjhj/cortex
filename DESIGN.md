@@ -227,3 +227,27 @@ Schema changes are new numbered files in `src-tauri/migrations/`, registered
 in `db.rs`; `user_version` is the count of applied migrations. Never edit a
 shipped migration — the selfcheck compares `user_version` against
 `migration_count()` and the app refuses to look healthy otherwise.
+
+## 12. Answer health is one mechanical page, not a dashboard of vibes
+
+Five honest signals were already recorded per answer — terminal state (0077),
+retrieval accounting (0044), stripped fabrications (0069), rollover lineage
+(0082), frozen-quote drift (0078) — and never read together.
+`answer_health::health` aggregates them for a window and a subject, and its
+verdict lines are fixed thresholds over counts (`>15%` failed+blocked,
+`>40%` abstained, any fabrication, `>10%` snapshot drift). No model explains
+the numbers: a health report that has to be interpreted by the thing it is
+measuring is not a health report.
+
+Two rules keep it honest:
+
+- **No answers means "no answers"**, not a score of zero — an empty window
+  reports that and stops, because a clean sheet and an unmeasured sheet look
+  identical in numbers.
+- Drift is computed by `citesnap::verify_message`, the same call the evidence
+  panel makes, so the badge and the verdict can never disagree.
+
+Enforced by: `answer_health.rs` (empty window; state counts only for states
+that occurred; failure / abstention / fabrication / truncation each raise
+their own line; drift counted against rewritten source with reanchored
+flagged; window + subject scoping; rolled threads counted once).

@@ -911,6 +911,43 @@ export const verifyCitationSnapshots = (subjectId: string, createdAt: number) =>
 export const refreezeCitation = (subjectId: string, createdAt: number, chunkId: string) =>
   invoke<RefreezeOutcome>("refreeze_citation", { subjectId, createdAt, chunkId });
 
+// ---- answer health (all the honest chat signals, aggregated) ----
+export interface StateCount {
+  state: string;
+  count: number;
+}
+export interface SnapshotHealth {
+  checked: number;
+  exact: number;
+  moved: number;
+  drifted: number;
+  gone: number;
+  unchecked: number;
+  reanchored: number;
+}
+export interface HealthSignal {
+  level: "ok" | "info" | "warn";
+  text: string;
+}
+/** One page of "how much can I trust what this library tells me": terminal
+ *  states, grounding, stripped fabrications, rollover lineage and frozen-quote
+ *  drift, all read from what chat already records. */
+export interface AnswerHealth {
+  days: number;
+  answers: number;
+  states: StateCount[];
+  grounded: number;
+  abstained: number;
+  cited: number;
+  fabricated_total: number;
+  fabricated_answers: number;
+  rolled_threads: number;
+  snapshots: SnapshotHealth;
+  signals: HealthSignal[];
+}
+export const answerHealth = (subjectId: string | null, days: number) =>
+  invoke<AnswerHealth>("answer_health", { subjectId, days });
+
 // ---- reverse provenance (KnowNote borrow) ----
 /** One answer that cited a passage, with the question that provoked it. */
 export interface AnswerRef {

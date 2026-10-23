@@ -71,6 +71,7 @@ pub mod visuals;
 pub mod kb;
 pub mod cloze;
 pub mod citesnap;
+pub mod answer_health;
 pub mod backrefs;
 pub mod moc;
 pub mod cross_book;
@@ -756,6 +757,7 @@ pub fn run() {
             cloze::cloze_generate,
             citesnap::verify_citation_snapshots,
             citesnap::refreeze_citation,
+            answer_health::answer_health,
             commands::source_backrefs,
             commands::question_index,
             agents::roles_list,
