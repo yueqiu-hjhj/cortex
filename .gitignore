@@ -87,4 +87,11 @@ src-tauri/binaries/
 # Local UI verification screenshots and browser traces
 .shots/
 .playwright-cli/
+qa-fixtures/
+qa-screens/
+qa-report.html
 Cortex/
+
+# Local run artifacts: e2e demo vault, build/test logs
+.demo-data/
+output/
