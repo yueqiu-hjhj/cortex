@@ -393,3 +393,37 @@ Stop is honoured mid-stream; Claude's events carry text / stop / usage and a
 refusal; input and output token counts survive in different frames; the
 fallback chain switches only before the first delta, and `name()` follows the
 model that served).
+
+## 15. An edit of a file the user owns lands beside it
+
+Every write surface that touches a file the user already has — Word 修订回写
+(`docx::apply_edits`), 表格改单元格 (`xlsx::set_cells`), 改 PPT 文字
+(`pptx::replace_text`) — writes a NEW file and refuses `input == output`. The
+reason is not caution for its own sake: a document a person already has cannot
+be regenerated, so a write into it is a one-way operation over the only copy,
+while a write beside it is reviewable and disposable.
+
+- **The original is read, never rewritten.** xlsx and pptx copy the archive
+  part by part and reassemble it, touching only the sheet or slide parts that
+  the edit names; everything else stays byte-identical. xlsx text goes in as an
+  inline string so `sharedStrings.xml` — an index every other cell depends on —
+  is never renumbered.
+- **The change is reported, not implied.** Every path returns what it touched:
+  `changed` for cells (before → after, old text resolved through
+  sharedStrings), `slides`/`replacements` for decks, `applied`/`skipped` for
+  docx. A find that matches nothing is a `skipped` entry, because silence reads
+  as success.
+- **Addressing must be exact.** An unparsable A1 address, an unknown sheet
+  name, a phrase that is not in any run: each is refused and named. Nothing is
+  written "somewhere close".
+- **A lossy step is counted.** When a replacement spans runs, the paragraph is
+  collapsed into one run carrying the first run's properties — the words are
+  right, the inner formatting is not. That is why it is reported as `merged`
+  instead of being folded into the replacement count.
+
+Enforced by: `office/xlsx.rs` (input byte-identical after a write; styles kept;
+new rows and cells land in order; unknown sheet / bad address refused; a
+cleared cell keeps its style), `office/pptx.rs` (sibling runs and non-slide
+parts untouched; split phrase merged and counted with the first run's `rPr`;
+missing phrase reported; same path and empty find refused) and
+`office/docx.rs` (same-path refusal, unmatched anchors skipped).
