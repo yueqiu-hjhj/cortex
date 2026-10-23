@@ -2518,6 +2518,8 @@ pub async fn chat_answer(
             // Frozen snapshot (0078): the full chunk text, so the evidence
             // can be re-verified against the source long after re-indexing.
             quote: h.text.clone(),
+            superseded_quote: None,
+            reanchored_at: None,
             score: h.score,
             cited: text.contains(&format!("⟦{}", h.source_name)),
         })

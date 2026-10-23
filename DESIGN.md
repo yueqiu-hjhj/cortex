@@ -51,8 +51,29 @@ re-checks each frozen quote against the source's *current* text on demand:
 Complementary to citecheck ("did the model invent this?" → strip before
 display): this answers "does the frozen quote still match the source today?".
 
+**Drift is repairable, not just reportable** (`citesnap::plan_reanchor` →
+`refreeze_citation`). A diagnosis the user can only stare at is half a
+feature; the repair has to be as honest as the check:
+
+- A quote still verbatim in the source is only **relocated** — the span
+  changes, the quotation does not. A re-chunk that also added sentences must
+  never smuggle them into a quote the model never made.
+- Otherwise the cited **chunk** is the last honest handle: its current text
+  becomes the new snapshot, because the citation always meant that chunk.
+- Otherwise **nothing is written**. No prefix matching, no hunting for a
+  look-alike passage — anchoring to something merely similar manufactures
+  evidence, which is the exact failure citecheck exists to prevent.
+- The original quote survives as `superseded_quote` (the *first* repair wins;
+  a later one must not overwrite the original with an intermediate state) and
+  `reanchored_at` dates the repair. Only the `citations` column is rewritten —
+  text, answer state and fabrication count stay exactly as the model left
+  them, so a repair can never masquerade as a new answer.
+
 Enforced by: `citesnap.rs` (span math, moved/drifted/source-gone, whitespace
-fallback, legacy no-quote, DB roundtrip with re-index).
+fallback, legacy no-quote, DB roundtrip with re-index; relocate-without-
+rewriting, chunk refresh, refusal on `text_gone`/`source_gone`/`no_snapshot`,
+original quote preserved across repeated repairs, write-back touches only the
+citations column).
 
 ## 4. Retrieval evidence is precise about what counts (0044/0069)
 

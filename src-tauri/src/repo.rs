@@ -2138,6 +2138,34 @@ pub fn message_citations_at(
     Ok(json.flatten().as_deref().and_then(|s| serde_json::from_str(s).ok()))
 }
 
+/// Rewrite the citations of one assistant message (used by citesnap's
+/// re-anchor: the frozen quote/span is refreshed in place). Only the
+/// `citations` column is touched — text, retrieval meta, answer state and the
+/// fabrication count are exactly what they were, so a repair can never be
+/// mistaken for a new answer.
+pub fn update_message_citations(
+    conn: &Connection,
+    subject_id: &str,
+    created_at: i64,
+    citations: &[Citation],
+) -> Result<()> {
+    let tid = current_thread(conn, subject_id)?;
+    let json = if citations.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(citations)?)
+    };
+    let n = conn.execute(
+        "UPDATE chat_messages SET citations=?3
+         WHERE thread_id=?1 AND created_at=?2 AND role='assistant'",
+        params![tid, created_at, json],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("assistant message at {created_at}")));
+    }
+    Ok(())
+}
+
 /// Persist one retrieval-eval run (the four mode reports as JSON). Returns
 /// its created_at, which doubles as the run's id for the adoption rule's
 /// "strictly before" comparison. Timestamps are forced strictly increasing

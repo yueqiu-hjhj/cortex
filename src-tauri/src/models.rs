@@ -144,6 +144,17 @@ pub struct Citation {
     /// Empty on pre-0078 citations (no snapshot was taken).
     #[serde(default)]
     pub quote: String,
+    /// The ORIGINAL frozen quote, kept when a drifted snapshot is re-anchored
+    /// to the source's current text. Re-anchoring repairs the evidence, it
+    /// never erases what the model actually cited — the audit trail stays.
+    /// Only the first re-anchor sets this: later ones must not overwrite the
+    /// original with an intermediate state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_quote: Option<String>,
+    /// When the snapshot was last re-anchored (ms). The quote above is what
+    /// the source says NOW; `superseded_quote` is what it said then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reanchored_at: Option<i64>,
     #[serde(default)]
     pub score: f32,
     /// True when the generated answer actually references this source. A useful

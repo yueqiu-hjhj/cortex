@@ -104,6 +104,12 @@ export interface Citation {
    *  evidence can be verified long after re-indexing. Empty on pre-0078
    *  citations (no snapshot was taken). */
   quote?: string;
+  /** The ORIGINAL frozen quote, kept when a drifted snapshot was re-anchored
+   *  (see `refreezeCitation`). Re-anchoring repairs the evidence; it never
+   *  erases what the model actually cited. */
+  superseded_quote?: string | null;
+  /** When the snapshot was last re-anchored (ms). */
+  reanchored_at?: number | null;
   score: number;
   cited: boolean;
 }
@@ -114,6 +120,24 @@ export type QuoteCheck =
   | { kind: "moved"; char_start: number; char_end: number }
   | { kind: "drifted" }
   | { kind: "source_gone" };
+/** What re-anchoring a drifted snapshot can honestly do. `unanchorable` is a
+ *  refusal, not a failure: guessing a look-alike passage would manufacture
+ *  evidence. */
+export type Reanchor =
+  | { kind: "relocated"; char_start: number; char_end: number; chunk_id: string | null }
+  | {
+      kind: "from_chunk";
+      chunk_id: string;
+      quote: string;
+      char_start: number | null;
+      char_end: number | null;
+    }
+  | { kind: "unanchorable"; reason: "no_snapshot" | "source_gone" | "text_gone" | string };
+export interface RefreezeOutcome {
+  reanchor: Reanchor;
+  /** The refreshed citation — null when nothing was written. */
+  citation: Citation | null;
+}
 export interface WebImage {
   img: string;
   thumb: string;
@@ -880,6 +904,12 @@ export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { sub
  *  pre-0078 citations with no snapshot. Empty when no such message. */
 export const verifyCitationSnapshots = (subjectId: string, createdAt: number) =>
   invoke<(QuoteCheck | null)[]>("verify_citation_snapshots", { subjectId, createdAt });
+/** Repair ONE drifted citation: re-anchor its frozen quote to the source's
+ *  current text. The original quote is preserved on the citation, so the
+ *  repair stays auditable. Refuses (unanchorable) rather than guessing when
+ *  neither the chunk nor the quoted words survive. */
+export const refreezeCitation = (subjectId: string, createdAt: number, chunkId: string) =>
+  invoke<RefreezeOutcome>("refreeze_citation", { subjectId, createdAt, chunkId });
 
 // ---- reverse provenance (KnowNote borrow) ----
 /** One answer that cited a passage, with the question that provoked it. */

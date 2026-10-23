@@ -300,6 +300,8 @@ mod tests {
                 char_end: None,
                 snippet: "…".into(),
                 quote: "…".into(),
+                superseded_quote: None,
+                reanchored_at: None,
                 score: 0.9,
                 cited: true,
             })

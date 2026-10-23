@@ -755,6 +755,7 @@ pub fn run() {
             kb::kb_context,
             cloze::cloze_generate,
             citesnap::verify_citation_snapshots,
+            citesnap::refreeze_citation,
             commands::source_backrefs,
             commands::question_index,
             agents::roles_list,

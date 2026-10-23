@@ -71,6 +71,56 @@
         .catch(() => {});
     }
   }
+  // Repairing a drifted snapshot (citesnap): re-anchor the frozen quote to the
+  // source's CURRENT text. The backend keeps the original quote on the
+  // citation, and we re-verify from the database afterwards instead of
+  // assuming success — a "fixed" badge that isn't actually fixed would be
+  // worse than the drift it replaced.
+  let refreezing = $state<Record<string, boolean>>({});
+  async function refreezeOne(i: number, c: api.Citation) {
+    const m = messages[i];
+    const subjectId = app.activeSubjectId ?? "";
+    const key = `${i}:${c.chunk_id}`;
+    if (!m?.created_at || !subjectId || refreezing[key]) return;
+    refreezing = { ...refreezing, [key]: true };
+    try {
+      const out = await api.refreezeCitation(subjectId, m.created_at, c.chunk_id);
+      if (!out.citation) {
+        const why = out.reanchor.kind === "unanchorable" ? out.reanchor.reason : "";
+        app.pushToast({
+          kind: "warning",
+          title: "这条引用无法重锚",
+          body:
+            why === "source_gone"
+              ? "来源已被删除，没有可对照的现文。"
+              : why === "text_gone"
+                ? "原引文和它所在的分块都已在现文中消失——照着相似段落重锚就是凭空造证据，所以不做。"
+                : "这条引用没有冻结快照（0078 之前的回答），无从重锚。",
+        });
+        return;
+      }
+      const fixed = out.citation;
+      const oldChunk = c.chunk_id;
+      messages = messages.map((msg, mi) =>
+        mi === i
+          ? { ...msg, citations: (msg.citations ?? []).map((x) => (x.chunk_id === oldChunk ? fixed : x)) }
+          : msg,
+      );
+      const checks = await api
+        .verifyCitationSnapshots(subjectId, m.created_at)
+        .catch(() => null);
+      if (checks) snapChecks = { ...snapChecks, [i]: checks };
+      app.pushToast({
+        kind: "success",
+        title: out.reanchor.kind === "relocated" ? "已按现文重定位这条引用" : "已按现文重新冻结这条引用",
+        body: "原引文保留在这条引用的快照里，随时可查。",
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "重锚失败", body: String(e) });
+    } finally {
+      refreezing = { ...refreezing, [key]: false };
+    }
+  }
   let draft = $state("");
   // Streaming + suggestions now live in the store (app.sendChat) so a reply keeps
   // going even if this panel unmounts. We only surface the live text when it's for
@@ -852,38 +902,56 @@
                     <div class="evidence-list">
                       {#each cites as c, ci (c.chunk_id)}
                         {@const snap = snapChecks[i]?.[ci] ?? null}
-                        <button
-                          type="button"
-                          class="evidence-chip"
-                          class:is-cited={c.cited}
-                          class:is-uncited-chip={!c.cited}
-                          title={`${c.source_name}${c.loc ? " · " + c.loc : ""}${
+                        <div class="ec-cell">
+                          <button
+                            type="button"
+                            class="evidence-chip"
+                            class:is-cited={c.cited}
+                            class:is-uncited-chip={!c.cited}
+                            title={`${c.source_name}${c.loc ? " · " + c.loc : ""}${
                         c.char_start != null && c.char_end != null
                           ? ` · chars ${c.char_start}-${c.char_end}`
                           : ""
                       }\n${c.snippet}`}
-                          onclick={() => openEvidence(c)}
-                        >
-                          <Icon name={c.cited ? "book" : "warn"} size={11} />
-                          <span class="ec-source">{c.source_name}</span>
-                          {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
-                          {#if snap && snap.kind === "moved"}
-                            <span
-                              class="ec-snap ec-snap-moved"
-                              title="快照明文仍在源文里，但位置随重索引移动了——引用依然成立"
-                              >⟲ 已移位</span
+                            onclick={() => openEvidence(c)}
+                          >
+                            <Icon name={c.cited ? "book" : "warn"} size={11} />
+                            <span class="ec-source">{c.source_name}</span>
+                            {#if c.loc}<span class="ec-loc">{c.loc}</span>{/if}
+                            {#if c.reanchored_at != null}
+                              <span
+                                class="ec-snap ec-snap-reanchored"
+                                title={`这条引文已按来源现文重新冻结（${new Date(c.reanchored_at).toLocaleString()}）。原引文保留：${(c.superseded_quote ?? "").slice(0, 200)}`}
+                                >✎ 已重锚</span
+                              >
+                            {:else if snap && snap.kind === "moved"}
+                              <span
+                                class="ec-snap ec-snap-moved"
+                                title="快照明文仍在源文里，但位置随重索引移动了——引用依然成立"
+                                >⟲ 已移位</span
+                              >
+                            {:else if snap && snap.kind === "drifted"}
+                              <span
+                                class="ec-snap ec-snap-drift"
+                                title="这条引用冻结时的原文，已经不在来源的当前文本里了（来源被改过或重新提取过）——证据待人工核对"
+                                >⚠ 与现文不符</span
+                              >
+                            {:else if snap && snap.kind === "source_gone"}
+                              <span class="ec-snap ec-snap-drift" title="来源已被删除，无从核对">⚠ 来源已删</span>
+                            {/if}
+                            {#if c.score != null}<span class="ec-score mono">{Math.round(c.score * 100)}%</span>{/if}
+                          </button>
+                          {#if snap && snap.kind === "drifted"}
+                            <button
+                              type="button"
+                              class="ec-fix"
+                              disabled={!!refreezing[`${i}:${c.chunk_id}`]}
+                              title="用来源现在的文本重新冻结这条引文（来源被改写或重新提取过时用）。原引文会保留，重锚留下痕迹。"
+                              onclick={() => refreezeOne(i, c)}
+                              >{refreezing[`${i}:${c.chunk_id}`] ? "…" : "重锚"}</button
                             >
-                          {:else if snap && snap.kind === "drifted"}
-                            <span
-                              class="ec-snap ec-snap-drift"
-                              title="这条引用冻结时的原文，已经不在来源的当前文本里了（来源被改过或重新提取过）——证据待人工核对"
-                              >⚠ 与现文不符</span
-                            >
-                          {:else if snap && snap.kind === "source_gone"}
-                            <span class="ec-snap ec-snap-drift" title="来源已被删除，无从核对">⚠ 来源已删</span>
                           {/if}
-                          {#if c.score != null}<span class="ec-score mono">{Math.round(c.score * 100)}%</span>{/if}
-                        </button>
+                        </div>
                       {/each}
                     </div>
                     <div class="evidence-trace mono">
@@ -1310,6 +1378,24 @@
     border-color: color-mix(in oklab, var(--warn, #f5a623) 45%, transparent);
     background: color-mix(in oklab, var(--warn, #f5a623) 12%, transparent);
   }
+  /* Re-anchored (citesnap repair): the snapshot now matches the current
+     source, and the citation carries the original quote it replaced. */
+  .ec-snap-reanchored {
+    color: var(--accent, #7c8cf8);
+    border-color: color-mix(in oklab, var(--accent, #7c8cf8) 40%, transparent);
+    background: color-mix(in oklab, var(--accent, #7c8cf8) 10%, transparent);
+  }
+  .ec-cell { display: inline-flex; align-items: stretch; gap: 3px; max-width: 100%; }
+  .ec-fix {
+    flex: none; padding: 0 7px; border-radius: 6px;
+    border: 1px dashed color-mix(in oklab, var(--warn, #f5a623) 55%, var(--border));
+    background: transparent; color: var(--warn, #f5a623);
+    font: inherit; font-size: 10.5px; cursor: pointer;
+  }
+  .ec-fix:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--warn, #f5a623) 14%, transparent);
+  }
+  .ec-fix:disabled { opacity: 0.55; cursor: progress; }
   .chat-img {
     display: block; width: 116px; height: 86px; border-radius: var(--rad-2);
     overflow: hidden; border: 1px solid var(--border); background: var(--surface-2);
