@@ -3419,6 +3419,11 @@ export interface EvalRow {
   kind: string;
   /** Score of the top-1 hit — the abstention signal. */
   top1: number;
+  /** Language of the query: zh / en / mix. */
+  lang: string;
+  /** Rank of the expected source in the keyword channel alone. null both when
+   *  the mode never ran that channel and when it ran and missed. */
+  kw_rank: number | null;
 }
 
 /** One stratum's slice of a report. */
@@ -3428,6 +3433,20 @@ export interface Stratum {
   recall_at_k: number;
   mrr: number;
   mean_top1: number;
+}
+
+/** One language's slice of a report, plus the share of cases the keyword
+ *  channel alone got right. `answerable` is the denominator for recall/MRR and
+ *  for `keyword_hit_rate`: unanswerable cases have no expected source, so they
+ *  are excluded here rather than charged to whichever language holds them. */
+export interface LangSlice {
+  lang: string;
+  cases: number;
+  answerable: number;
+  recall_at_k: number;
+  mrr: number;
+  keyword_hits: number;
+  keyword_hit_rate: number;
 }
 
 /** Answerable-vs-unanswerable score separation. When this collapses,
@@ -3446,12 +3465,17 @@ export interface EvalReport {
   space: string;
   /** Canonical subject scope for real-corpus runs, or "synthetic". */
   scope: string;
+  /** Identity of the measurement fixture (corpus fingerprint, or "real").
+   *  Runs are only compared against a baseline with the same value. */
+  corpus: string;
   evaluated: number;
   recall_at_k: number;
   mrr: number;
   rows: EvalRow[];
   /** Per-stratum breakdown (same metrics, sliced by case kind). */
   strata: Stratum[];
+  /** Per-language breakdown, in zh / en / mix order. */
+  langs: LangSlice[];
   /** Score separation, when the run has both answerable and unanswerable cases. */
   separation?: Separation | null;
 }

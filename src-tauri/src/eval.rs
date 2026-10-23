@@ -40,6 +40,26 @@
 //!   "no measurable change" is its own verdict. The rule judges
 //!   [`VERDICT_MODE`] — the shipping config — not whichever mode happens to
 //!   look best today.
+//!
+//! A fourth addition is a **language axis**. "Chinese retrieval works here" was
+//! an unfalsifiable claim: the corpus was English-only, so no change could make
+//! it worse. Every case now carries a language and every report slices the
+//! metrics by it, but the number that actually guards the Chinese path is
+//! [`LangSlice::keyword_hit_rate`] — the share of cases where the keyword
+//! channel ALONE ranked the right source. Han text has no spaces, so the
+//! keyword leg tokenises it into overlapping bigrams ([`query_terms`]); replace
+//! that with whitespace or whole-run tokenisation — what a default FTS5 setup
+//! does — and Chinese cases stop matching *silently*. Recall under a hybrid
+//! mode drifts by however much the vector leg happens to be worth; the keyword
+//! hit rate drops to zero, which cannot be mistaken for tuning noise.
+//!
+//! The offline [`crate::embed::StubEmbedder`] hashes alphanumeric runs, so a
+//! Han clause is one token there — the same fault. That is why the zh numbers
+//! under the stub measure the keyword leg almost exclusively, and why the
+//! `vector` row for Chinese looks so much worse than `hybrid`: it is a
+//! deliberate lower bound, not a bug in this harness. A configured
+//! multilingual embedder (`multilingual-e5-small`) lifts the vector leg too,
+//! and `retrieval_eval_real` then reports the real library's numbers.
 
 use crate::embed::Embedder;
 use crate::error::Result;
@@ -55,9 +75,17 @@ pub const DEFAULT_K: usize = 5;
 /// `origin = "eval"` marks them for cleanup.
 const SUBJECT_NAME: &str = "(eval) 检索评测";
 
-/// (source name, chunks). Twelve real topics plus two long "reading list"
+/// (source name, chunks). Sixteen real topics plus three long "reading list"
 /// documents that name-drop many topics once — the shape that fools pure
 /// similarity ranking.
+///
+/// Topics are split by language on purpose: the twelve English notes cover
+/// classic ML, the six Chinese notes cover topics the English set does NOT
+/// contain (SVM, trees, ensembles, RL, GNN, time series), and the mixed-script
+/// notes do what Chinese study notes actually do — Chinese prose with English
+/// technical terms left untranslated. Disjoint topics mean each query has
+/// exactly one right answer, so a per-language recall number cannot be
+/// inflated by a lucky cross-language match on a duplicate document.
 fn corpus() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
         (
@@ -224,12 +252,123 @@ fn corpus() -> Vec<(&'static str, Vec<&'static str>)> {
                  notes about coffee, parking, and the department printer.",
             ],
         ),
+        // ---- Chinese notes. Topics disjoint from the English set above, so a
+        // zh query has exactly one correct source.
+        (
+            "svm-zh.md",
+            vec![
+                "支持向量机寻找一个能把两类样本分开、并且间隔最大的超平面。最终决定这个平面\
+                 的只有落在间隔边界上的支持向量，其余样本删掉也不会改变结果。",
+                "核技巧把样本隐式地映射到高维空间：只要在高维里线性可分，就不必显式算出映射\
+                 后的坐标。软间隔用松弛变量允许少量样本越界，惩罚系数控制这种容忍的代价。",
+            ],
+        ),
+        (
+            "trees-zh.md",
+            vec![
+                "决策树每次分裂都选让信息增益最大的特征。熵衡量标签的不确定性，一次划分之后\
+                 熵下降得越多，说明这次分裂越有价值。",
+                "预剪枝在树长深之前就停止分裂，后剪枝先让树长满、再自底向上砍掉收益为负的\
+                 子树。剪枝效果要用验证集评估，训练集上的增益会高估。",
+            ],
+        ),
+        (
+            "ensemble-zh.md",
+            vec![
+                "Bagging 对训练集做有放回的重采样，训练多个基学习器再投票，主要降低方差。\
+                 随机森林在每次分裂时限制候选特征，让树与树之间更不相关。",
+                "Boosting 串行地训练弱学习器，每个新模型更关注前一轮分错的样本，主要降低\
+                 偏差。学习率缩小每棵树的贡献，用来抑制过拟合。",
+            ],
+        ),
+        (
+            "rl-zh.md",
+            vec![
+                "Q 学习按贝尔曼方程迭代更新动作价值，不需要环境模型。折扣因子决定未来奖励\
+                 有百分之多少计入当前这一步的价值。",
+                "探索与利用的取舍决定了智能体会不会困在次优策略里。ε 贪心以一定概率随机\
+                 选动作，衰减的 ε 让前期多探索、后期多利用。",
+            ],
+        ),
+        (
+            "gnn-zh.md",
+            vec![
+                "图神经网络用消息传递聚合邻居的特征来更新节点表示。邻接矩阵的归一化方式\
+                 决定了聚合时每个邻居占多大权重。",
+                "层数太深会出现过平滑：所有节点的表示收敛到同一个向量，彼此再也分不开。\
+                 残差连接和随机丢边都能缓解这个问题。",
+            ],
+        ),
+        (
+            "timeseries-zh.md",
+            vec![
+                "ARIMA 把序列拆成自回归、差分和移动平均三部分。差分用来把非平稳序列变成\
+                 平稳序列，差分阶数由单位根检验确定。",
+                "自相关函数衡量序列与自身滞后版本的相似度，拖尾和截尾的形状用来给自回归与\
+                 移动平均的阶数定阶。季节性要另外用 SARIMA 建模。",
+            ],
+        ),
+        // Mixed script: Chinese prose, English terms left as they are. This is
+        // how a Chinese student's own notes on an English paper actually read.
+        (
+            "mix-vit.md",
+            vec![
+                "ViT 把图像切成 patch，当成 token 序列送进 transformer，因此几乎没有卷积\
+                 自带的那种 inductive bias，在小数据集上往往打不过 CNN。",
+                "CNN 的平移等变性来自权重共享和局部感受野。ViT 要补上缺少的先验，就得靠\
+                 大规模预训练或者很强的数据增强。",
+            ],
+        ),
+        (
+            "mix-moe.md",
+            vec![
+                "Mixture of Experts 把前馈层换成若干个 expert，router 为每个 token 选 top-k\
+                 个 expert，于是参数量很大而单次计算量很小。",
+                "负载不均衡会让少数 expert 被打爆、其余长期闲置。训练时用 auxiliary loss\
+                 惩罚路由分布过于集中，把 token 摊开。",
+            ],
+        ),
+        (
+            "mix-diffusion.md",
+            vec![
+                "Diffusion 模型的前向过程逐步加高斯噪声，反向过程训练一个网络预测每一步加\
+                 进去的噪声，采样就是从纯噪声开始逐步去噪。",
+                "classifier-free guidance 把有条件与无条件的预测做外推，guidance scale 越大\
+                 越贴着提示词，但多样性和真实感都会下降。",
+            ],
+        ),
+        // The Chinese counterpart of reading-list.md: name-drops every zh topic
+        // once, so the same crowding effect has to be handled in the Chinese
+        // path too — a decoy that only exists in English would make zh recall
+        // look better than the English path for no reason worth having.
+        (
+            "reading-list-zh.md",
+            vec![
+                "中文读书笔记 第一部分：支持向量机、核技巧、决策树与信息增益、集成学习、\
+                 随机森林为什么降方差。",
+                "中文读书笔记 第二部分：Q 学习、探索与利用、图神经网络的消息传递、时间序列\
+                 的平稳性检验、ViT 的归纳偏置。",
+                "中文读书笔记 第三部分：ARIMA 定阶、过平滑、软间隔、boosting 的学习率、\
+                 混合专家的路由。",
+            ],
+        ),
     ]
 }
 
-/// Queries with the source whose chunk should rank first, plus a stratum.
-/// Strata make the report stratified (KnowNote borrow): a change that lifts
-/// factual recall while quietly wrecking conceptual questions is not an
+/// Language tags for cases. Reported in this order: the Chinese numbers lead
+/// because they are the ones this project claims an edge on.
+const ZH: &str = "zh";
+const EN: &str = "en";
+/// Chinese prose with English terms left untranslated — the shape of a
+/// Chinese student's notes on an English paper, and the shape that a
+/// word-based tokeniser mishandles worst (half the tokens have spaces, half
+/// don't).
+const MIX: &str = "mix";
+const LANGS: [&str; 3] = [ZH, EN, MIX];
+
+/// Queries with the source whose chunk should rank first, plus a stratum and a
+/// language. Strata make the report stratified (KnowNote borrow): a change that
+/// lifts factual recall while quietly wrecking conceptual questions is not an
 /// improvement, and an aggregate number hides exactly that.
 ///
 ///   factual      definitional lookups — the easiest shape
@@ -239,34 +378,60 @@ fn corpus() -> Vec<(&'static str, Vec<&'static str>)> {
 ///                Retrieval has no right answer here; what matters is that it
 ///                scores them clearly BELOW the answerable strata, because
 ///                that gap is what makes the 零命中 badge honest.
-fn cases() -> Vec<(&'static str, &'static str, &'static str)> {
+fn cases() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     vec![
-        ("how do bayesian networks encode conditional independence", "bayes-notes.md", "conceptual"),
-        ("what does d-separation tell you about conditional independence", "bayes-notes.md", "conceptual"),
-        ("explain gradient descent and the learning rate", "gradient-descent.md", "conceptual"),
-        ("how does momentum damp oscillation in gradient descent", "gradient-descent.md", "conceptual"),
-        ("why does L2 regularisation penalise large weights", "regularisation.md", "conceptual"),
-        ("how does dropout reduce overfitting during training", "regularisation.md", "conceptual"),
-        ("how does multi head attention work in the transformer", "transformer.md", "conceptual"),
-        ("why are positional encodings needed for attention", "transformer.md", "conceptual"),
-        ("how does k means clustering assign points to centroids", "kmeans.md", "conceptual"),
-        ("what is the difference between underfitting and overfitting", "bias-variance.md", "conceptual"),
-        ("how does the chain rule give backpropagation its gradients", "backprop.md", "conceptual"),
-        ("what makes vanishing gradients slow early layers", "backprop.md", "conceptual"),
-        ("what does the prior and likelihood give in bayes theorem", "bayes-theorem.md", "factual"),
-        ("which axis captures the largest variance in principal component analysis", "dimensionality.md", "factual"),
-        ("why subtract the maximum logit before softmax", "softmax.md", "factual"),
-        ("how does weight sharing help convolutional layers", "convolution.md", "conceptual"),
-        ("what property does a markov chain transition matrix have", "markov.md", "factual"),
+        ("how do bayesian networks encode conditional independence", "bayes-notes.md", "conceptual", EN),
+        ("what does d-separation tell you about conditional independence", "bayes-notes.md", "conceptual", EN),
+        ("explain gradient descent and the learning rate", "gradient-descent.md", "conceptual", EN),
+        ("how does momentum damp oscillation in gradient descent", "gradient-descent.md", "conceptual", EN),
+        ("why does L2 regularisation penalise large weights", "regularisation.md", "conceptual", EN),
+        ("how does dropout reduce overfitting during training", "regularisation.md", "conceptual", EN),
+        ("how does multi head attention work in the transformer", "transformer.md", "conceptual", EN),
+        ("why are positional encodings needed for attention", "transformer.md", "conceptual", EN),
+        ("how does k means clustering assign points to centroids", "kmeans.md", "conceptual", EN),
+        ("what is the difference between underfitting and overfitting", "bias-variance.md", "conceptual", EN),
+        ("how does the chain rule give backpropagation its gradients", "backprop.md", "conceptual", EN),
+        ("what makes vanishing gradients slow early layers", "backprop.md", "conceptual", EN),
+        ("what does the prior and likelihood give in bayes theorem", "bayes-theorem.md", "factual", EN),
+        ("which axis captures the largest variance in principal component analysis", "dimensionality.md", "factual", EN),
+        ("why subtract the maximum logit before softmax", "softmax.md", "factual", EN),
+        ("how does weight sharing help convolutional layers", "convolution.md", "conceptual", EN),
+        ("what property does a markov chain transition matrix have", "markov.md", "factual", EN),
+        // ---- Chinese. Paraphrased the way a student asks themselves, and
+        // deliberately NOT quoting a whole clause from the note: a query that
+        // shares a long verbatim substring would be found by any tokeniser and
+        // would prove nothing about the Chinese path.
+        ("支持向量机到底靠哪些样本决定分类边界", "svm-zh.md", "conceptual", ZH),
+        ("核技巧是怎么绕开显式计算高维映射的", "svm-zh.md", "conceptual", ZH),
+        ("软间隔里的松弛变量和惩罚系数各自管什么", "svm-zh.md", "factual", ZH),
+        ("决策树按什么准则挑选划分特征", "trees-zh.md", "conceptual", ZH),
+        ("预剪枝和后剪枝分别在哪一步停下来", "trees-zh.md", "conceptual", ZH),
+        ("bagging 为什么主要是降方差而不是降偏差", "ensemble-zh.md", "conceptual", ZH),
+        ("boosting 怎么让新模型盯着上一轮分错的样本", "ensemble-zh.md", "conceptual", ZH),
+        ("Q 学习里的折扣因子影响的是什么", "rl-zh.md", "conceptual", ZH),
+        ("ε 贪心如何权衡探索和利用", "rl-zh.md", "conceptual", ZH),
+        ("图神经网络靠什么把邻居特征聚合起来", "gnn-zh.md", "conceptual", ZH),
+        ("层数太深为什么会让节点表示分不开", "gnn-zh.md", "conceptual", ZH),
+        ("差分这一步在 ARIMA 里解决什么问题", "timeseries-zh.md", "conceptual", ZH),
+        ("自相关函数的拖尾和截尾怎么用来定阶", "timeseries-zh.md", "factual", ZH),
+        // ---- Mixed script: enough Chinese to need bigrams, enough English to
+        // need word tokens. A tokeniser that only does one of the two fails
+        // here while still passing the en and zh strata.
+        ("ViT 为什么缺少卷积那种 inductive bias", "mix-vit.md", "conceptual", MIX),
+        ("图像切成 patch 当 token 之后平移等变性去哪了", "mix-vit.md", "conceptual", MIX),
+        ("Mixture of Experts 的 router 怎么给 token 挑 expert", "mix-moe.md", "conceptual", MIX),
+        ("expert 负载不均为什么需要 auxiliary loss 来摊平", "mix-moe.md", "conceptual", MIX),
+        ("diffusion 的反向过程在预测什么东西", "mix-diffusion.md", "conceptual", MIX),
+        ("classifier-free guidance 的 scale 调大会牺牲什么", "mix-diffusion.md", "conceptual", MIX),
         // Abstention set: nothing in a machine-learning textbook corpus answers
         // these. They exist to catch a retrieval change that makes everything
         // look relevant.
-        ("how do i fix a flat bicycle tire", "", "unanswerable"),
-        ("what is the boiling point of mercury at sea level", "", "unanswerable"),
-        ("who won the 2018 football world cup final", "", "unanswerable"),
-        ("how do i renew my passport before it expires", "", "unanswerable"),
-        ("what causes ocean tides to rise and fall", "", "unanswerable"),
-        ("how do i feed a sourdough starter", "", "unanswerable"),
+        ("how do i fix a flat bicycle tire", "", "unanswerable", EN),
+        ("what is the boiling point of mercury at sea level", "", "unanswerable", EN),
+        ("who won the 2018 football world cup final", "", "unanswerable", EN),
+        ("how do i renew my passport before it expires", "", "unanswerable", EN),
+        ("what causes ocean tides to rise and fall", "", "unanswerable", EN),
+        ("how do i feed a sourdough starter", "", "unanswerable", EN),
     ]
 }
 
@@ -284,18 +449,64 @@ pub struct EvalRow {
     /// Score of the top-1 hit. The abstention signal: unanswerable queries
     /// must score clearly below answerable ones.
     pub top1: f32,
+    /// Language of the query: zh / en / mix. Empty in reports stored before
+    /// the language axis existed.
+    #[serde(default)]
+    pub lang: String,
+    /// 1-based rank of the expected source in the KEYWORD channel alone, before
+    /// fusion. `None` in two different situations that must stay distinct to
+    /// the reader: the mode never ran the keyword leg (plain `vector`), or the
+    /// leg ran and missed (a dead Han tokeniser looks exactly like this).
+    /// [`LangSlice::keyword_hit_rate`] aggregates the latter; the mode name
+    /// tells you which one you are looking at.
+    #[serde(default)]
+    pub kw_rank: Option<usize>,
 }
 
 /// One stratum's slice of a report. Aggregates lie when strata move in
 /// opposite directions, so every metric is reported per stratum too.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Stratum {
+    /// The slice label — the case kind for [`EvalReport::strata`], the language
+    /// for [`EvalReport::langs`].
     pub kind: String,
     pub cases: usize,
     pub recall_at_k: f32,
     pub mrr: f32,
     /// Mean top-1 score inside this stratum.
     pub mean_top1: f32,
+}
+
+/// One language's slice of a report, plus the number that only exists per
+/// language: how often the keyword channel on its own found the right source.
+///
+/// Recall tells you the pipeline as a whole still works. It does not tell you
+/// WHICH leg did the work, and for Chinese one leg is load-bearing: the vector
+/// leg needs a multilingual model, so on the offline stub (and for anyone who
+/// never downloaded one) recall for Chinese rests on bigram keyword matching.
+/// `keyword_hit_rate` is that dependency made visible — and it is the only
+/// number in this harness that goes to exactly zero when Han tokenisation
+/// breaks, instead of drifting.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LangSlice {
+    /// zh / en / mix.
+    pub lang: String,
+    /// Every case in this language, answerable or not.
+    pub cases: usize,
+    /// Cases in this language with an expected source. The recall/MRR below
+    /// divide by THIS, not by `cases` — an unanswerable case has no right
+    /// answer, so counting it against the language that happens to hold the
+    /// abstention set would report "Chinese retrieves better than English" for
+    /// a reason that has nothing to do with either language.
+    pub answerable: usize,
+    /// Recall over the answerable cases of this language.
+    pub recall_at_k: f32,
+    pub mrr: f32,
+    /// Cases the keyword channel alone ranked correctly.
+    pub keyword_hits: usize,
+    /// `keyword_hits` over `answerable`. 0.0 for the modes that never run the
+    /// keyword leg.
+    pub keyword_hit_rate: f32,
 }
 
 /// How far apart the answerable strata and the unanswerable stratum sit.
@@ -322,6 +533,13 @@ pub struct EvalReport {
     /// Canonical subject scope for real-corpus runs, or `synthetic`.
     #[serde(default)]
     pub scope: String,
+    /// Identity of the measurement fixture: a fingerprint of the synthetic
+    /// corpus plus its cases, or `real` for a run over the user's own library.
+    /// Two runs are only comparable when this matches — otherwise changing the
+    /// corpus would silently be read as a retrieval improvement. Empty for
+    /// reports stored before this field existed, which therefore never match.
+    #[serde(default)]
+    pub corpus: String,
     pub evaluated: usize,
     /// Share of queries whose expected source appears in the top k.
     pub recall_at_k: f32,
@@ -330,12 +548,49 @@ pub struct EvalReport {
     pub rows: Vec<EvalRow>,
     /// Per-stratum breakdown (same metrics, sliced by case kind).
     pub strata: Vec<Stratum>,
+    /// Per-language breakdown, in [`LANGS`] order. Empty for reports stored
+    /// before the language axis existed.
+    #[serde(default)]
+    pub langs: Vec<LangSlice>,
     /// Answerable-vs-unanswerable score separation, when the run has both.
     pub separation: Option<Separation>,
 }
 
 pub const MODES: [&str; 4] = ["vector", "rerank", "hybrid", "hybrid+rerank"];
 pub const SYNTHETIC_SCOPE: &str = "synthetic";
+
+/// Identity of the synthetic fixture: a fingerprint of every corpus chunk and
+/// every case. Any edit to [`corpus`] or [`cases`] changes it, which is the
+/// point — numbers measured on one fixture must never be compared against a
+/// different one, or adding (say) harder Chinese documents would be read as a
+/// retrieval regression.
+///
+/// FNV-1a rather than `std::hash::DefaultHasher` because this string is
+/// persisted and compared across app versions: SipHash's output is not
+/// contractual, and a fingerprint that changed under a toolchain upgrade would
+/// silently disable the adoption rule instead of failing loudly.
+fn fixture_id() -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    fn eat(h: &mut u64, s: &str) {
+        for b in s.as_bytes() {
+            *h ^= *b as u64;
+            *h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    for (name, chunks) in corpus() {
+        eat(&mut h, name);
+        for c in chunks {
+            eat(&mut h, c);
+        }
+    }
+    for (q, e, k, l) in cases() {
+        eat(&mut h, q);
+        eat(&mut h, e);
+        eat(&mut h, k);
+        eat(&mut h, l);
+    }
+    format!("syn:{:012x}", h & 0xffff_ffff_ffff)
+}
 
 /// Canonical identity for a real-corpus subject selection. None and an empty
 /// list both mean "all real subjects"; selected ids are sorted so checkbox
@@ -433,6 +688,10 @@ pub struct EvalQuery {
     pub vec: Vec<f32>,
     /// Stratum: factual / conceptual / unanswerable (synthetic) or real.
     pub kind: String,
+    /// Language: zh / en / mix. For real-corpus runs it is derived from the
+    /// sampled query terms, so a library that is half Chinese shows up in the
+    /// per-language table as half Chinese.
+    pub lang: String,
     /// Embedding space of the embedder that produced `vec` (0081).
     pub space: String,
 }
@@ -440,20 +699,21 @@ pub struct EvalQuery {
 /// Embed every eval query in one call -- again so the slow part happens in the
 /// command layer's blocking hop, not once per mode.
 pub fn embed_queries(embedder: &dyn Embedder) -> Result<Vec<EvalQuery>> {
-    let queries: Vec<(String, String, String)> = cases()
+    let queries: Vec<(String, String, String, String)> = cases()
         .into_iter()
-        .map(|(q, e, k)| (q.to_string(), e.to_string(), k.to_string()))
+        .map(|(q, e, k, l)| (q.to_string(), e.to_string(), k.to_string(), l.to_string()))
         .collect();
-    let vecs = embedder.embed(&queries.iter().map(|(q, _, _)| q.clone()).collect::<Vec<_>>())?;
+    let vecs = embedder.embed(&queries.iter().map(|(q, _, _, _)| q.clone()).collect::<Vec<_>>())?;
     let space = embedder.space().to_string();
     Ok(queries
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect, kind), vec)| EvalQuery {
+        .map(|((query, expect, kind, lang), vec)| EvalQuery {
             query,
             expect,
             vec,
             kind,
+            lang,
             space: space.clone(),
         })
         .collect())
@@ -497,8 +757,19 @@ pub fn score(
         // eval corpus is seeded with the new embedder, and mixing spaces would
         // score garbage against garbage (or nothing at all).
         let mut hits = repo::search_chunks_in_space(conn, None, &q.vec, k * 4, &q.space)?;
+        // Rank of the expected source in the keyword channel ALONE, captured
+        // before fusion overwrites the ranking. This is the number that shows
+        // whether the leg contributed anything, as opposed to whether the
+        // pipeline as a whole happened to get there.
+        let mut kw_rank = None;
         if mode.starts_with("hybrid") {
             let keyword = repo::keyword_search_chunks(conn, None, None, &q.query, k * 4)?;
+            kw_rank = keyword
+                .iter()
+                .take(k)
+                .map(|h| h.source_name.as_str())
+                .position(|s| s == q.expect.as_str())
+                .map(|i| i + 1);
             hits = repo::rrf_merge(&[hits, keyword], k * 4);
         }
         if mode.ends_with("rerank") {
@@ -523,22 +794,31 @@ pub fn score(
             rank,
             kind: q.kind.clone(),
             top1,
+            lang: q.lang.clone(),
+            kw_rank,
         });
     }
 
     let n = rows.len().max(1);
     let strata = strata_of(&rows);
+    let langs = langs_of(&rows, k);
     let separation = separation_of(&strata);
     Ok(EvalReport {
         mode: mode.to_string(),
         k,
         space: space.to_string(),
         scope: scope.to_string(),
+        corpus: if scope == SYNTHETIC_SCOPE {
+            fixture_id()
+        } else {
+            "real".to_string()
+        },
         evaluated: rows.len(),
         recall_at_k: hit_count as f32 / n as f32,
         mrr: rr_sum / n as f32,
         rows,
         strata,
+        langs,
         separation,
     })
 }
@@ -565,6 +845,39 @@ fn strata_of(rows: &[EvalRow]) -> Vec<Stratum> {
                     .sum::<f32>()
                     / n as f32,
                 mean_top1: sub.iter().map(|r| r.top1).sum::<f32>() / n as f32,
+            }
+        })
+        .collect()
+}
+
+/// Per-language metrics, in [`LANGS`] order so the table does not reshuffle
+/// between runs. Unknown tags sort last, alphabetically.
+fn langs_of(rows: &[EvalRow], k: usize) -> Vec<LangSlice> {
+    let mut seen: Vec<String> = rows.iter().map(|r| r.lang.clone()).collect();
+    seen.sort();
+    seen.dedup();
+    seen.sort_by_key(|l| LANGS.iter().position(|x| x == l).unwrap_or(LANGS.len()));
+    seen.iter()
+        .map(|lang| {
+            let all: Vec<&EvalRow> = rows.iter().filter(|r| &r.lang == lang).collect();
+            let scored: Vec<&&EvalRow> = all.iter().filter(|r| !r.expect.is_empty()).collect();
+            let n = scored.len().max(1);
+            let keyword_hits = scored
+                .iter()
+                .filter(|r| r.kw_rank.is_some_and(|x| x <= k))
+                .count();
+            LangSlice {
+                lang: lang.clone(),
+                cases: all.len(),
+                answerable: scored.len(),
+                recall_at_k: scored.iter().filter(|r| r.rank.is_some()).count() as f32 / n as f32,
+                mrr: scored
+                    .iter()
+                    .map(|r| r.rank.map(|x| 1.0 / x as f32).unwrap_or(0.0))
+                    .sum::<f32>()
+                    / n as f32,
+                keyword_hits,
+                keyword_hit_rate: keyword_hits as f32 / n as f32,
             }
         })
         .collect()
@@ -613,8 +926,9 @@ pub struct EvalOutcome {
 }
 
 /// Two reports belong to the same comparison bucket only when every retrieval
-/// input that changes the metric is identical. Old reports have empty config
-/// fields and therefore never match a new run.
+/// input that changes the metric is identical — including the fixture itself
+/// ([`EvalReport::corpus`]). Old reports have empty config fields and therefore
+/// never match a new run.
 pub(crate) fn same_eval_config(a: &EvalReport, b: &EvalReport) -> bool {
     a.mode == b.mode
         && a.k == b.k
@@ -622,6 +936,8 @@ pub(crate) fn same_eval_config(a: &EvalReport, b: &EvalReport) -> bool {
         && a.space == b.space
         && !a.scope.is_empty()
         && a.scope == b.scope
+        && !a.corpus.is_empty()
+        && a.corpus == b.corpus
 }
 
 /// Persist one run and judge it against the previous run with the same
@@ -818,6 +1134,19 @@ pub fn query_terms(text: &str) -> Vec<String> {
     ranked.into_iter().map(|(t, _)| t).collect()
 }
 
+/// Language of a sampled keyword query, read off its own terms: Han bigrams
+/// (some or all) → zh, Latin words → en, both → mix. Derived from what the
+/// retriever actually has to tokenise, not from what the document claims to be.
+fn query_lang(terms: &[String]) -> &'static str {
+    let han = terms.iter().any(|t| t.chars().all(is_han));
+    let latin = terms.iter().any(|t| !t.chars().all(is_han));
+    match (han, latin) {
+        (true, false) => ZH,
+        (false, true) => EN,
+        _ => MIX,
+    }
+}
+
 /// Build a real-corpus eval set from the user's own indexed chunks.
 ///
 /// Query = the top keyword terms of one chunk; expected source = the source
@@ -838,7 +1167,7 @@ pub fn real_queries(
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    let queries: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
+    let queries: Vec<String> = candidates.iter().map(|(q, _, _)| q.clone()).collect();
     let vecs = embedder.embed(&queries)?;
     // Query space = the embedder used right now, mirroring chat retrieval: after
     // a model switch without re-ingest, real eval sees the same rows chat sees.
@@ -846,24 +1175,25 @@ pub fn real_queries(
     Ok(candidates
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| EvalQuery {
+        .map(|((query, expect, lang), vec)| EvalQuery {
             query,
             expect,
             vec,
             kind: "real".to_string(),
+            lang,
             space: space.clone(),
         })
         .collect())
 }
 
-/// The SQL half of [`real_queries`]: (query text, expected source name)
-/// candidates, deterministic order, stride-sampled. Kept separate from the
-/// embedding step so the command layer can do its slow network/ONNX hop with
-/// no DB connection held.
+/// The SQL half of [`real_queries`]: (query text, expected source name,
+/// language) candidates, deterministic order, stride-sampled. Kept separate
+/// from the embedding step so the command layer can do its slow network/ONNX
+/// hop with no DB connection held.
 pub fn real_query_candidates(
     conn: &Connection,
     subject_ids: Option<&[String]>,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<(String, String, String)>> {
     // Scope + deterministic order in one SQL pass. IN-list is built with
     // positional placeholders — subject ids come from the local DB, but they
     // still go through bound params, never string interpolation. (SUBJECT_NAME
@@ -895,14 +1225,15 @@ pub fn real_query_candidates(
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut candidates: Vec<(String, String)> = rows
+    let mut candidates: Vec<(String, String, String)> = rows
         .into_iter()
         .filter_map(|(source, text)| {
             let terms = query_terms(&text);
             if terms.len() < 2 {
                 None
             } else {
-                Some((terms.join(" "), source))
+                let lang = query_lang(&terms).to_string();
+                Some((terms.join(" "), source, lang))
             }
         })
         .collect();
@@ -1014,19 +1345,6 @@ mod tests {
         assert!(score(&c, "quantum", DEFAULT_K, SYNTHETIC_SCOPE, &queries).is_err());
     }
 
-    #[test]
-    fn the_expected_source_is_ranked_first_on_a_clean_query() {
-        let (st, queries) = prepare();
-        let c = st.db.lock().unwrap();
-        let r = score(&c, "vector", DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
-        // Unanswerable cases have no expected source and never rank — the
-        // stub embedder is a hashed bag of terms, so every clean (answerable)
-        // query should still put its source first.
-        let answerable = r.rows.iter().filter(|row| !row.expect.is_empty()).count();
-        let top = r.rows.iter().filter(|row| row.rank == Some(1)).count();
-        assert_eq!(top, answerable, "every clean query should be rank 1");
-    }
-
     // ------------------------------------------------ real-corpus queries
 
     #[test]
@@ -1071,7 +1389,12 @@ mod tests {
         for q in &qs {
             assert_eq!(q.expect, "特征值讲义.md");
             assert!(q.query.split(' ').count() >= 2);
+            // All-Han → zh, but the Cholesky chunk mixes an English term in,
+            // and that must be tagged mix rather than averaged into zh.
+            assert_ne!(q.lang, EN, "a Han query must never be tagged English");
         }
+        assert!(qs.iter().any(|q| q.lang == MIX), "the Cholesky chunk carries a Latin term");
+        assert!(qs.iter().any(|q| q.lang == ZH));
         // Scoped to a non-existent subject → nothing.
         let none = real_queries(&c, Some(&["nope".into()]), &StubEmbedder).unwrap();
         assert!(none.is_empty());
@@ -1085,11 +1408,13 @@ mod tests {
             k: DEFAULT_K,
             space: StubEmbedder.space().to_string(),
             scope: SYNTHETIC_SCOPE.to_string(),
-            evaluated: 23,
+            corpus: fixture_id(),
+            evaluated: cases().len(),
             recall_at_k: recall,
             mrr,
             rows: Vec::new(),
             strata: Vec::new(),
+            langs: Vec::new(),
             separation: sep.map(|ratio| Separation {
                 answerable_mean_top1: 0.8,
                 unanswerable_mean_top1: 0.8 * (1.0 - ratio),
@@ -1208,6 +1533,170 @@ mod tests {
         .unwrap()
         .expect("the matching baseline is still available");
         assert_eq!(matching.baseline_at, baseline_at);
+    }
+
+    // ---------------------------------------------------- language axis
+
+    /// A case pointing at a source that does not exist would silently score
+    /// zero forever — an air-gap in the harness that no other test would catch.
+    #[test]
+    fn every_expected_source_exists_in_the_corpus() {
+        let names: Vec<&str> = corpus().into_iter().map(|(n, _)| n).collect();
+        for (q, expect, kind, lang) in cases() {
+            assert_eq!(expect.is_empty(), kind == "unanswerable", "{q} ({lang})");
+            if !expect.is_empty() {
+                assert!(names.contains(&expect), "{q} expects missing source {expect}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_corpus_covers_three_languages() {
+        let mut by_lang = std::collections::BTreeMap::new();
+        for (_, _, _, lang) in cases() {
+            *by_lang.entry(lang).or_insert(0) += 1;
+        }
+        for lang in LANGS {
+            let n = by_lang.get(lang).copied().unwrap_or(0);
+            assert!(n >= 6, "language `{lang}` has only {n} cases; a slice that thin cannot move a rate");
+        }
+    }
+
+    /// The number this whole axis exists for: under the offline embedder,
+    /// Chinese recall comes from the keyword channel, and the keyword channel
+    /// is the bigram tokeniser. Break it (whitespace tokens, whole-run tokens,
+    /// a default FTS5 setup) and Chinese retrieval loses the gap below while
+    /// English does not move — which is what makes this a language problem
+    /// rather than a tuning problem.
+    #[test]
+    fn chinese_recall_rides_on_the_keyword_leg() {
+        let (st, queries) = prepare();
+        let c = st.db.lock().unwrap();
+        let reports = score_all(&c, DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
+        let lang = |mode: &str, l: &str| {
+            reports
+                .iter()
+                .find(|r| r.mode == mode)
+                .and_then(|r| r.langs.iter().find(|s| s.lang == l))
+                .cloned()
+                .unwrap_or_else(|| panic!("no {l} slice in {mode}"))
+        };
+        let vector = lang("vector", ZH);
+        let best = lang(VERDICT_MODE, ZH);
+        assert!(
+            vector.recall_at_k <= 0.5,
+            "the offline vector leg suddenly reads Han clauses ({}%) — if that is a real fix, \
+             update the module doc that says it cannot",
+            (vector.recall_at_k * 100.0).round() as i64
+        );
+        assert_eq!(
+            best.recall_at_k, 1.0,
+            "Chinese recall regressed under {VERDICT_MODE}: {} of {} found",
+            (best.recall_at_k * best.answerable as f32).round() as i64,
+            best.answerable
+        );
+        assert!(
+            best.recall_at_k - vector.recall_at_k >= 0.5,
+            "the keyword leg no longer carries Chinese: {}% -> {}%",
+            (vector.recall_at_k * 100.0).round() as i64,
+            (best.recall_at_k * 100.0).round() as i64
+        );
+        assert_eq!(
+            best.keyword_hits, best.answerable,
+            "the keyword channel alone must find every Chinese case; {} of {}",
+            best.keyword_hits, best.answerable
+        );
+        // English is unaffected by the same leg on this corpus, so the gap
+        // above is a language effect and not the harness getting easier.
+        assert_eq!(lang(VERDICT_MODE, EN).keyword_hit_rate, 1.0);
+        assert_eq!(lang(VERDICT_MODE, MIX).keyword_hit_rate, 1.0);
+    }
+
+    /// `keyword_hit_rate` is meaningless for modes that never run the keyword
+    /// leg, so it must read as "not measured" rather than as a bad score. The
+    /// UI keys the column off the mode name; this test pins that the raw value
+    /// is zero and every row's `kw_rank` is empty, so nothing can quietly
+    /// present 0% as a measurement.
+    #[test]
+    fn keyword_hit_rate_is_zero_in_modes_without_a_keyword_leg() {
+        let (st, queries) = prepare();
+        let c = st.db.lock().unwrap();
+        let r = score(&c, "vector", DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
+        for s in &r.langs {
+            assert_eq!(s.keyword_hits, 0, "vector mode ran the keyword leg?");
+            assert_eq!(s.keyword_hit_rate, 0.0);
+        }
+        assert!(r.rows.iter().all(|row| row.kw_rank.is_none()));
+    }
+
+    /// On the offline stub, `StubEmbedder` hashes alphanumeric runs — so a Han
+    /// clause is ONE token, the same fault a default FTS5 tokeniser has. English
+    /// clean queries still rank first through the vector leg; Chinese ones need
+    /// the keyword leg. Both halves of this test are load-bearing: the first
+    /// proves the harness is not broken, the second documents the limit the
+    /// language table is measuring.
+    #[test]
+    fn the_offline_vector_leg_cannot_read_han_clauses() {
+        let (st, queries) = prepare();
+        let c = st.db.lock().unwrap();
+        let r = score(&c, "vector", DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
+        let en: Vec<&EvalRow> = r
+            .rows
+            .iter()
+            .filter(|row| row.lang == EN && !row.expect.is_empty())
+            .collect();
+        assert!(
+            en.iter().all(|row| row.rank == Some(1)),
+            "every clean English query should rank first under the stub"
+        );
+        let zh_missed = r.rows.iter().filter(|row| row.lang == ZH && row.rank.is_none()).count();
+        assert!(
+            zh_missed > 0,
+            "if the stub starts reading Han clauses, the module doc's caveat is stale"
+        );
+    }
+
+    #[test]
+    fn the_language_table_partitions_the_cases() {
+        let (st, queries) = prepare();
+        let c = st.db.lock().unwrap();
+        let r = &score_all(&c, DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap()[0];
+        let langs: Vec<&str> = r.langs.iter().map(|s| s.lang.as_str()).collect();
+        assert_eq!(langs, LANGS.to_vec(), "language slices are reported in LANGS order");
+        assert_eq!(
+            r.langs.iter().map(|s| s.cases).sum::<usize>(),
+            r.evaluated,
+            "every case belongs to exactly one language"
+        );
+    }
+
+    /// A corpus edit changes what the numbers MEAN, so it must break the
+    /// comparison instead of being read as a retrieval improvement.
+    #[test]
+    fn changing_the_fixture_invalidates_the_baseline() {
+        let base = report(VERDICT_MODE, 0.60, 0.50, Some(0.30));
+        let mut harder = report(VERDICT_MODE, 0.40, 0.40, Some(0.30));
+        harder.corpus = "syn:000000000001".into();
+        assert!(!same_eval_config(&base, &harder));
+
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        assert!(record_and_judge(&c, "synthetic", std::slice::from_ref(&base))
+            .unwrap()
+            .is_none());
+        assert!(
+            record_and_judge(&c, "synthetic", std::slice::from_ref(&harder))
+                .unwrap()
+                .is_none(),
+            "a run on a different fixture must not be judged against this one"
+        );
+    }
+
+    #[test]
+    fn query_lang_reads_the_terms_not_the_document() {
+        assert_eq!(query_lang(&["支持".into(), "向量".into()]), ZH);
+        assert_eq!(query_lang(&["gradient".into(), "descent".into()]), EN);
+        assert_eq!(query_lang(&["支持".into(), "vector".into()]), MIX);
     }
 
     #[test]

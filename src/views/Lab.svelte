@@ -204,6 +204,21 @@
   const verdictMode = $derived(modes?.reports.find((r) => r.mode === VERDICT_MODE) ?? null);
   const verdict = $derived(modes?.verdict ?? null);
 
+  /** 语言表把机器标签翻成人话（zh / en / mix 直接摆出来太生硬）。 */
+  const LANG_LABEL: Record<string, string> = { zh: "中文", en: "英文", mix: "中英混" };
+  const langLabel = (l: string) => LANG_LABEL[l] ?? l;
+
+  /** 「关键词腿失效会掉多少」的实时答案：中文在纯向量与出厂配置之间的落差。
+   *  没有落差就没有故事，返回 null 让那一行提示消失，而不是印一个 0。 */
+  const zhGap = $derived.by(() => {
+    const zh = (mode: string) =>
+      modes?.reports.find((r) => r.mode === mode)?.langs.find((l) => l.lang === "zh") ?? null;
+    const base = zh("vector");
+    const best = zh(VERDICT_MODE);
+    if (!base || !best || best.recall_at_k <= base.recall_at_k) return null;
+    return { base: base.recall_at_k, best: best.recall_at_k, gap: best.recall_at_k - base.recall_at_k };
+  });
+
   const channels = $derived<{ name: string; hits: api.TraceHit[] }[]>(
     trace
       ? [
@@ -779,6 +794,36 @@
                 </p>
               {/if}
             {/if}
+
+            <!-- 语言维度：中文这条链到底有没有在干活 -->
+            {#if verdictMode && verdictMode.langs.length}
+              <div class="lab-table">
+                <div class="lab-tr lab-th lab-tr4">
+                  <span>语言 · {verdictMode.mode}</span><span>Recall@5</span><span>MRR</span><span>关键词腿</span>
+                </div>
+                {#each verdictMode.langs as l (l.lang)}
+                  <div class="lab-tr lab-tr4">
+                    <span class="mono">{langLabel(l.lang)}<span class="faint"> · {l.answerable} 题</span></span>
+                    <span class="mono">{(l.recall_at_k * 100).toFixed(1)}%</span>
+                    <span class="mono">{l.mrr.toFixed(3)}</span>
+                    <span class="mono faint">
+                      {#if verdictMode.mode.startsWith("hybrid")}{l.keyword_hits}/{l.answerable}{:else}—{/if}
+                    </span>
+                  </div>
+                {/each}
+              </div>
+              <p class="lab-hint">
+                语言分层的召回只按「可答题」算：弃权题没有正确答案，算进去只会让恰好装着它们的那门语言显得更差。
+                「关键词腿」是纯关键词通道自己就把正确来源排进前 5 的比例——只有 hybrid 档跑这条腿，其余档显示 —。
+              </p>
+              {#if zhGap}
+                <p class="lab-hint">
+                  中文：纯向量 {(zhGap.base * 100).toFixed(1)}% → {VERDICT_MODE} {(zhGap.best * 100).toFixed(1)}%，
+                  差的 {(zhGap.gap * 100).toFixed(1)} 个百分点就是关键词腿在中文上的全部贡献。汉字没有空格，
+                  这条腿靠二元组切分才匹配得上；换成按空格或整段汉字切分（FTS5 默认就是这样），这一格直接掉到 0。
+                </p>
+              {/if}
+            {/if}
           {/if}
         {/if}
       </div>
@@ -1243,6 +1288,8 @@
   .lab-th { background: var(--surface-2); color: var(--fg-faint); font-weight: 500; }
   /* 分层明细表：5 列（分层/Recall/MRR/题数/top1 均分）。 */
   .lab-tr5 { grid-template-columns: minmax(0, 1.4fr) 92px 92px 56px 96px; }
+  /* 语言表：4 列（语言/Recall/MRR/关键词腿）。 */
+  .lab-tr4 { grid-template-columns: minmax(0, 1.4fr) 92px 92px 110px; }
   /* 采纳规则横幅（KnowNote borrow）。 */
   .lab-verdict {
     margin-top: 10px; padding: 9px 12px;

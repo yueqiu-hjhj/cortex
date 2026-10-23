@@ -7977,7 +7977,7 @@ pub async fn retrieval_eval_real(
             embed_model_override(&c),
         )
     };
-    let texts: Vec<String> = candidates.iter().map(|(q, _)| q.clone()).collect();
+    let texts: Vec<String> = candidates.iter().map(|(q, _, _)| q.clone()).collect();
     let (vecs, space) = tauri::async_runtime::spawn_blocking(move || {
         let embedder =
             embed::from_settings(&provider, &keys, ollama_url.as_deref(), data_dir.as_deref(), embed_model.as_deref());
@@ -7990,11 +7990,12 @@ pub async fn retrieval_eval_real(
     let queries: Vec<crate::eval::EvalQuery> = candidates
         .into_iter()
         .zip(vecs)
-        .map(|((query, expect), vec)| crate::eval::EvalQuery {
+        .map(|((query, expect, lang), vec)| crate::eval::EvalQuery {
             query,
             expect,
             vec,
             kind: "real".to_string(),
+            lang,
             space: space.clone(),
         })
         .collect();
