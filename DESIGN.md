@@ -427,3 +427,27 @@ cleared cell keeps its style), `office/pptx.rs` (sibling runs and non-slide
 parts untouched; split phrase merged and counted with the first run's `rPr`;
 missing phrase reported; same path and empty find refused) and
 `office/docx.rs` (same-path refusal, unmatched anchors skipped).
+
+## 16. 中文检索必须按语言出数，而不是「应该没问题」
+
+评测按语言分层（zh / en / mix），并把 `keyword_hit_rate` —— 纯关键词通道自己就把
+正确来源排进前 k 的比例 —— 单独列出来。这不是多一张表，而是给「中文检索更强」这句
+话装一个能被推翻的表盘。
+
+汉字没有空格，这条能力全部挂在**二元组切分**这一处。它坏掉时混合模式的召回只会轻微
+漂移（向量腿还在，看起来像调参噪声）；关键词腿命中率会从 13/13 直接掉到 0/13，没有
+第二种解释。FTS5 的默认分词器就是这个故障——整段汉字一个 token。
+
+- **语言分层的召回只按可答题算。** 弃权题没有正确答案，算进分母等于按「哪门语言恰好
+  装着弃权集」去惩罚它；那会让英文层看起来比中文差，而差的原因跟语言无关。
+- **语料指纹进比较键。** `EvalReport::corpus` 参与 `same_eval_config`：改语料必须让
+  旧基线失效，否则加几篇更难的文档会被读成检索退步，采纳规则反而奖励「别加难题」。
+- **新增语言语料时主题不得重叠。** 同一主题两种语言各一份，跨语言命中会记成 miss，
+  而语义嵌入把它算成 near-miss——数字就说不清是谁的功劳。中文六篇讲的是英文十二篇
+  里没有的主题（SVM / 决策树 / 集成 / 强化学习 / GNN / 时间序列）。
+
+Enforced by: `eval.rs` (`chinese_recall_rides_on_the_keyword_leg` — 中文在纯向量下
+≤ 50%、出厂配置 100%、关键词腿 13/13；`keyword_hit_rate_is_zero_in_modes_without_a_keyword_leg`;
+`the_offline_vector_leg_cannot_read_han_clauses` — 离线 stub 把整段汉字当一个词，这正是
+FTS5 的故障形态；`changing_the_fixture_invalidates_the_baseline`;
+`every_expected_source_exists_in_the_corpus` — 指向不存在来源的用例会静默零分).
