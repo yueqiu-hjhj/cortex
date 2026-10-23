@@ -3342,6 +3342,28 @@ export const xlsxPreview = (path: string, sheet?: string, maxRows?: number) =>
 export const xlsxSetCells = (path: string, output: string, edits: CellEdit[]) =>
   invoke<XlsxEditOutcome>("xlsx_set_cells", { path, output, edits });
 
+/** One slide's paragraphs, for picking replacement targets. Read-only. */
+export interface SlideText {
+  index: number;
+  paragraphs: string[];
+}
+export interface TextEdit {
+  find: string;
+  replace: string;
+}
+export interface PptxEditOutcome {
+  output: string;
+  slides: number[];
+  replacements: number;
+  /** Paragraphs collapsed into one run because the phrase spanned runs. */
+  merged: number;
+  skipped: string[];
+}
+export const pptxSlideTexts = (path: string) => invoke<SlideText[]>("pptx_slide_texts", { path });
+/** Replace text in a COPY of an existing deck; the input is never touched. */
+export const pptxReplaceText = (path: string, output: string, edits: TextEdit[]) =>
+  invoke<PptxEditOutcome>("pptx_replace_text", { path, output, edits });
+
 /** Concatenate PDFs, in order, into one file at `dest`. */
 export const pdfMerge = (paths: string[], dest: string) =>
   invoke<void>("pdf_merge", { paths, dest });

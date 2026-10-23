@@ -9,7 +9,7 @@
   import Icon from "./Icon.svelte";
 
   let open = $state(false);
-  let tab = $state<"docx" | "xlsx" | "pdf">("docx");
+  let tab = $state<"docx" | "xlsx" | "pptx" | "pdf">("docx");
 
   // ---- Word 审阅 ----
   let docxPath = $state("");
@@ -301,6 +301,75 @@
     xlsxValue = "";
   }
 
+  // ---- 改 PPT 文字 ----
+  // 同样只在副本上改。文字在 PPT 里是按 run 存的，一个词组经常被拆成几段；
+  // 跨 run 的情况会被合并成一个 run 并如实报数（合并会丢掉段内格式）。
+  let pptxPath = $state("");
+  let pptxBusy = $state(false);
+  let pptxErr = $state("");
+  let pptxMsg = $state("");
+  let pptxSlides = $state<api.SlideText[]>([]);
+  let pptxEdits = $state<api.TextEdit[]>([]);
+  let pptxFind = $state("");
+  let pptxReplace = $state("");
+
+  async function pickPptx() {
+    pptxErr = "";
+    pptxMsg = "";
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const p = await pick({ multiple: false, filters: [{ name: "PowerPoint", extensions: ["pptx"] }] });
+      const path = Array.isArray(p) ? p[0] : p;
+      if (!path) return;
+      pptxPath = path;
+      pptxEdits = [];
+      pptxBusy = true;
+      pptxSlides = await api.pptxSlideTexts(path);
+    } catch (e) {
+      pptxErr = String(e);
+    } finally {
+      pptxBusy = false;
+    }
+  }
+
+  function addTextEdit() {
+    const find = pptxFind.trim();
+    if (!find) return;
+    pptxEdits = [...pptxEdits.filter((e) => e.find !== find), { find, replace: pptxReplace }];
+    pptxFind = "";
+    pptxReplace = "";
+  }
+
+  async function savePptx() {
+    if (!pptxPath || !pptxEdits.length || pptxBusy) return;
+    pptxBusy = true;
+    pptxErr = "";
+    pptxMsg = "";
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const stem = pptxPath.replace(/\.pptx$/i, "");
+      const dest = await save({
+        defaultPath: `${stem}.已改.pptx`,
+        filters: [{ name: "PowerPoint", extensions: ["pptx"] }],
+      });
+      if (!dest) return;
+      const r = await api.pptxReplaceText(pptxPath, dest, pptxEdits);
+      const parts = [`${r.slides.length} 页、${r.replacements} 处替换`];
+      if (r.merged) parts.push(`${r.merged} 段因跨 run 被合并`);
+      if (r.skipped.length) parts.push(`${r.skipped.length} 处没找到`);
+      pptxMsg = `${parts.join("，")} → ${dest}`;
+      if (r.slides.length) {
+        app.pushToast({ kind: "success", title: "演示文稿已更新", body: dest });
+        pptxEdits = [];
+        pptxSlides = await api.pptxSlideTexts(dest);
+      }
+    } catch (e) {
+      pptxErr = String(e);
+    } finally {
+      pptxBusy = false;
+    }
+  }
+
   async function saveXlsx() {
     if (!xlsxPath || !xlsxEdits.length || xlsxBusy) return;
     xlsxBusy = true;
@@ -341,6 +410,7 @@
       <div class="tabs">
         <button class="tab" class:on={tab === "docx"} onclick={() => (tab = "docx")}>Word 审阅回写</button>
         <button class="tab" class:on={tab === "xlsx"} onclick={() => (tab = "xlsx")}>表格改单元格</button>
+        <button class="tab" class:on={tab === "pptx"} onclick={() => (tab = "pptx")}>改 PPT 文字</button>
         <button class="tab" class:on={tab === "pdf"} onclick={() => (tab = "pdf")}>PDF 工具</button>
       </div>
 
@@ -445,6 +515,49 @@
             <div class="etext">{c.before || "（空）"} → {c.after || "（空）"}</div>
           </div>
         {/each}
+      {:else if tab === "pptx"}
+        <p class="hint">先把要改的文字打进「查找」（可以只写一句里的几个字），写入的是副本。跨段被拆开的文字会自动合并，页面里会写明合并了几段。</p>
+        <div class="frow">
+          <button class="btn" onclick={pickPptx}>{pptxPath ? "换一个文件" : "选择 .pptx"}</button>
+          <span class="fpath" title={pptxPath}>{pptxPath || "未选择文件"}</span>
+        </div>
+        <div class="frow">
+          <input class="wm" bind:value={pptxFind} placeholder="查找" />
+          <input class="wm" bind:value={pptxReplace} placeholder="替换为（留空即删除）" onkeydown={(e) => e.key === "Enter" && addTextEdit()} />
+          <button class="btn" disabled={!pptxFind.trim()} onclick={addTextEdit}>加入替换</button>
+        </div>
+        {#if pptxEdits.length}
+          <div class="arow">
+            <span class="count">{pptxEdits.length} 条替换</span>
+            <button class="btn" disabled={pptxBusy} onclick={() => (pptxEdits = [])}>清空</button>
+            <button class="btn primary" disabled={pptxBusy} onclick={savePptx}>{pptxBusy ? "写入中…" : "写入副本（另存新文件）"}</button>
+          </div>
+        {/if}
+        {#if pptxErr}<div class="err">{pptxErr}</div>{/if}
+        {#if pptxMsg}<div class="msg">{pptxMsg}</div>{/if}
+        {#each pptxEdits as e, i (e.find)}
+          <div class="edit">
+            <div class="ehead">
+              <span class="op">{e.find}</span>
+              <span class="anchor">→ {e.replace || "（删除）"}</span>
+              <button class="x" title="移除" onclick={() => (pptxEdits = pptxEdits.filter((_, j) => j !== i))}><Icon name="x" size={10} /></button>
+            </div>
+          </div>
+        {/each}
+        {#if pptxSlides.length}
+          <div class="gridwrap">
+            <div class="slides">
+              {#each pptxSlides as sl (sl.index)}
+                <div class="slide">
+                  <div class="snum">第 {sl.index} 页</div>
+                  {#each sl.paragraphs as p, i (i)}
+                    <div class="spara">{p}</div>
+                  {/each}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
       {:else}
         <p class="hint">合并 / 拆分 / 水印 / 表单填写都输出到新文件，原 PDF 不被改动。</p>
         <div class="frow">
@@ -524,6 +637,28 @@
   .grid td.sel {
     outline: 1px solid var(--accent);
     background: rgba(124, 92, 240, 0.14);
+  }
+  .slides {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+  }
+  .slide {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .snum {
+    font-size: var(--t-2xs, 10px);
+    color: var(--fg-faint);
+    margin-bottom: 3px;
+  }
+  .spara {
+    font-size: var(--t-xs);
+    color: var(--fg);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .btn.on {
     border-color: var(--accent);

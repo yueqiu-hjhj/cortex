@@ -8138,6 +8138,30 @@ pub async fn docx_apply_edits(
     .map_err(|e| Error::Other(format!("docx edit failed: {e}")))?
 }
 
+/// Slide texts of an existing .pptx — what a replacement would match against.
+#[tauri::command]
+pub async fn pptx_slide_texts(path: String) -> Result<Vec<crate::office::pptx::SlideText>> {
+    tauri::async_runtime::spawn_blocking(move || crate::office::pptx::slide_texts(Path::new(&path)))
+        .await
+        .map_err(|e| Error::Other(format!("pptx read failed: {e}")))?
+}
+
+/// Replace text in an existing deck, writing a new file. Runs are edited in
+/// place when the phrase fits in one; a phrase split across runs collapses that
+/// paragraph and says so in `merged`.
+#[tauri::command]
+pub async fn pptx_replace_text(
+    path: String,
+    output: String,
+    edits: Vec<crate::office::pptx::TextEdit>,
+) -> Result<crate::office::pptx::PptxEditOutcome> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::pptx::replace_text(Path::new(&path), Path::new(&output), &edits)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("pptx edit failed: {e}")))?
+}
+
 /// Sheets + head rows of an existing workbook, for the cell editor.
 #[tauri::command]
 pub async fn xlsx_preview(

@@ -439,9 +439,398 @@ pub fn save_deck(
     build_deck(path, title, subtitle, &slides)
 }
 
+// ------------------------------------------ editing an existing deck
+
+/// One find → replace pair applied to every slide of a deck.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TextEdit {
+    pub find: String,
+    #[serde(default)]
+    pub replace: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PptxEditOutcome {
+    pub output: String,
+    /// Slides that changed, by their 1-based number.
+    pub slides: Vec<usize>,
+    /// Total number of replaced occurrences.
+    pub replacements: usize,
+    /// Paragraphs that had to be collapsed into one run because the phrase was
+    /// split across runs. Reported, because it costs the inner formatting.
+    pub merged: usize,
+    pub skipped: Vec<String>,
+}
+
+/// Replace text in an existing deck, writing the result to `output`.
+///
+/// Two passes, in this order, because a deck stores text per RUN and an editor
+/// splits runs at every formatting or spell-check boundary:
+///
+/// 1. **Inside a run** — the phrase sits wholly in one `<a:t>`. Replacing it
+///    keeps every other run's formatting untouched, which is the outcome a
+///    reader expects.
+/// 2. **Across runs of one paragraph** — the phrase exists only in the
+///    concatenation (`光合` + `作用`). The paragraph is collapsed into a single
+///    run carrying the first run's properties. This is a real edit of the
+///    layout, so it is counted separately instead of hidden.
+///
+/// Nothing else in the file is touched: the parts are copied byte for byte and
+/// only `ppt/slides/slideN.xml` is rewritten.
+pub fn replace_text(
+    input: &Path,
+    output: &Path,
+    edits: &[TextEdit],
+) -> Result<PptxEditOutcome> {
+    if input == output {
+        return Err(Error::Other("输出文件需与原文件不同（改稿在副本上做）".into()));
+    }
+    if edits.is_empty() {
+        return Err(Error::Other("没有要替换的文字".into()));
+    }
+    for e in edits {
+        if e.find.trim().is_empty() {
+            return Err(Error::Other("「查找」不能为空".into()));
+        }
+    }
+    let mut parts = super::read_zip_parts(input)?;
+    let mut slides = Vec::new();
+    let mut replacements = 0usize;
+    let mut merged = 0usize;
+
+    let slide_idxs: Vec<(usize, usize)> = parts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (n, _))| slide_number(n).map(|num| (i, num)))
+        .collect();
+    for (idx, number) in slide_idxs {
+        let name = parts[idx].0.clone();
+        let mut xml = String::from_utf8(parts[idx].1.clone())
+            .map_err(|_| Error::Other(format!("{name} 不是 UTF-8")))?;
+        let mut touched = false;
+        for e in edits {
+            let (next, hits, merges) = replace_in_slide(&xml, &e.find, &e.replace);
+            if hits + merges > 0 {
+                xml = next;
+                replacements += hits;
+                merged += merges;
+                touched = true;
+            }
+        }
+        if touched {
+            parts[idx].1 = xml.into_bytes();
+            slides.push(number);
+        }
+    }
+
+    if slides.is_empty() {
+        let mut missing: Vec<String> = edits
+            .iter()
+            .map(|e| format!("没有找到「{}」", e.find))
+            .collect();
+        missing.retain(|_| true);
+        super::write_zip(output, &parts)?;
+        return Ok(PptxEditOutcome {
+            output: output.display().to_string(),
+            slides: Vec::new(),
+            replacements: 0,
+            merged: 0,
+            skipped: missing,
+        });
+    }
+    super::write_zip(output, &parts)?;
+    Ok(PptxEditOutcome {
+        output: output.display().to_string(),
+        slides,
+        replacements,
+        merged,
+        skipped: Vec::new(),
+    })
+}
+
+/// Read-only view of a deck: one entry per slide, one string per paragraph.
+/// The caller needs it to know what it is asking to replace — a find/replace
+/// box with no preview is a request to edit blind.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlideText {
+    pub index: usize,
+    pub paragraphs: Vec<String>,
+}
+
+pub fn slide_texts(path: &Path) -> Result<Vec<SlideText>> {
+    let parts = super::read_zip_parts(path)?;
+    let mut slides: Vec<(usize, SlideText)> = Vec::new();
+    for (name, bytes) in &parts {
+        let Some(index) = slide_number(name) else { continue };
+        let xml = std::str::from_utf8(bytes)
+            .map_err(|_| Error::Other(format!("{name} 不是 UTF-8")))?;
+        let mut paragraphs = Vec::new();
+        let mut cursor = 0;
+        while let Some(open) = xml[cursor..].find("<a:p>").map(|i| i + cursor) {
+            let Some(close_off) = xml[open..].find("</a:p>") else { break };
+            let close = open + close_off;
+            let body = &xml[open + "<a:p>".len()..close];
+            let text = paragraph_text(body);
+            if !text.trim().is_empty() {
+                paragraphs.push(text);
+            }
+            cursor = close + "</a:p>".len();
+        }
+        slides.push((index, SlideText { index, paragraphs }));
+    }
+    slides.sort_by_key(|(i, _)| *i);
+    Ok(slides.into_iter().map(|(_, s)| s).collect())
+}
+
+/// `ppt/slides/slide12.xml` → 12. Anything else is not a slide.
+fn slide_number(name: &str) -> Option<usize> {
+    let rest = name.strip_prefix("ppt/slides/slide")?;
+    let num = rest.strip_suffix(".xml")?;
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    num.parse().ok()
+}
+
+/// Replace in one slide part. Returns (new xml, in-run hits, merged paragraphs).
+fn replace_in_slide(xml: &str, find: &str, replace: &str) -> (String, usize, usize) {
+    // Pass 1: straight substitution inside every <a:t> element.
+    let mut out = String::with_capacity(xml.len());
+    let mut hits = 0usize;
+    let mut cursor = 0usize;
+    while let Some(t) = find_tag(xml, "a:t", cursor) {
+        out.push_str(&xml[cursor..t.content_start]);
+        let text = &xml[t.content_start..t.content_end];
+        let decoded = super::xml_unescape(text);
+        if decoded.contains(find) {
+            hits += decoded.matches(find).count();
+            out.push_str(&xml_escape(&decoded.replace(find, replace)));
+        } else {
+            out.push_str(text);
+        }
+        out.push_str(&xml[t.content_end..t.end]);
+        cursor = t.end;
+    }
+    out.push_str(&xml[cursor..]);
+
+    // Pass 2: the phrase only exists in a paragraph's concatenated text.
+    let (out, merged) = collapse_split_paragraphs(&out, find, replace);
+    (out, hits, merged)
+}
+
+/// One `<a:t>…</a:t>` element (they are never nested).
+struct TSpan {
+    content_start: usize,
+    content_end: usize,
+    end: usize,
+}
+
+fn find_tag(s: &str, name: &str, from: usize) -> Option<TSpan> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let at = from + s[from..].find(&open)?;
+    let content_start = at + open.len();
+    let content_end = content_start + s[content_start..].find(&close)?;
+    Some(TSpan { content_start, content_end, end: content_end + close.len() })
+}
+
+/// Collapse paragraphs whose runs together contain `find`.
+fn collapse_split_paragraphs(xml: &str, find: &str, replace: &str) -> (String, usize) {
+    let mut out = String::with_capacity(xml.len());
+    let mut merged = 0usize;
+    let mut cursor = 0usize;
+    loop {
+        let Some(open) = xml[cursor..].find("<a:p>").map(|i| i + cursor) else {
+            out.push_str(&xml[cursor..]);
+            break;
+        };
+        let Some(close_off) = xml[open..].find("</a:p>") else {
+            out.push_str(&xml[cursor..]);
+            break;
+        };
+        let close = open + close_off;
+        out.push_str(&xml[cursor..open]);
+
+        let body = &xml[open + "<a:p>".len()..close];
+        let joined = paragraph_text(body);
+        if joined.contains(find) {
+            let new_text = joined.replace(find, replace);
+            // Keep the first run's formatting: it is the one a reader associates
+            // with this line, and it is what the merged run will render with.
+            let first_run = body.find("<a:r>");
+            let rpr = first_run.and_then(|r| {
+                let rest = &body[r..];
+                let start = rest.find("<a:rPr")?;
+                let tail = &rest[start..];
+                if let Some(self_close) = tail.find("/>") {
+                    let gt = tail.find('>')?;
+                    if self_close + 1 == gt {
+                        return Some(tail[..=gt].to_string());
+                    }
+                }
+                let end = tail.find("</a:rPr>")? + "</a:rPr>".len();
+                Some(tail[..end].to_string())
+            });
+            let props = rpr.unwrap_or_default();
+            let run = format!("<a:r>{props}<a:t>{}</a:t></a:r>", xml_escape(&new_text));
+            out.push_str("<a:p>");
+            match (body.find("<a:r>"), body.rfind("</a:r>")) {
+                (Some(first), Some(last)) if first <= last => {
+                    out.push_str(&body[..first]);
+                    // Anything after the last run (e.g. `</a:p>`-level end
+                    // markers) is preserved; the runs between are replaced.
+                    out.push_str(&run);
+                    out.push_str(&body[last + "</a:r>".len()..]);
+                }
+                _ => out.push_str(&run),
+            }
+            out.push_str("</a:p>");
+            merged += 1;
+        } else {
+            out.push_str(&xml[open..close + "</a:p>".len()]);
+        }
+        cursor = close + "</a:p>".len();
+    }
+    (out, merged)
+}
+
+/// Visible text of a paragraph body: every `<a:t>` concatenated, decoded.
+fn paragraph_text(body: &str) -> String {
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    while let Some(t) = find_tag(body, "a:t", cursor) {
+        out.push_str(&super::xml_unescape(&body[t.content_start..t.content_end]));
+        cursor = t.end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    // ---- editing an existing deck ----
+
+    /// A minimal deck: slide 1 with three separate runs, and a notes part that
+    /// must never be touched (it is not a slide).
+    fn deck_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("cortex-pptx-edit-{tag}-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("deck.pptx");
+        let out = dir.join("改后.pptx");
+        let slide = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><p:sld><p:cSld><p:spTree><p:sp><p:txBody>"#,
+            r#"<a:p><a:r><a:rPr sz="3200" b="1"/><a:t>机器学习</a:t></a:r>"#,
+            r#"<a:r><a:rPr sz="1800"/><a:t>复习大纲</a:t></a:r></a:p>"#,
+            r#"<a:p><a:r><a:rPr sz="1400" i="1"/><a:t>重点：反向传播</a:t></a:r></a:p>"#,
+            r#"</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+        );
+        let notes = r#"<?xml version="1.0"?><p:notes><a:t>机器学习</a:t></p:notes>"#;
+        super::super::write_zip(
+            &src,
+            &[
+                ("ppt/slides/slide1.xml".into(), slide.as_bytes().to_vec()),
+                ("ppt/notesSlides/notesSlide1.xml".into(), notes.as_bytes().to_vec()),
+                ("docProps/app.xml".into(), b"<Properties/>".to_vec()),
+            ],
+        )
+        .unwrap();
+        (dir, src, out)
+    }
+
+    fn part(path: &std::path::Path, name: &str) -> String {
+        let parts = super::super::read_zip_parts(path).unwrap();
+        String::from_utf8(parts.iter().find(|(n, _)| n == name).unwrap().1.clone()).unwrap()
+    }
+
+    #[test]
+    fn slide_texts_shows_what_a_replacement_would_match() {
+        let (dir, src, _) = deck_fixture("texts");
+        let texts = slide_texts(&src).unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].index, 1);
+        assert_eq!(
+            texts[0].paragraphs,
+            vec!["机器学习复习大纲".to_string(), "重点：反向传播".to_string()],
+            "runs of one paragraph are one line"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_inside_a_run_is_replaced_and_the_other_runs_survive() {
+        let (dir, src, out) = deck_fixture("run");
+        let before = part(&src, "ppt/slides/slide1.xml");
+        let r = replace_text(&src, &out, &[TextEdit { find: "机器学习".into(), replace: "深度学习".into() }]).unwrap();
+        assert_eq!(r.slides, vec![1]);
+        assert_eq!(r.replacements, 1);
+        assert_eq!(r.merged, 0, "one run already held the whole phrase");
+        assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+        let xml = part(&out, "ppt/slides/slide1.xml");
+        assert!(xml.contains("深度学习"), "{xml}");
+        assert!(!xml.contains("机器学习"), "{xml}");
+        // The sibling run keeps its own properties: this was an edit, not a rebuild.
+        assert!(xml.contains(r#"<a:rPr sz="1800"/><a:t>复习大纲</a:t>"#), "{xml}");
+        assert_eq!(part(&src, "ppt/slides/slide1.xml"), before, "the input is untouched");
+        // Non-slide parts are copied, not rewritten.
+        assert!(part(&out, "ppt/notesSlides/notesSlide1.xml").contains("机器学习"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phrase_split_across_runs_is_merged_and_counted() {
+        let (dir, src, out) = deck_fixture("merge");
+        // Split the heading into two runs the way an editor does after a
+        // spelling fix: the phrase no longer exists in any single <a:t>.
+        let name = "ppt/slides/slide1.xml";
+        let mut parts = super::super::read_zip_parts(&src).unwrap();
+        let idx = parts.iter().position(|(n, _)| n == name).unwrap();
+        let xml = String::from_utf8(parts[idx].1.clone())
+            .unwrap()
+            .replace(
+                r#"<a:r><a:rPr sz="3200" b="1"/><a:t>机器学习</a:t></a:r>"#,
+                r#"<a:r><a:rPr sz="3200" b="1"/><a:t>机器</a:t></a:r><a:r><a:t>学习</a:t></a:r>"#,
+            );
+        parts[idx].1 = xml.into_bytes();
+        super::super::write_zip(&src, &parts).unwrap();
+
+        let r = replace_text(&src, &out, &[TextEdit { find: "机器学习".into(), replace: "机器学习基础".into() }]).unwrap();
+        assert_eq!(r.replacements, 0, "no single run held the phrase");
+        assert_eq!(r.merged, 1, "the paragraph had to be collapsed");
+        let xml = part(&out, name);
+        assert!(xml.contains("机器学习基础"), "{xml}");
+        assert!(xml.contains(r#"<a:rPr sz="3200" b="1"/>"#), "the first run's formatting is kept: {xml}");
+        assert!(!xml.contains("<a:t>机器</a:t>"), "the split runs are gone: {xml}");
+        // The second paragraph was not touched at all.
+        assert!(xml.contains("重点：反向传播"), "{xml}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phrase_that_appears_nowhere_is_reported_not_silently_dropped() {
+        let (dir, src, out) = deck_fixture("missing");
+        let r = replace_text(&src, &out, &[TextEdit { find: "不存在的句子".into(), replace: "x".into() }]).unwrap();
+        assert!(r.slides.is_empty());
+        assert_eq!(r.skipped.len(), 1);
+        assert!(r.skipped[0].contains("不存在的句子"), "{:?}", r.skipped);
+        assert!(out.exists(), "the copy is still written, so the caller can hand it on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replacing_into_the_input_is_refused() {
+        let (dir, src, _) = deck_fixture("same");
+        let err = replace_text(&src, &src, &[TextEdit { find: "机器".into(), replace: "x".into() }])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("副本"), "{err}");
+        let err = replace_text(&src, &src.with_file_name("o.pptx"), &[TextEdit { find: " ".into(), replace: "" .into() }])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("不能为空"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn deck_roundtrips_and_text_is_escaped() {

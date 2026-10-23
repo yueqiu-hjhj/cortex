@@ -910,6 +910,8 @@ pub fn run() {
             commands::docx_apply_edits,
             commands::xlsx_preview,
             commands::xlsx_set_cells,
+            commands::pptx_slide_texts,
+            commands::pptx_replace_text,
             commands::pdf_merge,
             commands::pdf_split,
             commands::pdf_watermark,
