@@ -1727,17 +1727,81 @@ pub fn set_active_thread(conn: &Connection, subject_id: &str, thread_id: &str) -
 /// referring to anything the model can see.
 pub const DEFAULT_ROLLOVER_TOKENS: i64 = 12_000;
 
-/// Whether the thread has outgrown the rollover budget. Setting
-/// `chat_rollover_tokens` overrides the budget; "0" disables rollover entirely.
-pub fn rollover_due(conn: &Connection, thread_id: &str) -> Result<bool> {
+/// The rollover budget in estimated tokens. Setting `chat_rollover_tokens`
+/// overrides it; "0" disables rollover entirely; garbage falls back to the
+/// default. Exposed so the prompt-watermark decision can race the same budget
+/// the transcript watermark uses.
+pub fn rollover_token_budget(conn: &Connection) -> Result<i64> {
     let budget = match get_setting(conn, "chat_rollover_tokens")?.as_deref() {
         Some(v) => v.trim().parse().unwrap_or(DEFAULT_ROLLOVER_TOKENS),
         None => DEFAULT_ROLLOVER_TOKENS,
     };
-    if budget <= 0 {
-        return Ok(false);
+    Ok(budget)
+}
+
+/// Why a rollover fired, for the UI banner — the two watermarks race and the
+/// user deserves to know which one won.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RolloverReason {
+    /// The thread's transcript outgrew the budget (the classic case).
+    Transcript,
+    /// This single turn's prompt outgrew the budget even though the thread
+    /// itself is young — the history window plus a fat context block.
+    Prompt,
+}
+
+impl RolloverReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RolloverReason::Transcript => "transcript",
+            RolloverReason::Prompt => "prompt",
+        }
     }
-    Ok(thread_token_total(conn, thread_id)? >= budget)
+}
+
+/// The rollover decision as a pure function of the two watermarks, so the
+/// policy is testable without a database or a model.
+///
+/// - Transcript watermark: the thread itself has outgrown the budget. Rolling
+///   over always helps here — the fresh thread starts from a summary.
+/// - Prompt watermark: THIS turn's prompt (system + history window + context +
+///   question + reply headroom) already meets the budget in a young thread.
+///   Rolling over only helps when there is a history window to shed (a just-
+///   rolled thread's window is empty by construction, and a giant context block
+///   is context_block's budget to trim, not the thread's) — without that guard
+///   every turn would roll forever on a fat context alone.
+/// - Budget <= 0 disables rollover entirely.
+pub fn rollover_due_on(
+    transcript_tokens: i64,
+    prompt_tokens: i64,
+    history_turns: i64,
+    budget: i64,
+) -> Option<RolloverReason> {
+    if budget <= 0 {
+        return None;
+    }
+    if transcript_tokens >= budget {
+        return Some(RolloverReason::Transcript);
+    }
+    if prompt_tokens >= budget && history_turns > 0 {
+        return Some(RolloverReason::Prompt);
+    }
+    None
+}
+
+/// Character budget for the chat context block (summary tree + raw chunks).
+/// Setting `chat_context_chars` overrides it; an unparseable value falls back
+/// to the default. There is deliberately no "off": the block is what grounds
+/// the answer, and an unbounded block is how a 200-page PDF once tried to
+/// become one prompt.
+pub const DEFAULT_CONTEXT_CHARS: usize = 18_000;
+
+pub fn context_char_budget(conn: &Connection) -> Result<usize> {
+    let v = match get_setting(conn, "chat_context_chars")?.as_deref() {
+        Some(v) => v.trim().parse().unwrap_or(DEFAULT_CONTEXT_CHARS),
+        None => DEFAULT_CONTEXT_CHARS,
+    };
+    Ok(v.max(4_000))
 }
 
 /// Estimated tokens a thread's transcript costs — the rollover watermark. Same
@@ -5444,7 +5508,8 @@ mod tests {
         assert_eq!(carried, 0, "the older question stays archived");
     }
 
-    /// The watermark honours the budget setting; "0" disables rollover.
+    /// The DB half of the watermarks: the transcript count and the budget
+    /// setting feed the pure decision, and "0" disables rollover entirely.
     #[test]
     fn rollover_due_honors_the_budget_and_the_off_switch() {
         let st = AppState::in_memory().unwrap();
@@ -5452,11 +5517,62 @@ mod tests {
         let sid = insert_subject(&c, "线代", None, None, None).unwrap();
         add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
         let tid = current_thread(&c, &sid).unwrap();
-        assert!(!rollover_due(&c, &tid).unwrap(), "a short thread is nowhere near the default budget");
+        let tokens = thread_token_total(&c, &tid).unwrap();
+        assert!(
+            rollover_due_on(tokens, 0, 0, rollover_token_budget(&c).unwrap()).is_none(),
+            "a short thread is nowhere near the default budget"
+        );
         set_setting(&c, "chat_rollover_tokens", "1").unwrap();
-        assert!(rollover_due(&c, &tid).unwrap());
+        assert!(rollover_due_on(tokens, 0, 0, rollover_token_budget(&c).unwrap()).is_some());
         set_setting(&c, "chat_rollover_tokens", "0").unwrap();
-        assert!(!rollover_due(&c, &tid).unwrap(), "0 disables rollover entirely");
+        assert!(
+            rollover_due_on(tokens, 999_999, 99, rollover_token_budget(&c).unwrap()).is_none(),
+            "0 disables rollover entirely"
+        );
+    }
+
+    /// The two watermarks, as a pure policy: the transcript always justifies a
+    /// rollover; the prompt only when a history window exists to shed — a
+    /// just-rolled thread (empty window) must never roll again on a fat
+    /// context alone, or it would roll on every turn, forever.
+    #[test]
+    fn rollover_due_on_races_the_two_watermarks() {
+        // Neither watermark met: nothing to do.
+        assert_eq!(rollover_due_on(11_999, 11_999, 5, 12_000), None);
+        // Transcript watermark, even with no history window at all.
+        assert_eq!(
+            rollover_due_on(12_000, 0, 0, 12_000),
+            Some(RolloverReason::Transcript)
+        );
+        // Prompt watermark with a history window to shed.
+        assert_eq!(
+            rollover_due_on(100, 12_000, 3, 12_000),
+            Some(RolloverReason::Prompt)
+        );
+        // Prompt watermark but nothing to shed — a giant context is
+        // context_char_budget's problem, not the thread's.
+        assert_eq!(rollover_due_on(100, 12_000, 0, 12_000), None);
+        // Off switch beats both watermarks.
+        assert_eq!(rollover_due_on(99_999, 99_999, 99, 0), None);
+    }
+
+    /// The context-block budget is a setting with a sane default and a floor;
+    /// garbage never silently becomes "unbounded".
+    #[test]
+    fn context_char_budget_setting_default_and_floor() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        assert_eq!(context_char_budget(&c).unwrap(), DEFAULT_CONTEXT_CHARS);
+        set_setting(&c, "chat_context_chars", "6000").unwrap();
+        assert_eq!(context_char_budget(&c).unwrap(), 6000);
+        set_setting(&c, "chat_context_chars", "10").unwrap();
+        assert_eq!(
+            context_char_budget(&c).unwrap(),
+            4000,
+            "the floor keeps the grounding block useful"
+        );
+        set_setting(&c, "chat_context_chars", "garbage").unwrap();
+        assert_eq!(context_char_budget(&c).unwrap(), DEFAULT_CONTEXT_CHARS);
     }
 
     /// The summarizer input is a head+tail window: the tail is what "刚才"

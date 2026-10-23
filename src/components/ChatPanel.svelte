@@ -724,7 +724,11 @@
     <div class="rollover-note" role="status">
       <span class="rn-ico"><Icon name="chat" size={12} /></span>
       <span class="rn-body">
-        对话已达上下文预算，已自动总结并<strong>开启新对话</strong>续上——上文摘要已继承，可以直接接着说。
+        {#if app.chatRollover.reason === "prompt"}
+          这一轮的上下文（历史 + 检索资料）已达上下文预算，已自动总结并<strong>开启新对话</strong>续上——上文摘要已继承，可以直接接着说。
+        {:else}
+          对话已达上下文预算，已自动总结并<strong>开启新对话</strong>续上——上文摘要已继承，可以直接接着说。
+        {/if}
         <details>
           <summary>查看摘要</summary>
           <p>{app.chatRollover.summary}</p>

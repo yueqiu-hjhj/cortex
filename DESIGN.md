@@ -103,8 +103,23 @@ Enforced by: `repo.rs` cross-space exclusion + adopt-once tests;
 
 ## 7. A conversation that outgrows its budget rolls over — never silently (0082)
 
-Past `chat_rollover_tokens` (default 12k estimated tokens, `0` disables), the
-next answer summarizes the thread and continues in a fresh one:
+Two watermarks race against `chat_rollover_tokens` (default 12k estimated
+tokens, `0` disables), and the decision happens once the turn's real volume is
+known — the watermark that matters is the prompt the model is about to read,
+not the length of the transcript:
+
+- **transcript** — the thread itself outgrew the budget. Rolling over always
+  helps: the fresh thread starts from a summary;
+- **prompt** — system + history window + context + question + reply headroom
+  already meet it in a *young* thread (a fat context block plus a full history
+  window can do that with a short transcript). This watermark only fires when
+  there IS a history window to shed: a just-rolled thread's window is empty by
+  construction, so without that guard a giant context alone would roll the
+  thread on every turn, forever — trimming an oversized context is
+  `context_char_budget`'s job (`chat_context_chars`, default 18k chars), not
+  the thread's.
+
+Either way, the next answer summarizes the thread and continues in a fresh one:
 
 - the old thread keeps its full history (`chat_threads.rolled_from` lineage);
 - the summary is persisted as the new thread's first system message **and**
@@ -113,11 +128,13 @@ next answer summarizes the thread and continues in a fresh one:
 - this turn's question travels with the answer (backrefs pairs Q→A within a
   thread); the move only fires when the question is genuinely the newest row,
   so a concurrent rollover can never steal an older one;
-- the UI shows a banner and the summary inline — a rollover the user doesn't
-  notice is a conversation that silently lost its thread.
+- the UI shows a banner (naming which watermark fired) and the summary inline —
+  a rollover the user doesn't notice is a conversation that silently lost its
+  thread.
 
 Enforced by: `repo.rs` (archive-nothing/carry-question/lineage, no-steal,
-budget + off switch, head+tail window, inherited-summary visibility).
+budget + off switch, head+tail window, inherited-summary visibility,
+two-watermark policy incl. the no-shed no-roll guard, context-budget floor).
 
 ## 8. Recent turns are fed back into the prompt — windowed, never duplicated
 

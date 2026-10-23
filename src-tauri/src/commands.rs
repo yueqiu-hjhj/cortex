@@ -2079,6 +2079,12 @@ fn moodle_grades_for_subject(c: &Connection, subject_id: &str) -> String {
     out
 }
 
+/// Tokens reserved for the reply itself when estimating a turn's prompt
+/// volume for the rollover watermark. The estimate must overshoot slightly:
+/// rolling over one turn early costs a summary, blowing the model's context
+/// mid-answer costs the answer.
+const REPLY_HEADROOM_TOKENS: i64 = 2_048;
+
 /// Summarize a transcript for rollover continuity (0082). A failed summary must
 /// never cost the user their answer, so this degrades to a mechanical one
 /// (record count + the most recent question) that is honest about being
@@ -2144,43 +2150,8 @@ pub async fn chat_answer(
     let mut model = llm::from_spec_or_any(&chat_spec, &keys).ok_or_else(|| Error::Other(NO_MODEL.into()))?;
     { let c = state.db.lock().unwrap(); apply_budget(&mut model, &c, "chat"); }
 
-    // Auto-rollover (0082): a transcript past its context budget is summarized
-    // and continued in a fresh thread BEFORE this turn is answered, so the
-    // answer — and the question the panel persisted moments ago — land in the
-    // new thread together with the inherited summary. Never silent: the summary
-    // is persisted as the new thread's first system message (visible in the
-    // transcript) and returned for the UI banner.
-    let mut rolled_over: Option<crate::models::RolloverInfo> = None;
-    {
-        let c = state.db.lock().unwrap();
-        let tid = repo::current_thread(&c, &subject_id)?;
-        if repo::rollover_due(&c, &tid)? {
-            let transcript = repo::rollover_transcript(&c, &tid, 8000)?;
-            drop(c); // never hold the DB lock across an LLM call
-            let summary = summarize_for_rollover(model.as_ref(), &transcript);
-            let c = state.db.lock().unwrap();
-            let new_tid = repo::rollover_thread(&c, &subject_id, &tid, &summary)?;
-            rolled_over = Some(crate::models::RolloverInfo {
-                old_thread_id: tid,
-                new_thread_id: new_tid,
-                summary,
-            });
-        }
-    }
-
-    // Recent turns of THIS thread fed back into the prompt. Chat
-    // answers are retrieval-stateless: without this, "它 / 刚才 / 那个" only
-    // ever resolved inside a single turn, and every follow-up asked the model
-    // to re-derive context the conversation had already established. The
-    // window is token-budgeted (oldest turns shed first) and excludes the
-    // current question — the panel persisted it moments ago, so it would
-    // otherwise sit in the prompt twice.
-    let (history, history_turns) = {
-        let c = state.db.lock().unwrap();
-        let tid = repo::current_thread(&c, &subject_id)?;
-        let budget = repo::history_token_budget(&c)?;
-        repo::recent_chat_history(&c, &tid, budget, Some(&query))?
-    };
+    // Auto-rollover (0082) and the history window are decided further down,
+    // once this turn's real prompt volume is known — see the watermarks there.
 
     // Scope: source-level chats are restricted to a single source's chunks; the
     // keyword path applies this in SQL, the vector path filters its results.
@@ -2276,7 +2247,7 @@ pub async fn chat_answer(
             scope_ids.as_deref(),
             Some(&query),
             &hits,
-            18000,
+            repo::context_char_budget(&c)?,
         )?
     };
 
@@ -2377,30 +2348,9 @@ pub async fn chat_answer(
             .flatten()
             .unwrap_or_default(),
     ));
-    // A rolled-over thread carries its predecessor's summary as a system
-    // message; feeding it to the model is what makes the rollover inherit
-    // context instead of resetting — "刚才说的那个" must still resolve across
-    // the boundary. It is context, not a source: never citable.
-    let inherited = repo::active_rollover_summary(&state.db.lock().unwrap(), &subject_id)
-        .ok()
-        .flatten();
-    if let Some(summary) = &inherited {
-        system.push_str(&format!(
-            "\n\nEARLIER CONVERSATION SUMMARY (carried over from the previous thread — context for \
-             resolving references like \"刚才 / that / 前面提到的\"; it is NOT a source and must \
-             never be cited):\n{summary}"
-        ));
-    }
-    // Earlier turns of THIS thread (the summary above covers the previous one).
-    // Context for resolving references — never citable, and the QUESTION at
-    // the end is the one to answer.
-    if !history.is_empty() {
-        system.push_str(&format!(
-            "\n\nRECENT CONVERSATION (oldest → newest — earlier turns are context for resolving \
-             references like \"它 / 刚才 / 那个\"; they are NOT sources and must never be cited; \
-             the QUESTION at the end is the one to answer):\n{history}"
-        ));
-    }
+    // The inherited rollover summary is injected AFTER the watermark decision
+    // below: when this turn triggers a rollover, the summary the prompt must
+    // carry is the one just written, not the previous generation's.
     if web_on {
         // Override the strict sources-only rule above: web mode permits using the
         // WEB RESULTS block and light general knowledge, cited as ⟦web · host⟧.
@@ -2423,12 +2373,99 @@ pub async fn chat_answer(
              do not invent numbers.",
         );
     }
-    let system = system.as_str();
+    let mut system = system;
     let user = if context.is_empty() {
         format!("(No indexed sources are in scope yet.){framework_block}{web_block}\n\nQUESTION: {query}")
     } else {
         format!("SOURCE CONTEXT:\n{context}{framework_block}{web_block}\n\nQUESTION: {query}")
     };
+
+    // ── Rollover watermarks + the history window ───────────────────────────
+    // Both decisions live HERE, after the turn's real volume is known, because
+    // the watermark that matters is not "how long is the transcript" but "how
+    // big is the prompt the model is about to read". Two watermarks race
+    // against `chat_rollover_tokens`:
+    //   • transcript — the thread itself outgrew the budget (the classic case);
+    //   • prompt — system + history window + context + question + reply
+    //     headroom already meet it in a YOUNG thread (a fat context block plus
+    //     a full history window can do that with a short transcript).
+    // The prompt watermark only justifies a rollover when there IS a history
+    // window to shed: a just-rolled thread's window is empty by construction,
+    // so without that guard a giant context alone would roll the thread on
+    // every turn, forever — trimming an oversized context is
+    // `context_char_budget`'s job, not the thread's. Never silent: the summary
+    // is persisted as the new thread's first system message (visible in the
+    // transcript) and returned for the UI banner.
+    let mut rolled_over: Option<crate::models::RolloverInfo> = None;
+    let mut history = String::new();
+    let mut history_turns = 0i64;
+    {
+        let c = state.db.lock().unwrap();
+        let tid = repo::current_thread(&c, &subject_id)?;
+        let budget = repo::history_token_budget(&c)?;
+        let (win, turns) = repo::recent_chat_history(&c, &tid, budget, Some(&query))?;
+        let transcript_tokens = repo::thread_token_total(&c, &tid)?;
+        // Worst-case prompt volume: the history window is counted at its full
+        // budget (its real size is only known after a possible rollover), and
+        // REPLY_HEADROOM reserves room for the answer itself.
+        let est_prompt = crate::tokens::estimate(&system)
+            + crate::tokens::estimate(&user)
+            + budget
+            + REPLY_HEADROOM_TOKENS;
+        match repo::rollover_due_on(
+            transcript_tokens,
+            est_prompt,
+            turns,
+            repo::rollover_token_budget(&c)?,
+        ) {
+            Some(reason) => {
+                let transcript = repo::rollover_transcript(&c, &tid, 8000)?;
+                drop(c); // never hold the DB lock across an LLM call
+                let summary = summarize_for_rollover(model.as_ref(), &transcript);
+                let c = state.db.lock().unwrap();
+                let new_tid = repo::rollover_thread(&c, &subject_id, &tid, &summary)?;
+                rolled_over = Some(crate::models::RolloverInfo {
+                    old_thread_id: tid,
+                    new_thread_id: new_tid,
+                    summary,
+                    reason: reason.as_str().to_string(),
+                });
+                // The fresh thread starts from the summary: its own history
+                // window is empty by construction, and the summary is already
+                // in the system prompt via active_rollover_summary.
+            }
+            None => {
+                history = win;
+                history_turns = turns;
+            }
+        }
+    }
+    // A rolled-over thread carries its predecessor's summary as a system
+    // message; feeding it to the model is what makes the rollover inherit
+    // context instead of resetting — "刚才说的那个" must still resolve across
+    // the boundary. Read AFTER the decision so a rollover this turn injects
+    // the summary it just wrote. It is context, not a source: never citable.
+    let inherited = repo::active_rollover_summary(&state.db.lock().unwrap(), &subject_id)
+        .ok()
+        .flatten();
+    if let Some(summary) = &inherited {
+        system.push_str(&format!(
+            "\n\nEARLIER CONVERSATION SUMMARY (carried over from the previous thread — context for \
+             resolving references like \"刚才 / that / 前面提到的\"; it is NOT a source and must \
+             never be cited):\n{summary}"
+        ));
+    }
+    // Earlier turns of THIS thread (the rollover summary, when present, covers
+    // the previous one). Context for resolving references — never citable, and
+    // the QUESTION at the end is the one to answer.
+    if !history.is_empty() {
+        system.push_str(&format!(
+            "\n\nRECENT CONVERSATION (oldest → newest — earlier turns are context for resolving \
+             references like \"它 / 刚才 / 那个\"; they are NOT sources and must never be cited; \
+             the QUESTION at the end is the one to answer):\n{history}"
+        ));
+    }
+    let system = system.as_str();
 
     // complete_raw (not complete): the finishReason decides the answer's
     // terminal state — a length-capped half answer is still shown (marked

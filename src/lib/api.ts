@@ -154,6 +154,9 @@ export interface RolloverInfo {
   /** The inherited summary — also persisted as the new thread's first
    *  system message, so it survives reloads. */
   summary: string;
+  /** Which watermark fired: "transcript" (the thread outgrew the budget) or
+   *  "prompt" (this turn's prompt did). */
+  reason: "transcript" | "prompt";
 }
 /** The five terminal states of one generation. */
 export type AnswerState = "completed" | "truncated" | "blocked" | "aborted" | "failed";

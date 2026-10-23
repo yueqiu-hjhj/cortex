@@ -222,6 +222,10 @@ pub struct RolloverInfo {
     /// The inherited summary, also persisted as the new thread's first
     /// system message so it survives reloads.
     pub summary: String,
+    /// Which watermark fired: "transcript" (the thread outgrew the budget) or
+    /// "prompt" (this single turn's prompt did). The UI says so — silently
+    /// moving the conversation is the one thing rollover must never do.
+    pub reason: String,
 }
 
 /// A persisted chat message (belongs to one conversation thread).
