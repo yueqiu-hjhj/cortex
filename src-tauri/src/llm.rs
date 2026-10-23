@@ -393,10 +393,7 @@ fn parse_affordable(msg: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|n| *n > 0)
 }
 
-/// Shared blocking HTTP client for LLM calls: a generous request timeout (model
-/// generation can be slow) so a stalled connection fails cleanly instead of
-/// hanging forever.
-fn llm_client() -> reqwest::blocking::Client {
+fn build_client(use_proxy: bool) -> reqwest::blocking::Client {
     // Force identity (uncompressed) transfer encoding. OpenRouter streams a gzip
     // body padded with whitespace keep-alives during slow generation, which
     // reqwest's automatic gzip decoder fails to decode — surfacing as the opaque
@@ -408,11 +405,39 @@ fn llm_client() -> reqwest::blocking::Client {
         reqwest::header::ACCEPT_ENCODING,
         reqwest::header::HeaderValue::from_static("identity"),
     );
-    reqwest::blocking::Client::builder()
+    let builder = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
-        .default_headers(headers)
-        .build()
-        .unwrap_or_default()
+        .default_headers(headers);
+    let builder = if use_proxy { builder } else { builder.no_proxy() };
+    builder.build().unwrap_or_default()
+}
+
+/// Shared blocking HTTP client for LLM calls: a generous request timeout (model
+/// generation can be slow) so a stalled connection fails cleanly instead of
+/// hanging forever.
+fn llm_client() -> reqwest::blocking::Client {
+    build_client(true)
+}
+
+/// True for a base URL that never leaves the machine (Ollama, LM Studio, a local
+/// gateway). Read from the URL because that is the only place the destination is
+/// known before the request is built.
+fn is_loopback(url: &str) -> bool {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let rest = rest.split('/').next().unwrap_or(rest);
+    rest == "localhost"
+        || rest.starts_with("localhost:")
+        || rest.starts_with("127.")
+        || rest.starts_with("[::1]")
+        || rest.starts_with("0.0.0.0")
+}
+
+/// The client to use for a configurable `base_url`. A loopback destination
+/// bypasses `HTTP_PROXY`: reqwest obeys the env proxy by default, so a machine
+/// with one set answers 127.0.0.1 with a refusal — which is exactly "Ollama
+/// stopped working", reported as if the model were at fault.
+fn llm_client_for(base_url: &str) -> reqwest::blocking::Client {
+    build_client(!is_loopback(base_url))
 }
 
 /// Send a request, then read its body as text and parse it as JSON — with
@@ -511,7 +536,7 @@ impl OpenAiCompatLlm {
     /// One raw chat/completions attempt — the JSON, not just the text.
     fn chat_json(&self, system: &str, user: &str, max_tokens: Option<u32>) -> Result<serde_json::Value> {
         let key = self.api_key.trim();
-        let client = llm_client();
+        let client = llm_client_for(&self.base_url);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut body = serde_json::json!({
             "model": self.model,
@@ -606,7 +631,7 @@ impl Llm for OpenAiCompatLlm {
         if key.is_empty() {
             return Err(Error::Other(format!("{}: API key is empty", self.label)));
         }
-        let client = llm_client();
+        let client = llm_client_for(&self.base_url);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut content = vec![serde_json::json!({ "type": "text", "text": OCR_PROMPT })];
         for (mime, b64) in images {
@@ -641,7 +666,7 @@ impl Llm for OpenAiCompatLlm {
         if key.is_empty() {
             return Err(Error::Other(format!("{}: API key is empty", self.label)));
         }
-        let client = llm_client();
+        let client = llm_client_for(&self.base_url);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut content = vec![serde_json::json!({
             "type": "text",
@@ -676,7 +701,7 @@ impl Llm for OpenAiCompatLlm {
     fn extract_cards(&self, images: &[(String, String)]) -> Result<Vec<CardDraft>> {
         let key = self.api_key.trim();
         if key.is_empty() { return Err(Error::Other(format!("{}: API key is empty", self.label))); }
-        let client = llm_client();
+        let client = llm_client_for(&self.base_url);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut content = vec![serde_json::json!({ "type": "text", "text": OCR_CARDS_PROMPT })];
         for (mime, b64) in images {
@@ -701,7 +726,7 @@ impl Llm for OpenAiCompatLlm {
         if key.is_empty() {
             return Err(Error::Other(format!("{}: API key is empty", self.label)));
         }
-        let client = llm_client();
+        let client = llm_client_for(&self.base_url);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": self.model,
@@ -1162,6 +1187,27 @@ fn repair_json(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn loopback_urls_are_recognised_so_they_bypass_the_env_proxy() {
+        for local in [
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:1234",
+            "https://localhost",
+            "http://[::1]:8080/v1",
+            "http://0.0.0.0:8000",
+        ] {
+            assert!(is_loopback(local), "{local}");
+        }
+        for remote in [
+            "https://openrouter.ai/api/v1",
+            "https://api.openai.com/v1",
+            "http://192.168.1.9:11434/v1",
+        ] {
+            assert!(!is_loopback(remote), "{remote}");
+        }
+    }
+
     use super::*;
 
     #[test]
