@@ -84,7 +84,7 @@ fn walk_qa(conn: &Connection, subject_id: &str) -> Result<Vec<QaPair>> {
          FROM chat_messages m
          JOIN chat_threads t ON t.id = m.thread_id
          WHERE t.subject_id=?1
-         ORDER BY m.thread_id, m.created_at ASC",
+         ORDER BY m.thread_id, m.created_at ASC, m.rowid ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![subject_id], |r| {
         Ok((
@@ -250,23 +250,33 @@ pub fn source_backrefs(
 /// Every question asked in the subject, newest first, with the paired
 /// answer's provenance (state / retrieval hits / stripped fabrications).
 pub fn question_index(conn: &Connection, subject_id: &str, limit: usize) -> Result<Vec<QuestionEntry>> {
-    let mut out: Vec<QuestionEntry> = walk_qa(conn, subject_id)?
+    // `walk_qa` yields chronological order, so position doubles as the
+    // tiebreak: two messages written inside the same millisecond still have a
+    // definite order, and "newest first" no longer depends on how SQLite
+    // happened to break the tie.
+    let mut out: Vec<(usize, QuestionEntry)> = walk_qa(conn, subject_id)?
         .into_iter()
-        .map(|p| QuestionEntry {
-            question: clip(&p.question, 120),
-            created_at: p.created_at,
-            thread_id: p.thread_id,
-            answer_state: p.answer_state,
-            hits: p.hits,
-            fabricated_dropped: p.fabricated_dropped,
-            citation_count: p.citation_count,
+        .enumerate()
+        .map(|(seq, p)| {
+            (
+                seq,
+                QuestionEntry {
+                    question: clip(&p.question, 120),
+                    created_at: p.created_at,
+                    thread_id: p.thread_id,
+                    answer_state: p.answer_state,
+                    hits: p.hits,
+                    fabricated_dropped: p.fabricated_dropped,
+                    citation_count: p.citation_count,
+                },
+            )
         })
         .collect();
     // Newest first; unanswered questions carry their ask time, so they sit
     // in chronological place rather than sinking.
-    out.sort_by_key(|q| std::cmp::Reverse(q.created_at));
+    out.sort_by_key(|(seq, q)| std::cmp::Reverse((q.created_at, *seq)));
     out.truncate(limit.clamp(1, 200));
-    Ok(out)
+    Ok(out.into_iter().map(|(_, q)| q).collect())
 }
 
 #[cfg(test)]
@@ -362,6 +372,45 @@ mod tests {
         assert_eq!(idx[0].hits, Some(0));
         assert_eq!(idx[0].fabricated_dropped, Some(2));
         assert_eq!(idx[1].answer_state.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn same_millisecond_messages_keep_their_write_order() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let sid = crate::repo::insert_subject(&c, "线代", None, None, None).unwrap();
+        // One timestamp for all four rows. Wall-clock milliseconds are too
+        // coarse to separate two inserts, and both the pairing and "newest
+        // first" must stay stable anyway — otherwise they depend on whatever
+        // order SQLite happens to return equal keys in.
+        let at = crate::db::now_ms();
+        c.execute(
+            "INSERT INTO chat_threads (id, subject_id, scope, created_at, updated_at)
+             VALUES ('t1', ?1, 'subject', ?2, ?2)",
+            rusqlite::params![sid, at],
+        )
+        .unwrap();
+        for (i, (role, text)) in [
+            ("user", "第一问"),
+            ("assistant", "第一答"),
+            ("user", "第二问"),
+            ("assistant", "第二答"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            c.execute(
+                "INSERT INTO chat_messages (id, thread_id, role, text, created_at)
+                 VALUES (?1, 't1', ?2, ?3, ?4)",
+                rusqlite::params![format!("m{i}"), role, text, at],
+            )
+            .unwrap();
+        }
+
+        let idx = question_index(&c, &sid, 50).unwrap();
+        assert_eq!(idx.len(), 2, "each question paired with its own answer");
+        assert_eq!(idx[0].question, "第二问", "equal timestamps, still newest first");
+        assert_eq!(idx[1].question, "第一问");
     }
 
     #[test]
