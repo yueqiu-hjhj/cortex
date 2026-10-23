@@ -202,6 +202,12 @@ pub fn run() {
                 if let Err(e) = crate::agents::seed_bundled_skills(&c) {
                     eprintln!("[agents] bundled skill seed failed: {e}");
                 }
+                // File tools (read/write/edit/list/search): registry rows are
+                // UI data, seeded idempotently. Access itself is still gated
+                // by the `files` tier, which no agent has by default.
+                if let Err(e) = crate::agents::seed_file_tools(&c) {
+                    eprintln!("[agents] file tool seed failed: {e}");
+                }
                 // Writing toolbox built-ins (0071): seeded by (category,
                 // title), never overwriting an edited copy. Same rule as the
                 // skills above — a seed that reverts user edits is a bug that
@@ -770,6 +776,7 @@ pub fn run() {
             agents::roles_instantiate,
             // agent write-back queue (L2)
             proposals::list_proposals,
+            proposals::list_run_proposals,
             proposals::accept_proposal,
             proposals::reject_proposal,
             proposals::pending_proposals,

@@ -222,6 +222,57 @@ fn check_answer_health(conn: &Connection) -> Check {
     }
 }
 
+/// Retrieval evaluation is deliberately opt-in: it can call an embedding
+/// provider and takes long enough to stall a launch. Startup only notices that
+/// the ledger is old; it never runs the evaluation itself.
+pub const EVAL_STALE_DAYS: i64 = 30;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+fn check_eval_freshness(conn: &Connection, now_ms: i64) -> Check {
+    match crate::repo::latest_eval_run_at(conn) {
+        Ok(None) => Check {
+            name: "Eval freshness",
+            ok: true,
+            warn: false,
+            detail: "尚未运行检索评测".into(),
+            hint: None,
+        },
+        Ok(Some(last)) => {
+            let age = now_ms.saturating_sub(last).max(0);
+            let days = age / DAY_MS;
+            if age > EVAL_STALE_DAYS * DAY_MS {
+                Check {
+                    name: "Eval freshness",
+                    ok: true, // stale evidence is a reminder, not a startup failure
+                    warn: true,
+                    detail: format!(
+                        "上次检索评测是 {days} 天前（提醒阈值 {EVAL_STALE_DAYS} 天）"
+                    ),
+                    hint: Some(
+                        "需要确认检索质量时，到「实验室 › 检索评测」显式运行；启动自检不会自动调用嵌入模型或消耗额度。"
+                            .into(),
+                    ),
+                }
+            } else {
+                Check {
+                    name: "Eval freshness",
+                    ok: true,
+                    warn: false,
+                    detail: format!("上次检索评测是 {days} 天前"),
+                    hint: None,
+                }
+            }
+        }
+        Err(e) => Check {
+            name: "Eval freshness",
+            ok: true,
+            warn: true,
+            detail: format!("无法读取检索评测时间：{e}"),
+            hint: None,
+        },
+    }
+}
+
 pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Result<Report> {
     let (version_check, v) = check_migration_version(conn, known_migrations);
     let checks = vec![
@@ -233,6 +284,7 @@ pub fn run(conn: &Connection, data_dir: &Path, known_migrations: usize) -> Resul
         check_model_configured(conn),
         check_embedding_spaces(conn),
         check_answer_health(conn),
+        check_eval_freshness(conn, crate::db::now_ms()),
     ];
     let passed = checks.iter().filter(|c| c.ok).count();
     let failed = checks.len() - passed;
@@ -292,6 +344,43 @@ mod tests {
         let c = st.db.lock().unwrap();
         let check = check_answer_health(&c);
         assert!(check.ok && !check.warn, "no answers is not a warning: {check:?}");
+    }
+
+    fn save_eval_run_at(conn: &Connection, at: i64) {
+        conn.execute(
+            "INSERT INTO eval_runs (id, kind, report_json, created_at)
+             VALUES (?1, 'synthetic', '[]', ?2)",
+            rusqlite::params![crate::db::new_id(), at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn missing_or_recent_eval_history_is_quiet() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let now = 100 * DAY_MS;
+
+        let empty = check_eval_freshness(&c, now);
+        assert!(empty.ok && !empty.warn, "{empty:?}");
+
+        save_eval_run_at(&c, now - DAY_MS);
+        let recent = check_eval_freshness(&c, now);
+        assert!(recent.ok && !recent.warn, "{recent:?}");
+    }
+
+    #[test]
+    fn stale_eval_history_warns_without_failing_startup() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let now = 100 * DAY_MS;
+        save_eval_run_at(&c, now - (EVAL_STALE_DAYS + 1) * DAY_MS);
+
+        let check = check_eval_freshness(&c, now);
+        assert!(check.ok, "a stale reminder must never block startup: {check:?}");
+        assert!(check.warn, "stale history should be surfaced: {check:?}");
+        assert!(check.detail.contains("31 天前"), "{}", check.detail);
+        assert!(check.hint.as_deref().is_some_and(|h| h.contains("显式运行")));
     }
 }
 

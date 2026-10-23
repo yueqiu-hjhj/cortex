@@ -111,13 +111,17 @@ pub fn get_agent(conn: &Connection, user_id: &str, id: &str) -> Result<Agent> {
     ).map_err(|e| Error::NotFound(format!("agent {id} ({e})")))
 }
 
-pub const TOOL_TIERS: &[&str] = &["read", "write", "network"];
+pub const TOOL_TIERS: &[&str] = &["read", "write", "network", "files"];
 
 /// Normalize a stored/requested tier; garbage falls back to the safe default.
 pub fn normalize_tier(s: &str) -> &'static str {
     match s.trim() {
         "write" => "write",
         "network" => "network",
+        // File access is the highest rung on purpose: it is the only tier that
+        // can touch anything outside the database, so it must be granted
+        // explicitly — a network agent does NOT get it by default.
+        "files" => "files",
         _ => "read",
     }
 }
@@ -126,6 +130,7 @@ pub fn tier_rank(t: &str) -> u8 {
     match normalize_tier(t) {
         "write" => 1,
         "network" => 2,
+        "files" => 3,
         _ => 0,
     }
 }
@@ -494,8 +499,32 @@ pub fn seed_bundled_skills(conn: &Connection) -> Result<usize> {
     Ok(seeded)
 }
 
-// ---- 预置角色库：角色 = 技能 + 提示词 + 工具集 + 权限等级 ----------------------
+/// File tools (the Claude-Code-shaped ones) are seeded at runtime rather than
+/// in a migration: the registry is UI data, and INSERT OR IGNORE keeps this
+/// idempotent on every launch. They are gated by the `files` tier, which no
+/// existing agent has, so seeding alone grants nobody access.
+pub fn seed_file_tools(conn: &Connection) -> Result<usize> {
+    const TOOLS: &[(&str, &str, &str)] = &[
+        ("tool-read-file", "read_file", "Read a text file inside the agent workspace, with line numbers."),
+        ("tool-write-file", "write_file", "Create or overwrite a text file inside the workspace."),
+        ("tool-edit-file", "edit_file", "Replace one exact, unique string in a file (preferred for code edits)."),
+        ("tool-list-dir", "list_dir", "List files and folders inside the workspace."),
+        ("tool-search-files", "search_files", "Recursively search file contents inside the workspace."),
+    ];
+    let now = crate::db::now_ms();
+    let mut seeded = 0;
+    for (id, name, desc) in TOOLS {
+        seeded += conn.execute(
+            "INSERT OR IGNORE INTO agent_tools \
+             (id, user_id, name, description, kind, enabled, schema_json, built_in, created_at) \
+             VALUES (?1,?2,?3,?4,'files',1,'{}',1,?5)",
+            params![id, DEFAULT_USER, name, desc, now],
+        )?;
+    }
+    Ok(seeded)
+}
 
+// ---- 预置角色库：角色 = 技能 + 提示词 + 工具集 + 权限等级 ----------------------
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PresetRole {
     pub id: String,
@@ -514,6 +543,28 @@ pub struct PresetRole {
 pub fn preset_roles() -> Vec<PresetRole> {
     let read_tools = |names: &[&str]| names.iter().map(|s| s.to_string()).collect();
     vec![
+        PresetRole {
+            id: "code-assistant".into(),
+            name: "代码助手".into(),
+            description: "读写工作目录：列目录、搜代码、读文件、精确改文件。files 权限（最高档）；工作目录在页面顶部设置。".into(),
+            system_prompt: "你是代码助手，工作方式像 Claude Code：\n\
+1. 先用 list_dir / search_files 找到相关文件，不要猜路径；\n\
+2. 用 read_file 读够上下文再动手；\n\
+3. 改代码用 edit_file（old_string 必须逐字一致且唯一，含缩进）；只有整篇重写才用 write_file；\n\
+4. 改完用 read_file 复核改后的片段；\n\
+5. 不能执行 shell 命令，也不要声称运行过测试；需要用户执行时明确写出命令。\n\
+回答用中文，改动要说清「哪个文件、改了什么」。".into(),
+            skills: vec![],
+            tools: read_tools(&[
+                "list_dir",
+                "search_files",
+                "read_file",
+                "edit_file",
+                "write_file",
+                "search_notes",
+            ]),
+            tool_tier: "files".into(),
+        },
         PresetRole {
             id: "review-scholar".into(),
             name: "综述学者".into(),
@@ -535,10 +586,10 @@ pub fn preset_roles() -> Vec<PresetRole> {
         PresetRole {
             id: "chapter-writer".into(),
             name: "章节写手".into(),
-            description: "学术语气章节草稿：段落规划 → 逐段起草 → 小结衔接；write 权限，草稿可直接存为笔记。绑「章节草稿起草」技能。".into(),
-            system_prompt: "你是学术写作助手。按「章节草稿起草」技能起草章节；引用只允许用户提供的文献或用检索工具在库里查到的内容，查不到支撑的句子标 ⚠。用户要求保存草稿时，用 save_note 把成稿写进指定科目（不确定科目归属就先问，不要猜）。回答用中文。".into(),
+            description: "学术语气章节草稿：段落规划 → 逐段起草 → 小结衔接；write 权限，成稿以提案交给用户确认后入库。绑「章节草稿起草」技能。".into(),
+            system_prompt: "你是学术写作助手。按「章节草稿起草」技能起草章节；引用只允许用户提供的文献或用检索工具在库里查到的内容，查不到支撑的句子标 ⚠。用户要求保存草稿时，用 propose_note 把成稿作为草稿提交（mode=new 时给 title 与 subject 学科名，append/replace 时给 note_id；不确定科目归属就先问，不要猜）。propose_note 只是排队待审，笔记与 .md 文件都没有写入 —— 用户在对话里点「采纳并写入」之后才算保存，所以回复时必须说「草稿已提交待确认」，绝不能说「已保存」。回答用中文。".into(),
             skills: vec!["章节草稿起草".into()],
-            tools: read_tools(&["list_notebooks", "search_notebook", "search_notes", "get_source", "save_note"]),
+            tools: read_tools(&["list_notebooks", "search_notebook", "search_notes", "get_source", "get_note", "propose_note"]),
             tool_tier: "write".into(),
         },
         PresetRole {
@@ -562,10 +613,10 @@ pub fn preset_roles() -> Vec<PresetRole> {
         PresetRole {
             id: "web-researcher".into(),
             name: "外联研究员".into(),
-            description: "授予 network 权限：可调用你在 MCP 注册的外部工具（联网检索/记忆库等）。创建后把要用的 MCP 工具加进它的白名单。".into(),
-            system_prompt: "你是外联研究员。优先使用用户库内的检索工具；需要外部信息时调用已授权的 MCP 工具，回答注明信息来自库内还是外部。回答用中文。".into(),
+            description: "唯一能直接上网的角色：内置 web_search 搜 SearXNG、fetch_page 读原文，也可加你在 MCP 注册的外部工具（联网检索/记忆库等）。库外的问题交给它。".into(),
+            system_prompt: "你是外联研究员。先用库内检索工具查用户的知识库；库里没有、需要外部信息时，用 web_search 搜索（SearXNG），摘要不够再用 fetch_page 读原文；也可以调用已授权的 MCP 外部工具。回答必须注明每条信息来自库内还是哪个网址，引用给出链接。库里没有、外部也查不到就明说。回答用中文。".into(),
             skills: vec![],
-            tools: read_tools(&["list_notebooks", "search_notebook", "get_source"]),
+            tools: read_tools(&["list_notebooks", "search_notebook", "get_source", "web_search", "fetch_page"]),
             tool_tier: "network".into(),
         },
     ]

@@ -2319,22 +2319,47 @@ pub fn save_eval_run(conn: &Connection, kind: &str, reports: &[crate::eval::Eval
     Ok(at)
 }
 
-/// The most recent run of `kind` strictly before `before_at`, if any — the
-/// baseline the adoption rule judges against.
+/// The most recent run of `kind` with the same comparison configuration,
+/// strictly before `before_at`, if any. Rows are scanned newest-first because
+/// the config identity lives in report_json; this keeps the schema unchanged
+/// and lets reports from before config identity existed fail closed.
 pub fn previous_eval_run(
     conn: &Connection,
     kind: &str,
     before_at: i64,
+    candidate: &crate::eval::EvalReport,
 ) -> Result<Option<(i64, Vec<crate::eval::EvalReport>)>> {
-    let row: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT created_at, report_json FROM eval_runs
-             WHERE kind=?1 AND created_at<?2 ORDER BY created_at DESC LIMIT 1",
-            params![kind, before_at],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    Ok(row.and_then(|(at, json)| serde_json::from_str(&json).ok().map(|r| (at, r))))
+    let mut stmt = conn.prepare(
+        "SELECT created_at, report_json FROM eval_runs
+         WHERE kind=?1 AND created_at<?2 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![kind, before_at], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (at, json) = row?;
+        let Ok(reports): std::result::Result<Vec<crate::eval::EvalReport>, _> =
+            serde_json::from_str(&json)
+        else {
+            continue;
+        };
+        if reports
+            .iter()
+            .any(|r| crate::eval::same_eval_config(r, candidate))
+        {
+            return Ok(Some((at, reports)));
+        }
+    }
+    Ok(None)
+}
+
+/// Timestamp of the newest eval run, regardless of kind or configuration.
+/// Startup self-check uses only this scalar and never invokes an embedder.
+pub fn latest_eval_run_at(conn: &Connection) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row("SELECT MAX(created_at) FROM eval_runs", [], |r| r.get(0))
+        .optional()?
+        .flatten())
 }
 
 /// Delete every message in the subject's active thread (keeps the thread row).

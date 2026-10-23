@@ -1781,6 +1781,10 @@ export interface Proposal {
   created_at: number;
   resolved_at: number | null;
   result_note_id: string | null;
+  /** 0087 provenance: which in-app agent run queued this draft. */
+  run_id: string | null;
+  thread_id: string | null;
+  agent_id: string | null;
   preview: ProposalPreview;
 }
 export interface AppliedProposal {
@@ -1792,6 +1796,10 @@ export interface AppliedProposal {
 /** Pending proposals by default; pass "all" for the history. */
 export const listProposals = (status?: string | null) =>
   invoke<Proposal[]>("list_proposals", { status: status ?? null });
+/** Drafts one agent run / shared conversation produced (0087). At least one
+ *  of runId / threadId is required — the whole queue is listProposals(). */
+export const listRunProposals = (runId?: string | null, threadId?: string | null) =>
+  invoke<Proposal[]>("list_run_proposals", { runId: runId ?? null, threadId: threadId ?? null });
 /** Apply a draft. `force` overwrites a note that changed since the draft. */
 export const acceptProposal = (id: string, force = false) =>
   invoke<AppliedProposal>("accept_proposal", { id, force });

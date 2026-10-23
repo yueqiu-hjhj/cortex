@@ -315,6 +315,13 @@ pub struct Separation {
 pub struct EvalReport {
     pub mode: String,
     pub k: usize,
+    /// Embedding space used for this run. Empty for pre-config-identity
+    /// reports, which must never be treated as a comparable baseline.
+    #[serde(default)]
+    pub space: String,
+    /// Canonical subject scope for real-corpus runs, or `synthetic`.
+    #[serde(default)]
+    pub scope: String,
     pub evaluated: usize,
     /// Share of queries whose expected source appears in the top k.
     pub recall_at_k: f32,
@@ -328,6 +335,28 @@ pub struct EvalReport {
 }
 
 pub const MODES: [&str; 4] = ["vector", "rerank", "hybrid", "hybrid+rerank"];
+pub const SYNTHETIC_SCOPE: &str = "synthetic";
+
+/// Canonical identity for a real-corpus subject selection. None and an empty
+/// list both mean "all real subjects"; selected ids are sorted so checkbox
+/// order cannot split otherwise-identical runs into different configurations.
+pub fn real_scope_key(subject_ids: Option<&[String]>) -> String {
+    let mut ids: Vec<&str> = subject_ids
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return "all".to_string();
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    format!(
+        "subjects:{}",
+        serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string())
+    )
+}
 
 /// The corpus with vectors already computed. Splitting "embed" from "write"
 /// keeps every slow (ONNX / network) call inside one blocking hop in the command
@@ -434,12 +463,29 @@ pub fn embed_queries(embedder: &dyn Embedder) -> Result<Vec<EvalQuery>> {
 ///
 /// `mode` must be one of [`MODES`]; anything else is rejected so a typo cannot
 /// silently report the baseline as an improvement.
-pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> Result<EvalReport> {
+pub fn score(
+    conn: &Connection,
+    mode: &str,
+    k: usize,
+    scope: &str,
+    queries: &[EvalQuery],
+) -> Result<EvalReport> {
     if !MODES.contains(&mode) {
         return Err(crate::error::Error::Other(format!(
             "unknown eval mode '{mode}' (expected one of: {})",
             MODES.join(", ")
         )));
+    }
+    if scope.is_empty() {
+        return Err(crate::error::Error::Other(
+            "eval scope must not be empty".into(),
+        ));
+    }
+    let space = queries.first().map(|q| q.space.as_str()).unwrap_or("");
+    if queries.iter().any(|q| q.space.as_str() != space) {
+        return Err(crate::error::Error::Other(
+            "eval queries span multiple embedding spaces".into(),
+        ));
     }
     let k = k.clamp(1, 20);
     let mut rows = Vec::new();
@@ -486,6 +532,8 @@ pub fn score(conn: &Connection, mode: &str, k: usize, queries: &[EvalQuery]) -> 
     Ok(EvalReport {
         mode: mode.to_string(),
         k,
+        space: space.to_string(),
+        scope: scope.to_string(),
         evaluated: rows.len(),
         recall_at_k: hit_count as f32 / n as f32,
         mrr: rr_sum / n as f32,
@@ -542,8 +590,16 @@ fn separation_of(strata: &[Stratum]) -> Option<Separation> {
 }
 
 /// Score every mode, in [`MODES`] order, so the UI can render one table.
-pub fn score_all(conn: &Connection, k: usize, queries: &[EvalQuery]) -> Result<Vec<EvalReport>> {
-    MODES.iter().map(|m| score(conn, m, k, queries)).collect()
+pub fn score_all(
+    conn: &Connection,
+    k: usize,
+    scope: &str,
+    queries: &[EvalQuery],
+) -> Result<Vec<EvalReport>> {
+    MODES
+        .iter()
+        .map(|m| score(conn, m, k, scope, queries))
+        .collect()
 }
 
 /// What a run returns: the per-mode table plus, when a previous run of the
@@ -556,21 +612,42 @@ pub struct EvalOutcome {
     pub verdict: Option<EvalVerdict>,
 }
 
-/// Persist one run and judge it against the previous run of the same kind.
-/// `kind` separates synthetic runs (comparable across time — same corpus)
-/// from real-corpus runs (whose numbers also move when the library does).
+/// Two reports belong to the same comparison bucket only when every retrieval
+/// input that changes the metric is identical. Old reports have empty config
+/// fields and therefore never match a new run.
+pub(crate) fn same_eval_config(a: &EvalReport, b: &EvalReport) -> bool {
+    a.mode == b.mode
+        && a.k == b.k
+        && !a.space.is_empty()
+        && a.space == b.space
+        && !a.scope.is_empty()
+        && a.scope == b.scope
+}
+
+/// Persist one run and judge it against the previous run with the same
+/// embedding space, k, and subject scope. `kind` still separates synthetic
+/// runs (comparable across time -- same corpus) from real-corpus runs (whose
+/// numbers also move when the library does).
 pub fn record_and_judge(
     conn: &Connection,
     kind: &str,
     reports: &[EvalReport],
 ) -> Result<Option<EvalVerdict>> {
-    let at = crate::repo::save_eval_run(conn, kind, reports)?;
-    let Some((prev_at, prev_reports)) = crate::repo::previous_eval_run(conn, kind, at)? else {
-        return Ok(None); // first run of this kind: nothing to compare against
+    let Some(cand) = reports.iter().find(|r| r.mode == VERDICT_MODE) else {
+        crate::repo::save_eval_run(conn, kind, reports)?;
+        return Ok(None);
     };
-    let base = prev_reports.iter().find(|r| r.mode == VERDICT_MODE);
-    let cand = reports.iter().find(|r| r.mode == VERDICT_MODE);
-    Ok(base.zip(cand).map(|(b, c)| {
+    let at = crate::repo::save_eval_run(conn, kind, reports)?;
+    let Some((prev_at, prev_reports)) =
+        crate::repo::previous_eval_run(conn, kind, at, cand)?
+    else {
+        return Ok(None); // first run with this config: nothing to compare against
+    };
+    let base = prev_reports
+        .iter()
+        .find(|r| r.mode == VERDICT_MODE && same_eval_config(r, cand));
+    Ok(base.map(|b| {
+        let c = cand;
         let mut v = verdict(prev_at, b, c);
         if kind == "real" {
             v.note.push_str("（real 语料的对比同时反映了你库里的增删改——数字变化不全是检索改动的功劳或责任。）");
@@ -863,11 +940,13 @@ mod tests {
     fn all_modes_are_reported_and_the_corpus_is_seeded() {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
-        let reports = score_all(&c, DEFAULT_K, &queries).unwrap();
+        let reports = score_all(&c, DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
         assert_eq!(reports.len(), 4);
         for r in &reports {
             assert_eq!(r.evaluated, cases().len());
             assert_eq!(r.rows.len(), cases().len());
+            assert_eq!(r.scope, SYNTHETIC_SCOPE);
+            assert_eq!(r.space, StubEmbedder.space());
             assert!(r.recall_at_k >= 0.0 && r.recall_at_k <= 1.0);
             assert!(r.mrr >= 0.0 && r.mrr <= 1.0, "mrr out of range for {}", r.mode);
         }
@@ -887,7 +966,7 @@ mod tests {
     fn rerank_and_hybrid_never_regress_vector() {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
-        let reports = score_all(&c, DEFAULT_K, &queries).unwrap();
+        let reports = score_all(&c, DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
         let get = |mode: &str| reports.iter().find(|r| r.mode == mode).unwrap();
         let vector = get("vector");
         for mode in ["rerank", "hybrid", "hybrid+rerank"] {
@@ -932,14 +1011,14 @@ mod tests {
     fn unknown_mode_is_rejected() {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
-        assert!(score(&c, "quantum", DEFAULT_K, &queries).is_err());
+        assert!(score(&c, "quantum", DEFAULT_K, SYNTHETIC_SCOPE, &queries).is_err());
     }
 
     #[test]
     fn the_expected_source_is_ranked_first_on_a_clean_query() {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
-        let r = score(&c, "vector", DEFAULT_K, &queries).unwrap();
+        let r = score(&c, "vector", DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap();
         // Unanswerable cases have no expected source and never rank — the
         // stub embedder is a hashed bag of terms, so every clean (answerable)
         // query should still put its source first.
@@ -1004,6 +1083,8 @@ mod tests {
         EvalReport {
             mode: mode.to_string(),
             k: DEFAULT_K,
+            space: StubEmbedder.space().to_string(),
+            scope: SYNTHETIC_SCOPE.to_string(),
             evaluated: 23,
             recall_at_k: recall,
             mrr,
@@ -1024,7 +1105,7 @@ mod tests {
     fn strata_are_stratified_and_unanswerable_never_ranks() {
         let (st, queries) = prepare();
         let c = st.db.lock().unwrap();
-        let r = &score_all(&c, DEFAULT_K, &queries).unwrap()[0];
+        let r = &score_all(&c, DEFAULT_K, SYNTHETIC_SCOPE, &queries).unwrap()[0];
         let kinds: Vec<&str> = r.strata.iter().map(|s| s.kind.as_str()).collect();
         assert!(kinds.contains(&"factual"), "strata: {kinds:?}");
         assert!(kinds.contains(&"conceptual"), "strata: {kinds:?}");
@@ -1068,7 +1149,8 @@ mod tests {
     }
 
     /// record_and_judge: first run has no baseline; the second is judged
-    /// against the first, and the baseline is strictly the PREVIOUS run.
+    /// against the first matching config, and the baseline is strictly before
+    /// the candidate.
     #[test]
     fn record_and_judge_compares_against_the_previous_run() {
         let st = crate::db::AppState::in_memory().unwrap();
@@ -1081,5 +1163,60 @@ mod tests {
         assert_eq!(v.mode, VERDICT_MODE);
         // A real run's baseline is separate: synthetic history must not leak in.
         assert!(record_and_judge(&c, "real", std::slice::from_ref(&report(VERDICT_MODE, 0.5, 0.5, None))).unwrap().is_none());
+    }
+
+    #[test]
+    fn record_and_judge_skips_mismatched_or_legacy_configs() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let baseline = report(VERDICT_MODE, 0.60, 0.50, Some(0.30));
+        assert!(record_and_judge(&c, "synthetic", std::slice::from_ref(&baseline))
+            .unwrap()
+            .is_none());
+        let baseline_at: i64 = c
+            .query_row("SELECT MIN(created_at) FROM eval_runs", [], |r| r.get(0))
+            .unwrap();
+
+        let mut different_k = report(VERDICT_MODE, 0.90, 0.90, Some(0.30));
+        different_k.k = DEFAULT_K + 1;
+        assert!(record_and_judge(&c, "synthetic", std::slice::from_ref(&different_k))
+            .unwrap()
+            .is_none());
+
+        let mut different_space = report(VERDICT_MODE, 0.90, 0.90, Some(0.30));
+        different_space.space = "other:768".into();
+        assert!(record_and_judge(&c, "synthetic", std::slice::from_ref(&different_space))
+            .unwrap()
+            .is_none());
+
+        let mut different_scope = report(VERDICT_MODE, 0.90, 0.90, Some(0.30));
+        different_scope.scope = real_scope_key(Some(&["subject-a".into()]));
+        assert!(record_and_judge(&c, "synthetic", std::slice::from_ref(&different_scope))
+            .unwrap()
+            .is_none());
+
+        let mut legacy = report(VERDICT_MODE, 0.90, 0.90, Some(0.30));
+        legacy.space.clear();
+        legacy.scope.clear();
+        crate::repo::save_eval_run(&c, "synthetic", std::slice::from_ref(&legacy)).unwrap();
+
+        let matching = record_and_judge(
+            &c,
+            "synthetic",
+            std::slice::from_ref(&report(VERDICT_MODE, 0.66, 0.52, Some(0.30))),
+        )
+        .unwrap()
+        .expect("the matching baseline is still available");
+        assert_eq!(matching.baseline_at, baseline_at);
+    }
+
+    #[test]
+    fn real_scope_identity_ignores_selection_order_and_duplicates() {
+        assert_eq!(real_scope_key(None), "all");
+        assert_eq!(real_scope_key(Some(&[])), "all");
+        let a = real_scope_key(Some(&["b".into(), "a".into(), "a".into()]));
+        let b = real_scope_key(Some(&["a".into(), "b".into()]));
+        assert_eq!(a, b);
+        assert_ne!(a, real_scope_key(Some(&["a".into()])));
     }
 }

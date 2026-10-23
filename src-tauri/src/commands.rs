@@ -5742,28 +5742,24 @@ fn host_from_url(url: &str) -> String {
 }
 
 /// Query a configured SearXNG instance for web results.
-#[tauri::command]
-pub async fn web_search(
-    app: AppHandle,
-    query: String,
-    categories: Option<String>,
+/// Shared by the `web_search` command and the agent's `web_search` tool:
+/// one offline guard, one SearXNG resolution, one result shape. The tool
+/// version exists so an agent and the Web view can never disagree about
+/// whether the network is allowed or what "configured" means.
+pub(crate) fn searxng_search(
+    c: &Connection,
+    query: &str,
+    categories: &str,
 ) -> Result<Vec<WebResult>> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<WebResult>> {
-    let state = app.state::<AppState>();
-    let base = {
-        let c = state.db.lock().unwrap();
-        if offline_mode(&c) {
-            return Err(Error::Other(
-                "Offline mode is on — web search is disabled. Turn it off in Settings → Data & privacy.".into(),
-            ));
-        }
-        searxng_base(&c)?
+    if offline_mode(c) {
+        return Err(Error::Other(
+            "Offline mode is on — web search is disabled. Turn it off in Settings → Data & privacy.".into(),
+        ));
     }
-    .ok_or_else(|| Error::Other("searxng_url not configured".into()))?;
-    let cats = categories.filter(|s| !s.is_empty()).unwrap_or_else(|| "general".into());
-
-    let results = searxng_raw(&base, &query, &cats)?;
-    let out = results
+    let base = searxng_base(c)?
+        .ok_or_else(|| Error::Other("searxng_url not configured".into()))?;
+    let cats = if categories.trim().is_empty() { "general" } else { categories.trim() };
+    Ok(searxng_raw(&base, query, cats)?
         .iter()
         .map(|r| {
             let url = r["url"].as_str().unwrap_or("").to_string();
@@ -5777,8 +5773,52 @@ pub async fn web_search(
                 thumbnail: r["thumbnail_src"].as_str().map(normalize_img_url),
             }
         })
-        .collect();
-    Ok(out)
+        .collect())
+}
+
+/// Fetch a URL and extract readable text, synchronously. The Tauri command
+/// wraps this in spawn_blocking; the agent tool calls it directly because a
+/// tool body already runs off the UI thread (and blocking one HTTP round-trip
+/// is the same thing an MCP call does).
+pub(crate) fn fetch_readable(url: &str) -> Result<FetchedPage> {
+    let url = url.trim().to_string();
+    let client = http_client(20);
+    let resp = client
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/124.0 Safari/537.36",
+        )
+        .header("Accept", "text/html,application/xhtml+xml")
+        .send()?;
+    if !resp.status().is_success() {
+        return Err(Error::Other(format!("fetch failed: HTTP {}", resp.status())));
+    }
+    let final_url = resp.url().to_string();
+    let html = resp.text()?;
+    let (title, text, links) = ingest::readable_page(&html, &final_url);
+    Ok(FetchedPage {
+        url,
+        final_url,
+        title,
+        text,
+        links: links
+            .into_iter()
+            .map(|(href, text)| PageLink { href, text })
+            .collect(),
+    })
+}
+#[tauri::command]
+pub async fn web_search(
+    app: AppHandle,
+    query: String,
+    categories: Option<String>,
+) -> Result<Vec<WebResult>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<WebResult>> {
+    let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        searxng_search(&c, &query, categories.as_deref().unwrap_or("general"))
     })
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
@@ -6232,35 +6272,7 @@ pub struct PageLink {
 /// off-thread via spawn_blocking (reqwest::blocking).
 #[tauri::command]
 pub async fn fetch_page(url: String) -> Result<FetchedPage> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<FetchedPage> {
-        let url = url.trim().to_string();
-        let client = http_client(20);
-        let resp = client
-            .get(&url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
-                 Chrome/124.0 Safari/537.36",
-            )
-            .header("Accept", "text/html,application/xhtml+xml")
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(Error::Other(format!("fetch failed: HTTP {}", resp.status())));
-        }
-        let final_url = resp.url().to_string();
-        let html = resp.text()?;
-        let (title, text, links) = ingest::readable_page(&html, &final_url);
-        Ok(FetchedPage {
-            url,
-            final_url,
-            title,
-            text,
-            links: links
-                .into_iter()
-                .map(|(href, text)| PageLink { href, text })
-                .collect(),
-        })
-    })
+    tauri::async_runtime::spawn_blocking(move || fetch_readable(&url))
     .await
     .map_err(|e| Error::Other(format!("background task failed: {e}")))?
 }
@@ -7864,9 +7876,11 @@ pub async fn retrieval_eval(
     .map_err(|e| Error::Other(format!("eval task failed: {e}")))??;
     let c = state.db.lock().unwrap();
     crate::eval::seed(&c, &seeded)?;
-    let reports = crate::eval::score_all(&c, want, &queries)?;
-    // Persist + judge against the previous synthetic run: the adoption rule
-    // (KnowNote borrow) turns "did my change help?" into a repeatable verdict.
+    let reports =
+        crate::eval::score_all(&c, want, crate::eval::SYNTHETIC_SCOPE, &queries)?;
+    // Persist + judge against the previous synthetic run with the same k and
+    // embedding space. The adoption rule turns "did my change help?" into a
+    // repeatable verdict without comparing different configurations.
     let verdict = crate::eval::record_and_judge(&c, "synthetic", &reports)?;
     Ok(crate::eval::EvalOutcome { reports, verdict })
 }
@@ -7888,6 +7902,7 @@ pub async fn retrieval_eval_real(
     k: Option<i64>,
 ) -> Result<crate::eval::EvalOutcome> {
     let want = k.unwrap_or(crate::eval::DEFAULT_K as i64).clamp(1, 20) as usize;
+    let scope = crate::eval::real_scope_key(subject_ids.as_deref());
 
     // Pure SQL: sample query candidates from the user's indexed chunks.
     let candidates = {
@@ -7934,7 +7949,7 @@ pub async fn retrieval_eval_real(
         })
         .collect();
     let c = state.db.lock().unwrap();
-    let reports = crate::eval::score_all(&c, want, &queries)?;
+    let reports = crate::eval::score_all(&c, want, &scope, &queries)?;
     // Real runs are persisted and judged like synthetic ones, but the
     // verdict's note carries the caveat: these numbers also move when the
     // library does, so a delta is not purely the retrieval change's doing.

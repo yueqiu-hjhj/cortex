@@ -743,7 +743,7 @@
                 <span class="lab-verdict-tag mono">
                   {verdict.overall === "adopt" ? "✓ ADOPT" : verdict.overall === "regress" ? "✗ REGRESS" : "— NEUTRAL"}
                 </span>
-                <span class="lab-verdict-mode mono">{verdict.mode} · 对比上次运行</span>
+                <span class="lab-verdict-mode mono">{verdict.mode} · 对比上次同配置运行</span>
                 <div class="lab-verdict-metrics">
                   {#each verdict.metrics as mv (mv.metric)}
                     <span class="lab-vm" class:lab-vm-adopt={mv.verdict === "adopt"} class:lab-vm-regress={mv.verdict === "regress"}>

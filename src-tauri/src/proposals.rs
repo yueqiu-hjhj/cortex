@@ -86,7 +86,21 @@ pub struct Proposal {
     pub created_at: i64,
     pub resolved_at: Option<i64>,
     pub result_note_id: Option<String>,
+    /// Which in-app agent run queued this (0087). `None` for MCP-queued
+    /// proposals, which have no run — the Notes inbox still lists those.
+    pub run_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub agent_id: Option<String>,
     pub preview: Preview,
+}
+
+/// Provenance for a proposal made by the built-in agent loop. `None` values
+/// mean "queued from outside a run" (the MCP path), and the columns stay NULL.
+#[derive(Debug, Clone, Default)]
+pub struct Origin<'a> {
+    pub run_id: Option<&'a str>,
+    pub thread_id: Option<&'a str>,
+    pub agent_id: Option<&'a str>,
 }
 
 /// What the caller must supply to queue a draft. `text` means: the new body
@@ -326,12 +340,15 @@ fn row_to_proposal(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
         created_at: r.get("created_at")?,
         resolved_at: r.get("resolved_at")?,
         result_note_id: r.get("result_note_id")?,
+        run_id: r.get("run_id")?,
+        thread_id: r.get("thread_id")?,
+        agent_id: r.get("agent_id")?,
         preview: preview(&base, &body),
     })
 }
 
 const PROPOSAL_COLS: &str = "id, kind, status, note_id, title, subject_id, base_body, body, \
-     rationale, author, created_at, resolved_at, result_note_id";
+     rationale, author, created_at, resolved_at, result_note_id, run_id, thread_id, agent_id";
 
 pub fn get(conn: &Connection, id: &str) -> Result<Proposal> {
     let sql = format!("SELECT {PROPOSAL_COLS} FROM agent_proposals WHERE id=?1");
@@ -348,6 +365,22 @@ pub fn list(conn: &Connection, status: Option<&str>, limit: usize) -> Result<Vec
     );
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(params![status, limit as i64], row_to_proposal)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Proposals queued by one agent run, or by every run in a shared thread.
+/// Newest first. Both filters are optional, but the caller must pass at least
+/// one - an empty filter would return the whole queue, which is what the
+/// Notes inbox is for.
+pub fn list_for_run(
+    conn: &Connection,
+    run_id: Option<&str>,
+    thread_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<Proposal>> {
+    let sql = format!("SELECT {PROPOSAL_COLS} FROM agent_proposals WHERE ((?1 IS NOT NULL AND run_id=?1) OR (?2 IS NOT NULL AND thread_id=?2)) ORDER BY created_at DESC LIMIT ?3");
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map(params![run_id, thread_id, limit as i64], row_to_proposal)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -421,6 +454,18 @@ fn compose(base: &str, text: &str, kind: &str) -> String {
 /// one when the agent retries the same draft, so a flaky client cannot fill the
 /// queue with duplicates.
 pub fn create(conn: &Connection, draft: Draft<'_>) -> Result<Proposal> {
+    create_with_origin(conn, draft, Origin::default())
+}
+
+/// Same as [`create`], but tags the row with where it came from (0087): the
+/// agent run / shared thread / agent id, so the conversation panel can show
+/// "drafts waiting for you from THIS conversation". Empty parts stay NULL and
+/// the proposal behaves exactly like an MCP-queued one.
+pub fn create_with_origin(
+    conn: &Connection,
+    draft: Draft<'_>,
+    origin: Origin<'_>,
+) -> Result<Proposal> {
     if !matches!(draft.kind, NOTE_NEW | NOTE_APPEND | NOTE_REPLACE) {
         return Err(Error::Other(format!(
             "未知的 kind「{}」（new / append / replace）",
@@ -482,8 +527,9 @@ pub fn create(conn: &Connection, draft: Draft<'_>) -> Result<Proposal> {
     let id = new_id();
     conn.execute(
         "INSERT INTO agent_proposals \
-         (id, kind, status, note_id, title, subject_id, base_body, body, rationale, author, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, kind, status, note_id, title, subject_id, base_body, body, rationale, author, created_at, \
+          run_id, thread_id, agent_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             draft.kind,
@@ -500,6 +546,9 @@ pub fn create(conn: &Connection, draft: Draft<'_>) -> Result<Proposal> {
                 draft.author.trim()
             },
             now_ms(),
+            origin.run_id.filter(|s| !s.trim().is_empty()),
+            origin.thread_id.filter(|s| !s.trim().is_empty()),
+            origin.agent_id.filter(|s| !s.trim().is_empty()),
         ],
     )?;
     get(conn, &id)
@@ -640,6 +689,26 @@ pub fn list_proposals(
 ) -> Result<Vec<Proposal>> {
     let c = state.db.lock().unwrap();
     list(&c, status.as_deref(), 200)
+}
+
+/// Proposals made by one agent run / shared thread (0087). The conversation
+/// panel calls this to show the drafts this conversation is waiting on. A
+/// filter is required: the whole queue is `list_proposals`.
+#[tauri::command]
+pub fn list_run_proposals(
+    state: tauri::State<crate::db::AppState>,
+    run_id: Option<String>,
+    thread_id: Option<String>,
+) -> Result<Vec<Proposal>> {
+    let run_id = run_id.filter(|s| !s.trim().is_empty());
+    let thread_id = thread_id.filter(|s| !s.trim().is_empty());
+    if run_id.is_none() && thread_id.is_none() {
+        return Err(Error::Other(
+            "至少要传 run_id 或 thread_id —— 查看全部提案请用 list_proposals".into(),
+        ));
+    }
+    let c = state.db.lock().unwrap();
+    list_for_run(&c, run_id.as_deref(), thread_id.as_deref(), 100)
 }
 
 #[tauri::command]

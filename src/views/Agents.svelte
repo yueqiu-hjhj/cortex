@@ -16,6 +16,9 @@
   let runAgentId = $state("");
   /** Run currently executing on the backend — the transcript polls live. */
   let runningRunId = $state<string | null>(null);
+  /** File tools are scoped to this directory (setting `agent_workspace`). */
+  let workspace = $state("");
+  let workspaceSaving = $state(false);
 
   $effect(() => { void load(); });
   async function load() {
@@ -25,6 +28,7 @@
         api.agentsList(), api.agentsListSkills(), api.agentsListTools(), api.agentsListRuns(50),
       ]);
       if (!runAgentId && agents.length) runAgentId = agents[0].id;
+      try { workspace = (await api.getSetting("agent_workspace")) ?? ""; } catch { /* optional */ }
     } catch (e) { app.pushToast({ kind: "error", title: "智能体加载失败", body: String(e) }); }
     finally { loaded = true; }
     void loadKbs();
@@ -38,6 +42,18 @@
   async function loadPresets() {
     try { presets = await api.rolesList(); }
     catch { /* 角色列表加载失败不阻塞本页 */ }
+  }
+
+  async function saveWorkspace() {
+    workspaceSaving = true;
+    try {
+      await api.setSetting("agent_workspace", workspace.trim());
+      app.pushToast({ kind: "success", title: "工作目录已保存" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "保存失败", body: String(e) });
+    } finally {
+      workspaceSaving = false;
+    }
   }
 
   async function instantiate(p: api.PresetRole) {
@@ -172,6 +188,7 @@
       await finished;
       messages = activeThread ? await api.agentsThreadMessages(activeThread, 300) : await api.agentsListMessages(run.id, 200);
       await load();
+      await loadRunProposals();
       if (finErr) app.pushToast({ kind: "error", title: "运行失败", body: finErr });
       else app.pushToast({ kind: "success", title: "运行完成", body: agent.name });
     } catch (e) {
@@ -217,6 +234,7 @@
         ? await api.agentsThreadMessages(run.thread_id, 300)
         : await api.agentsListMessages(run.id, 200);
     } catch (e) { app.pushToast({ kind: "error", title: String(e) }); }
+    void loadRunProposals();
   }
 
   /** The open conversation's thread (null = none selected / legacy run). */
@@ -248,11 +266,93 @@
       await finished;
       messages = await api.agentsThreadMessages(activeThread, 300);
       await load();
+      await loadRunProposals();
       if (swErr) app.pushToast({ kind: "error", title: "运行失败", body: swErr });
       else app.pushToast({ kind: "success", title: "运行完成", body: `${agent.name} · 上下文已保留` });
     } catch (e) {
       app.pushToast({ kind: "error", title: "切换运行失败", body: String(e) });
     } finally { runningRunId = null; busy = false; }
+  }
+  // ---- 待确认提案（0087）：这一段对话里智能体提交、等你点头的笔记草稿 ----
+  // 智能体不能直接写笔记：propose_note 只把草稿排进队列，这里把 diff 摆在
+  // 对话正下方。只有点「采纳并写入」才会动 notes 与 .md 文件。
+  let runProposals = $state<api.Proposal[]>([]);
+  let openProposal = $state<string | null>(null);
+  let proposalBusy = $state<string | null>(null);
+
+  async function loadRunProposals() {
+    if (!selectedRun) { runProposals = []; return; }
+    try {
+      runProposals = await api.listRunProposals(
+        selectedRun.id,
+        selectedRun.thread_id || null,
+      );
+    } catch {
+      runProposals = []; // 面板是附加能力，读失败不该打断智能体页
+    }
+  }
+
+  const propKindLabel = (k: api.ProposalKind) =>
+    k === "note_new" ? "新建" : k === "note_append" ? "追加" : "改写";
+
+  function relTime(ms: number): string {
+    const d = Math.max(0, Date.now() - ms);
+    if (d < 60_000) return "刚刚";
+    if (d < 3_600_000) return `${Math.floor(d / 60_000)} 分钟前`;
+    if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} 小时前`;
+    return `${Math.floor(d / 86_400_000)} 天前`;
+  }
+
+  async function acceptRunProposal(p: api.Proposal, force = false) {
+    proposalBusy = p.id;
+    try {
+      const applied = await api.acceptProposal(p.id, force);
+      app.pushToast({
+        kind: "success",
+        title: `已采纳「${applied.title}」`,
+        body: applied.vault_error
+          ? `笔记已保存，但 Markdown 落盘失败：${applied.vault_error}`
+          : applied.vault_path
+            ? `已写入 ${applied.vault_path}`
+            : "已写入笔记库",
+      });
+      openProposal = null;
+      await loadRunProposals();
+    } catch (e) {
+      const msg = String(e);
+      // 两段式守卫：提案排队后笔记被改过，要用户明确点头才覆盖。
+      if (!force && msg.includes("又被改过")) {
+        const ok = await app.confirm({
+          title: "笔记已被改动",
+          body: `${msg}\n\n仍然用这份提案覆盖你后来的修改吗？`,
+          danger: true,
+          okLabel: "仍然应用",
+        });
+        if (ok) {
+          proposalBusy = null;
+          await acceptRunProposal(p, true);
+          return;
+        }
+      } else {
+        app.pushToast({ kind: "error", title: "采纳失败", body: msg });
+      }
+    } finally {
+      proposalBusy = null;
+    }
+  }
+
+  async function discardRunProposal(p: api.Proposal) {
+    proposalBusy = p.id;
+    try {
+      await api.rejectProposal(p.id);
+      runProposals = runProposals.filter((x) => x.id !== p.id);
+      if (openProposal === p.id) openProposal = null;
+      app.pushToast({ kind: "info", title: "已丢弃提案", body: p.title });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "丢弃失败", body: String(e) });
+    } finally {
+      proposalBusy = null;
+    }
   }
 </script>
 
@@ -287,6 +387,7 @@
             <option value="read">只读（read）</option>
             <option value="write">可写应用（write）</option>
             <option value="network">可外联（network，含 MCP）</option>
+            <option value="files">可读写文件（files，最高）</option>
           </select>
         </label>
         <label class="check"><input type="checkbox" bind:checked={editing.enabled} /> 启用</label>
@@ -321,6 +422,20 @@
       </div>
     </div>
   {/if}
+
+  <div class="card">
+    <h3>工作目录</h3>
+    <p class="mut" style="margin:0">
+      文件工具（read_file / write_file / edit_file / list_dir / search_files）只能访问这个目录及其子目录。
+      给智能体选「可读写文件（files）」权限后，这些工具才会出现在它的工具列表里。
+    </p>
+    <div class="row-inline">
+      <input class="input" bind:value={workspace} placeholder="例如 D:////notes 或 /home/me/notes" />
+      <button class="btn" disabled={workspaceSaving} onclick={saveWorkspace}>
+        {workspaceSaving ? "保存中…" : "保存"}
+      </button>
+    </div>
+  </div>
 
   <div class="card">
     <h3>运行</h3>
@@ -390,6 +505,69 @@
               </li>
             {/each}
           </ol>
+          <!-- 待确认提案（0087）：智能体提交、等你点头的笔记草稿。采纳才写入。 -->
+          {#if runProposals.length > 0}
+            <div class="prop-panel">
+              <div class="prop-head">
+                <span class="prop-badge">待确认提案 {runProposals.length}</span>
+                <span class="prop-sub">采纳后才会写入笔记库并同步 .md 文件</span>
+              </div>
+              {#each runProposals as p (p.id)}
+                <div class="prop-row" class:open={openProposal === p.id}>
+                  <button
+                    type="button"
+                    class="prop-main"
+                    onclick={() => (openProposal = openProposal === p.id ? null : p.id)}
+                    aria-expanded={openProposal === p.id}
+                  >
+                    <span class="prop-kind">{propKindLabel(p.kind)}</span>
+                    <span class="prop-title">{p.title}</span>
+                    <span class="prop-counts">
+                      <span class="p-add">+{p.preview.added}</span>
+                      <span class="p-del">−{p.preview.removed}</span>
+                    </span>
+                    <span class="prop-when">{relTime(p.created_at)}</span>
+                    <span class={"prop-chev" + (openProposal === p.id ? " on" : "")}>
+                      <Icon name="chevron" size={12} />
+                    </span>
+                  </button>
+                  {#if p.rationale}
+                    <div class="prop-rationale">{p.rationale}</div>
+                  {/if}
+                  {#if openProposal === p.id}
+                    <div class="prop-diff" aria-label="提案差异">
+                      {#each p.preview.lines as l}
+                        <div class={"dline " + l.kind}>
+                          <span class="dno">{l.old_no ?? ""}</span>
+                          <span class="dno">{l.new_no ?? ""}</span>
+                          <span class="dtext">{l.kind === "gap" ? l.text : l.text || " "}</span>
+                        </div>
+                      {/each}
+                    </div>
+                    <div class="prop-actions">
+                      <button
+                        class="btn primary"
+                        type="button"
+                        onclick={() => void acceptRunProposal(p)}
+                        disabled={proposalBusy === p.id}
+                      >
+                        {proposalBusy === p.id ? "写入中…" : "采纳并写入"}
+                      </button>
+                      <button
+                        class="btn"
+                        type="button"
+                        onclick={() => void discardRunProposal(p)}
+                        disabled={proposalBusy === p.id}
+                      >
+                        丢弃
+                      </button>
+                      <span class="prop-tip">写入笔记库 + 同步 .md</span>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
         {/if}
       </div>
     </div>
@@ -552,6 +730,64 @@
   .status.success { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
   .status.error, .status.cancelled { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
   .run-input { font-size: 12px; }
+  .msgs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }
+  /* ── 待确认提案（0087）─────────────────────────────────────────────────
+     贴着对话记录下方：智能体说「草稿已提交」时，用户要立刻能看到 diff 和
+     两个按钮，而不是去别的页面找。 */
+  .prop-panel {
+    margin-top: 10px;
+    border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--accent) 5%, var(--surface));
+    padding: 10px;
+  }
+  .prop-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .prop-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 18%, var(--surface));
+    color: var(--accent);
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+    white-space: nowrap;
+  }
+  .prop-sub { font-size: 11px; color: var(--fg-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prop-row {
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); margin-bottom: 6px; overflow: hidden;
+  }
+  .prop-row.open { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
+  .prop-main {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 7px 10px; background: none; border: none;
+    color: var(--fg); font: inherit; text-align: left; cursor: pointer;
+  }
+  .prop-main:hover { background: var(--surface-2); }
+  .prop-kind {
+    font-family: var(--font-mono); font-size: 10px; padding: 1px 6px;
+    border-radius: 4px; background: var(--surface-2); color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .prop-title { flex: 1; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prop-counts { display: flex; gap: 5px; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+  .p-add { color: var(--ok); }
+  .p-del { color: var(--err); }
+  .prop-when { font-size: 10.5px; color: var(--fg-faint); white-space: nowrap; }
+  .prop-chev { color: var(--fg-faint); display: inline-flex; transition: transform .12s ease; }
+  .prop-chev.on { transform: rotate(90deg); }
+  .prop-rationale { padding: 0 10px 6px; font-size: 11.5px; color: var(--fg-muted); }
+  .prop-diff {
+    max-height: 240px; overflow: auto; margin: 0 10px 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface-2); padding: 6px 0;
+    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  }
+  .dline { display: grid; grid-template-columns: 34px 34px 1fr; gap: 6px; padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+  .dline.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .dline.del { background: color-mix(in srgb, var(--err) 14%, transparent); }
+  .dline.gap { color: var(--fg-faint); }
+  .dno { color: var(--fg-faint); text-align: right; user-select: none; font-size: 10.5px; }
+  .dtext { min-width: 0; }
+  .prop-actions { display: flex; align-items: center; gap: 6px; padding: 0 10px 10px; }
+  .prop-tip { font-size: 10.5px; color: var(--fg-faint); }
   .msgs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }
   .msg { border-radius: 6px; padding: 6px 10px; font-size: 12px; }
   .msg.user { background: var(--surface-2); }

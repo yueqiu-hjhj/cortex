@@ -23,16 +23,19 @@
 //! `agent_messages`, and the loop is capped by the agent's `max_steps`.
 
 use crate::agents::{append_message, finish_run, Agent};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::llm::Llm;
 use crate::models::Note;
 use crate::repo;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
 /// Tool output is truncated before it enters the transcript — a 200 KB PDF
 /// dump would eat the context window of every following step.
 const TOOL_RESULT_CHARS: usize = 2400;
+/// File tools get a larger (still bounded) budget: a 2.4k-char read is useless
+/// for code. Everything else keeps the tight default.
+const FILE_RESULT_CHARS: usize = 12_000;
 /// One tool result shown to the model per tool call, formatted as lines.
 const TOOL_HITS: usize = 8;
 
@@ -124,6 +127,54 @@ fn builtin_tools() -> &'static [BuiltinTool] {
                 usage: r#"update_note {"note_id": "…", "find": "原文", "replace": "新文"} — 改一条已有笔记（write 权限）；整篇重写用 body，撤销用 restore_revision."#,
                 tier: "write",
                 run: tool_update_note,
+            },
+            BuiltinTool {
+                name: "propose_note",
+                usage: r#"propose_note {"mode": "new|append|replace", "title": "标题", "note_id": "追加/改写时必填", "subject": "学科名", "body": "正文", "rationale": "可选"} — 提交笔记草稿给用户审阅（write 权限）。不会直接写入：草稿以 diff 进入「待确认提案」，用户采纳后才写进笔记与 .md。"#,
+                tier: "write",
+                run: tool_propose_note,
+            },
+            BuiltinTool {
+                name: "web_search",
+                usage: r#"web_search {"query": "关键词", "categories": "可选，默认 general"} — 通过已配置的 SearXNG 搜互联网，返回标题/站点/链接/摘要（network 权限）。库外的问题才用它；引用要带 URL。"#,
+                tier: "network",
+                run: tool_web_search,
+            },
+            BuiltinTool {
+                name: "fetch_page",
+                usage: r#"fetch_page {"url": "https://…"} — 打开一个网页读正文（network 权限）；搜索摘要不够用、要引用原文时再读。"#,
+                tier: "network",
+                run: tool_fetch_page,
+            },
+            BuiltinTool {
+                name: "read_file",
+                usage: r#"read_file {"path": "src/lib.rs", "offset": 1, "limit": 400} — 读取工作目录内的文本文件，返回带行号的内容（files 权限）."#,
+                tier: "files",
+                run: tool_read_file,
+            },
+            BuiltinTool {
+                name: "write_file",
+                usage: r#"write_file {"path": "notes/a.md", "content": "…"} — 新建或整篇覆盖工作目录内的文件，父目录自动创建（files 权限）；改代码优先用 edit_file."#,
+                tier: "files",
+                run: tool_write_file,
+            },
+            BuiltinTool {
+                name: "edit_file",
+                usage: r#"edit_file {"path": "src/lib.rs", "old_string": "原文", "new_string": "新文"} — 精确替换一处（old_string 必须逐字一致且唯一，含缩进）（files 权限）."#,
+                tier: "files",
+                run: tool_edit_file,
+            },
+            BuiltinTool {
+                name: "list_dir",
+                usage: r#"list_dir {"path": "."} — 列出工作目录内某个目录的文件与子目录（files 权限）."#,
+                tier: "files",
+                run: tool_list_dir,
+            },
+            BuiltinTool {
+                name: "search_files",
+                usage: r#"search_files {"pattern": "关键词或正则", "path": ".", "glob": "*.rs", "limit": 50} — 在工作目录内递归搜索文件内容，返回 路径:行号: 片段（files 权限）."#,
+                tier: "files",
+                run: tool_search_files,
             },
         ]
     })
@@ -286,6 +337,92 @@ fn tool_save_note(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
     ))
 }
 
+/// Write tool: propose a note draft for the user to accept. Same queue the MCP
+/// client uses (0060), so both paths share one diff renderer and one apply
+/// path — but unlike save_note this writes nothing now: the draft waits as a
+/// pending proposal tagged with the run/thread that asked for it (0087), and
+/// only the user's 采纳 turns it into a note plus a vault file.
+fn tool_propose_note(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let c = ctx.conn;
+    let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("new").trim();
+    let kind = match mode {
+        "new" => crate::proposals::NOTE_NEW,
+        "append" => crate::proposals::NOTE_APPEND,
+        "replace" => crate::proposals::NOTE_REPLACE,
+        other => {
+            return Ok(format!(
+                "mode「{other}」无效 —— 只支持 new / append / replace，草稿未提交"
+            ));
+        }
+    };
+    let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    if body.trim().is_empty() {
+        return Ok("缺少 body（要写入的正文），草稿未提交".into());
+    }
+    // Provenance: the run row is the only place that knows which shared thread
+    // and agent the user was talking to. A missing row means a hand-built run
+    // (tests); the proposal still queues, just without conversation linkage.
+    let origin: Option<(String, String, String)> = c
+        .query_row(
+            "SELECT r.thread_id, r.agent_id, a.name FROM agent_runs r JOIN agents a ON a.id=r.agent_id WHERE r.id=?1",
+            [ctx.run_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let author = match &origin {
+        Some((_, _, name)) => name.clone(),
+        None => "agent".to_string(),
+    };
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let note_id = args
+        .get("note_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    let subject = args
+        .get("subject")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let rationale = args.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
+
+    let linkage = match &origin {
+        Some((thread_id, agent_id, _)) => crate::proposals::Origin {
+            run_id: Some(ctx.run_id),
+            thread_id: Some(thread_id),
+            agent_id: Some(agent_id),
+        },
+        None => crate::proposals::Origin {
+            run_id: Some(ctx.run_id),
+            thread_id: None,
+            agent_id: None,
+        },
+    };
+    let p = crate::proposals::create_with_origin(
+        c,
+        crate::proposals::Draft {
+            kind,
+            title,
+            note_id,
+            subject,
+            text: body,
+            rationale,
+            author: &author,
+        },
+        linkage,
+    )?;
+
+    let target = match &p.note_id {
+        Some(id) => format!("「{}」(note_id={id})", p.title),
+        None => format!("新建笔记「{}」", p.title),
+    };
+    let mut out = format!(
+        "已提交待确认提案 {}（status=pending，{mode} → {target}，+{} −{} 行）。",
+        p.id, p.preview.added, p.preview.removed
+    );
+    out.push_str("\n注意：笔记与 .md 文件都还没有写入 —— 用户需要在智能体对话下方（或 笔记 → AI 提案）看到 diff 并点「采纳并写入」才会生效。");
+    out.push_str("\n回复用户时请说明草稿待确认，不要说已经保存。");
+    Ok(out)
+}
 /// Write tool: save a Q/A deck as a flashcards material — the same
 /// `repo::save_material` path the UI's save_flashcards command uses, so the
 /// result appears in the normal materials list and SRS seeding flows.
@@ -576,6 +713,419 @@ fn snippet(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// Network tool: search the open web through the configured SearXNG. Same
+/// backend and same offline guard as the Web view (commands::searxng_search), so
+/// there is no second definition of "is the network allowed".
+fn tool_web_search(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if query.is_empty() {
+        return Ok("缺少 query 参数，没有执行搜索".into());
+    }
+    let cats = args.get("categories").and_then(|v| v.as_str()).unwrap_or("general");
+    let hits = match crate::commands::searxng_search(ctx.conn, query, cats) {
+        Ok(v) => v,
+        // Not an error the loop should die on: the model can explain the fix.
+        Err(e) => {
+            return Ok(format!(
+                "联网检索不可用：{e}\n（需要先在 设置 → 数据与隐私 里配好 searxng_url；若离线模式开着，检索是被有意禁用的。）"
+            ));
+        }
+    };
+    if hits.is_empty() {
+        return Ok(format!("SearXNG 没返回「{query}」的结果，换个说法或用更具体的关键词。"));
+    }
+    let mut out = format!("web_search「{query}」命中 {} 条：\n", hits.len());
+    // The transcript truncates tool output at ~2.4k chars, so lead with what the
+    // model can cite: host, title, url, and a one-line snippet.
+    for h in hits.iter().take(8) {
+        out.push_str(&format!(
+            "- [{}] {}\n  {}\n  {}\n",
+            h.host,
+            snippet(&h.title, 90),
+            h.url,
+            snippet(h.snippet.replace('\n', " ").trim(), 220)
+        ));
+    }
+    out.push_str("引用时写清来源域名与链接；需要原文细节再 fetch_page。");
+    Ok(out)
+}
+
+/// Network tool: read one page's main text. Depth for the cases a search
+/// snippet cannot answer ("what exactly does section 3 say?").
+fn tool_fetch_page(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let _ = ctx;
+    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if url.is_empty() {
+        return Ok("缺少 url 参数，没有打开任何页面".into());
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Ok(format!("只接受 http/https 链接，收到的是「{url}」"));
+    }
+    match crate::commands::fetch_readable(url) {
+        Ok(page) => {
+            // Page text is mostly whitespace runs once tags are stripped; folding
+            // them buys roughly a third more real content inside the transcript cap.
+            let body: String = page
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut out = format!("# {}\n来源：{}\n", page.title, page.final_url);
+            out.push_str(&snippet(&body, 2000));
+            out.push_str("\n（正文已截断；引用这一页时请给出上面的链接。）");
+            Ok(out)
+        }
+        Err(e) => Ok(format!("打开页面失败：{e}")),
+    }
+}
+// ------------------------------------------------------- files (files tier)
+//
+// The Claude-Code-shaped tools: read, write, exact edit, list, search. Every
+// path is resolved inside `agent_workspace` (a setting), canonicalized, and
+// checked with `starts_with`, so `..` and symlinks cannot escape. No shell,
+// no delete, no rename — and every call already lands in the transcript.
+
+const FS_READ_CAP: u64 = 512 * 1024;
+const FS_WRITE_CAP: usize = 1024 * 1024;
+const FS_MAX_LINES: usize = 2000;
+const FS_MAX_ENTRIES: usize = 500;
+const FS_MAX_HITS: usize = 100;
+const FS_WALK_LIMIT: usize = 20_000;
+
+fn workspace_root(ctx: &ToolCtx) -> Result<std::path::PathBuf> {
+    let raw = repo::get_setting(ctx.conn, "agent_workspace")?.unwrap_or_default();
+    let raw = raw.trim().to_string();
+    if raw.is_empty() {
+        return Err(Error::Other(
+            "还没有设置智能体工作目录：在「智能体」页顶部填一个目录并保存".into(),
+        ));
+    }
+    let canon = std::path::PathBuf::from(&raw)
+        .canonicalize()
+        .map_err(|e| Error::Other(format!("工作目录不可用（{raw}）：{e}")))?;
+    if !canon.is_dir() {
+        return Err(Error::Other(format!("工作目录不是文件夹：{raw}")));
+    }
+    Ok(canon)
+}
+
+/// Existing paths are canonicalized; for a new file the parent is created and
+/// canonicalized. Either way the result must still be under the root.
+fn resolve_inside(ctx: &ToolCtx, raw: &str, for_write: bool) -> Result<std::path::PathBuf> {
+    let root = workspace_root(ctx)?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(Error::Other("缺少 path 参数".into()));
+    }
+    let joined = if std::path::Path::new(raw).is_absolute() {
+        std::path::PathBuf::from(raw)
+    } else {
+        root.join(raw)
+    };
+    let target = if joined.exists() {
+        joined
+            .canonicalize()
+            .map_err(|e| Error::Other(format!("路径不可用：{e}")))?
+    } else if for_write {
+        let parent = joined
+            .parent()
+            .ok_or_else(|| Error::Other("路径没有父目录".into()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Other(format!("创建目录失败：{e}")))?;
+        let canon_parent = parent
+            .canonicalize()
+            .map_err(|e| Error::Other(format!("目录不可用：{e}")))?;
+        let name = joined
+            .file_name()
+            .ok_or_else(|| Error::Other("路径缺少文件名".into()))?;
+        canon_parent.join(name)
+    } else {
+        return Err(Error::Other(format!("文件不存在：{raw}")));
+    };
+    if !target.starts_with(&root) {
+        return Err(Error::Other("拒绝访问工作目录之外的路径".into()));
+    }
+    Ok(target)
+}
+
+fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    std::fs::write(&tmp, content).map_err(|e| Error::Other(format!("写入失败：{e}")))?;
+    std::fs::rename(&tmp, path).map_err(|e| Error::Other(format!("替换失败：{e}")))
+}
+
+fn tool_read_file(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let path = resolve_inside(ctx, raw, false)?;
+    let meta = std::fs::metadata(&path).map_err(|e| Error::Other(format!("读取失败：{e}")))?;
+    if meta.len() > FS_READ_CAP {
+        return Err(Error::Other(format!(
+            "文件太大（{} KB，上限 {} KB）：先用 search_files 定位，或用 offset/limit 分段读",
+            meta.len() / 1024,
+            FS_READ_CAP / 1024
+        )));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| Error::Other("不是文本文件（或不是 UTF-8）".into()))?;
+    let total = text.lines().count();
+    let offset = args
+        .get("offset")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(FS_MAX_LINES as i64)
+        .clamp(1, FS_MAX_LINES as i64) as usize;
+    let mut out = format!("{} （共 {total} 行）\n", path.display());
+    let mut shown = 0;
+    for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
+        out.push_str(&format!("{:>6}\t{}\n", i + 1, line));
+        shown += 1;
+    }
+    if shown == 0 {
+        out.push_str("(该范围内没有内容)\n");
+    }
+    Ok(out)
+}
+
+fn tool_write_file(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    if content.len() > FS_WRITE_CAP {
+        return Err(Error::Other(format!(
+            "内容太大（{} KB，上限 {} KB）",
+            content.len() / 1024,
+            FS_WRITE_CAP / 1024
+        )));
+    }
+    let path = resolve_inside(ctx, raw, true)?;
+    write_atomic(&path, content)?;
+    Ok(format!(
+        "已写入 {}（{} 字节，{} 行）",
+        path.display(),
+        content.len(),
+        content.lines().count()
+    ))
+}
+
+fn tool_edit_file(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let old = args
+        .get("old_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new = args
+        .get("new_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if old.is_empty() {
+        return Err(Error::Other("old_string 不能为空".into()));
+    }
+    let path = resolve_inside(ctx, raw, false)?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| Error::Other("不是文本文件（或不是 UTF-8）".into()))?;
+    let count = text.matches(old).count();
+    if count == 0 {
+        return Err(Error::Other(
+            "没有找到 old_string（必须逐字一致，含缩进与换行）".into(),
+        ));
+    }
+    if count > 1 {
+        return Err(Error::Other(format!(
+            "old_string 出现 {count} 次，请多带几行上下文让它唯一"
+        )));
+    }
+    let updated = text.replacen(old, new, 1);
+    write_atomic(&path, &updated)?;
+    Ok(format!("已修改 {}（替换 1 处）", path.display()))
+}
+
+fn tool_list_dir(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let path = resolve_inside(ctx, raw, false)?;
+    if !path.is_dir() {
+        return Err(Error::Other(format!("不是目录：{}", path.display())));
+    }
+    let mut entries: Vec<(String, bool, u64)> = Vec::new();
+    let rd = std::fs::read_dir(&path).map_err(|e| Error::Other(format!("读取目录失败：{e}")))?;
+    for e in rd.flatten() {
+        let md = match e.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        entries.push((
+            e.file_name().to_string_lossy().to_string(),
+            md.is_dir(),
+            md.len(),
+        ));
+    }
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let total = entries.len();
+    let mut out = format!("{}（{total} 项）\n", path.display());
+    for (name, is_dir, size) in entries.into_iter().take(FS_MAX_ENTRIES) {
+        if is_dir {
+            out.push_str(&format!("{name}/\n"));
+        } else {
+            out.push_str(&format!("{name}  {size} B\n"));
+        }
+    }
+    if total > FS_MAX_ENTRIES {
+        out.push_str(&format!("…（只显示前 {FS_MAX_ENTRIES} 项）\n"));
+    }
+    Ok(out)
+}
+
+fn looks_binary(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return true,
+    };
+    let mut buf = [0u8; 8192];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n].contains(&0)
+}
+
+fn walk_files(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path) -> bool) -> Result<()> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    let mut entries: Vec<std::fs::DirEntry> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.')
+            || matches!(
+                name.as_str(),
+                "node_modules" | "target" | "dist" | "build" | "__pycache__"
+            )
+        {
+            continue;
+        }
+        let md = match e.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let path = e.path();
+        if md.is_dir() {
+            walk_files(&path, f)?;
+        } else if md.is_file() && !f(&path) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn glob_to_regex(glob: &str) -> Result<regex::Regex> {
+    let mut re = String::from("^");
+    for ch in glob.chars() {
+        match ch {
+            '*' => re.push_str(".*"),
+            '?' => re.push('.'),
+            c => re.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re).map_err(|e| Error::Other(format!("glob 无效：{e}")))
+}
+
+fn tool_search_files(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let root = workspace_root(ctx)?;
+    let raw_base = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let base = resolve_inside(ctx, raw_base, false)?;
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if pattern.is_empty() {
+        return Err(Error::Other("缺少 pattern 参数".into()));
+    }
+    let re = match regex::Regex::new(pattern) {
+        Ok(r) => r,
+        Err(_) => regex::Regex::new(&regex::escape(pattern))
+            .map_err(|e| Error::Other(format!("搜索表达式无效：{e}")))?,
+    };
+    let glob = args.get("glob").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let glob_re = if glob.is_empty() {
+        None
+    } else {
+        Some(glob_to_regex(glob)?)
+    };
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(50)
+        .clamp(1, FS_MAX_HITS as i64) as usize;
+
+    let mut hits: Vec<String> = Vec::new();
+    let mut visited = 0usize;
+    let mut truncated = false;
+    walk_files(&base, &mut |path| {
+        if hits.len() >= limit {
+            truncated = true;
+            return false;
+        }
+        visited += 1;
+        if visited > FS_WALK_LIMIT {
+            truncated = true;
+            return false;
+        }
+        if let Some(g) = &glob_re {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if !g.is_match(name) {
+                return true;
+            }
+        }
+        if looks_binary(path) {
+            return true;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return true;
+        };
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        for (i, line) in text.lines().enumerate() {
+            if re.is_match(line) {
+                let snippet: String = line.trim().chars().take(200).collect();
+                hits.push(format!("{rel}:{}: {snippet}", i + 1));
+                if hits.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        true
+    })?;
+
+    if hits.is_empty() {
+        return Ok(format!("没有匹配（搜索了 {visited} 个文件）"));
+    }
+    let mut out = format!("{} 处匹配（搜索了 {visited} 个文件）\n", hits.len());
+    for h in &hits {
+        out.push_str(h);
+        out.push('\n');
+    }
+    if truncated {
+        out.push_str("…（结果已截断，缩小 path/glob 或调大 limit）\n");
+    }
+    Ok(out)
+}
+
 // ------------------------------------------------------------- the loop
 
 /// Load the tool implementations the agent may call: its whitelist ∩ the
@@ -587,7 +1137,7 @@ fn snippet(text: &str, max: usize) -> String {
 fn resolve_tools(c: &Connection, user_id: &str, agent: &Agent) -> Result<Vec<&'static BuiltinTool>> {
     let enabled: std::collections::HashSet<String> = crate::agents::list_tools(c, user_id)?
         .into_iter()
-        .filter(|t| t.enabled && (t.kind == "read" || t.kind == "write"))
+        .filter(|t| t.enabled && matches!(t.kind.as_str(), "read" | "write" | "network" | "files"))
         .map(|t| t.name)
         .collect();
     Ok(builtin_tools()
@@ -839,7 +1389,12 @@ pub fn execute_run(
                         .join("、")
                 )
             };
-            append_message(c, run_id, "tool", &snippet(&output, TOOL_RESULT_CHARS), Some(&name))?;
+            let cap = if matches!(name.as_str(), "read_file" | "search_files" | "list_dir") {
+                FILE_RESULT_CHARS
+            } else {
+                TOOL_RESULT_CHARS
+            };
+            append_message(c, run_id, "tool", &snippet(&output, cap), Some(&name))?;
             continue;
         }
 
@@ -1463,4 +2018,301 @@ mod tests {
             "the edit is in the audit trail"
         );
     }
+
+    /// 0087: the built-in propose_note is the confirmation gate. It must queue
+    /// a draft and write NOTHING — the note row, the vault file and the pending
+    /// count only move when the user accepts.
+    #[test]
+    fn propose_note_queues_a_draft_without_touching_notes() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let before: i64 = c
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        let out = tool_propose_note(
+            &tctx(&c),
+            &serde_json::json!({"mode": "new", "title": "TCP 笔记", "body": "# TCP\n三次握手"}),
+        )
+        .unwrap();
+        assert!(out.contains("pending"), "reports pending: {out}");
+        assert!(out.contains("还没有写入"), "must not claim a write: {out}");
+        assert!(out.contains("不要说已经保存"), "{out}");
+        let after: i64 = c
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before, "nothing was written to notes");
+        let p = crate::proposals::list(&c, Some(crate::proposals::PENDING), 10)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("a queued draft");
+        assert_eq!(p.title, "TCP 笔记");
+        assert_eq!(p.status, crate::proposals::PENDING);
+        assert!(p.preview.added > 0);
+
+        // Only the accept path writes. Without a vault root the DB row still lands.
+        let applied = crate::proposals::accept(&c, None, &p.id, false).unwrap();
+        let note = repo::get_note(&c, &applied.note_id).unwrap();
+        assert!(note.body.contains("三次握手"));
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before + 1
+        );
+    }
+
+    /// Provenance: an in-app draft remembers the run, the shared thread and the
+    /// agent, so the conversation panel can find it (0087).
+    #[test]
+    fn propose_note_records_run_thread_and_agent() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let agent = agent_with_tools(&c, &["propose_note"]);
+        let run = start_run(&c, crate::agents::DEFAULT_USER, &agent.id, "帮我起草").unwrap();
+        // Simulate 0047 linkage: the run belongs to a shared conversation.
+        c.execute(
+            "UPDATE agent_runs SET thread_id=?1 WHERE id=?2",
+            params!["thr-1", run.id],
+        )
+        .unwrap();
+        tool_propose_note(
+            &ToolCtx::new(&c, None, &run.id),
+            &serde_json::json!({"mode": "new", "title": "带溯源的草稿", "body": "正文"}),
+        )
+        .unwrap();
+
+        let by_run = crate::proposals::list_for_run(&c, Some(&run.id), None, 10).unwrap();
+        assert_eq!(by_run.len(), 1, "found by run id");
+        let p = &by_run[0];
+        assert_eq!(p.run_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(p.thread_id.as_deref(), Some("thr-1"));
+        assert_eq!(p.agent_id.as_deref(), Some(agent.id.as_str()));
+        assert_eq!(p.author, "研究员", "author is the agent name, not a bare id");
+
+        let by_thread = crate::proposals::list_for_run(&c, None, Some("thr-1"), 10).unwrap();
+        assert_eq!(by_thread.len(), 1, "found by thread id");
+        assert!(crate::proposals::list_for_run(&c, Some("other-run"), None, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// MCP-queued drafts have no run: the columns stay NULL and the Notes inbox
+    /// still lists them (0087 must not narrow the existing queue).
+    #[test]
+    fn mcp_style_drafts_have_no_run_linkage() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let p = crate::proposals::create(
+            &c,
+            crate::proposals::Draft {
+                kind: crate::proposals::NOTE_NEW,
+                title: "MCP 草稿",
+                note_id: None,
+                subject: None,
+                text: "正文",
+                rationale: "",
+                author: "codex",
+            },
+        )
+        .unwrap();
+        assert!(p.run_id.is_none());
+        assert!(p.thread_id.is_none());
+        assert!(p.agent_id.is_none());
+        assert_eq!(crate::proposals::pending_count(&c).unwrap(), 1);
+    }
+
+    /// Network tools are tier-gated like every other tool: a read-only agent
+    /// that whitelists web_search must not see it in its prompt, and the
+    /// dispatch gate must refuse the call if one is forced through.
+    #[test]
+    fn web_tools_are_invisible_to_read_and_write_agents() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let all = vec!["search_notebook".to_string(), "web_search".to_string(), "fetch_page".to_string()];
+        let ro = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "RO", None, "p", &[], &all, None, 0.3, 5, true, "read").unwrap();
+        let wr = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "WR", None, "p", &[], &all, None, 0.3, 5, true, "write").unwrap();
+        let net = upsert_agent(&c, crate::agents::DEFAULT_USER, None, "NET", None, "p", &[], &all, None, 0.3, 5, true, "network").unwrap();
+
+        let ro_names: Vec<&str> = resolve_tools(&c, crate::agents::DEFAULT_USER, &ro)
+            .unwrap()
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(ro_names, vec!["search_notebook"], "read agent sees no network tool");
+        let wr_names: Vec<&str> = resolve_tools(&c, crate::agents::DEFAULT_USER, &wr)
+            .unwrap()
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(wr_names, vec!["search_notebook"], "write is below network");
+
+        let net_names: Vec<&str> = resolve_tools(&c, crate::agents::DEFAULT_USER, &net)
+            .unwrap()
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(net_names.contains(&"web_search"), "network agent gets it: {net_names:?}");
+        assert!(net_names.contains(&"fetch_page"), "{net_names:?}");
+
+        // The dispatch gate is the real enforcement, independent of the prompt.
+        assert!(!tier_allows(&ro, "web_search"));
+        assert!(!tier_allows(&wr, "fetch_page"));
+        assert!(tier_allows(&net, "web_search"));
+        assert_eq!(tool_tier("web_search"), "network");
+        assert_eq!(tool_tier("fetch_page"), "network");
+    }
+
+    /// A missing SearXNG URL must produce an explanation the model can relay,
+    /// not a run-killing error and not a silent empty result.
+    #[test]
+    fn web_search_without_a_configured_instance_explains_itself() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let out = tool_web_search(&tctx(&c), &serde_json::json!({"query": "rust async runtime"})).unwrap();
+        assert!(out.contains("联网检索不可用"), "{out}");
+        assert!(out.contains("searxng_url"), "names the setting to fix: {out}");
+        let empty = tool_web_search(&tctx(&c), &serde_json::json!({})).unwrap();
+        assert!(empty.contains("缺少 query"), "{empty}");
+    }
+
+    /// Offline mode is an explicit user decision; a network tool must honour it
+    /// even though the agent has network tier.
+    #[test]
+    fn web_search_refuses_while_offline_mode_is_on() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        repo::set_setting(&c, "offline_mode", "true").unwrap();
+        let out = tool_web_search(&tctx(&c), &serde_json::json!({"query": "anything"})).unwrap();
+        assert!(out.contains("离线"), "offline mode is honoured: {out}");
+    }
+
+    /// fetch_page refuses anything that is not http(s) before opening a socket.
+    #[test]
+    fn fetch_page_rejects_non_http_urls() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let out = tool_fetch_page(&tctx(&c), &serde_json::json!({"url": "file:///etc/passwd"})).unwrap();
+        assert!(out.contains("只接受 http/https"), "{out}");
+        let out = tool_fetch_page(&tctx(&c), &serde_json::json!({})).unwrap();
+        assert!(out.contains("缺少 url"), "{out}");
+    }
+    // ---- files tier: workspace containment, round trip, search -------------
+
+    fn workspace(c: &Connection) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cortex-fs-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        repo::set_setting(c, "agent_workspace", dir.to_str().unwrap()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_tools_roundtrip_inside_the_workspace() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let dir = workspace(&c);
+        let ctx = tctx(&c);
+
+        tool_write_file(
+            &ctx,
+            &serde_json::json!({"path": "a/b.txt", "content": "hello\nworld\n"}),
+        )
+        .unwrap();
+        let read = tool_read_file(&ctx, &serde_json::json!({"path": "a/b.txt"})).unwrap();
+        assert!(read.contains("1\thello"), "{read}");
+
+        tool_edit_file(
+            &ctx,
+            &serde_json::json!({"path": "a/b.txt", "old_string": "world", "new_string": "there"}),
+        )
+        .unwrap();
+        let read = tool_read_file(&ctx, &serde_json::json!({"path": "a/b.txt"})).unwrap();
+        assert!(read.contains("there"), "{read}");
+
+        let listing = tool_list_dir(&ctx, &serde_json::json!({"path": "."})).unwrap();
+        assert!(listing.contains("a/"), "{listing}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_tools_refuse_paths_outside_the_workspace() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let dir = workspace(&c);
+        let ctx = tctx(&c);
+
+        let outside = dir
+            .parent()
+            .unwrap()
+            .join(format!("cortex-outside-{}.txt", crate::db::new_id()));
+        std::fs::write(&outside, "secret").unwrap();
+        let name = outside.file_name().unwrap().to_str().unwrap();
+        let escaped = format!("../{name}");
+        let err = tool_read_file(&ctx, &serde_json::json!({"path": escaped}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("工作目录之外"), "{err}");
+
+        let err = tool_write_file(
+            &ctx,
+            &serde_json::json!({"path": "../escape.txt", "content": "x"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("工作目录之外"), "{err}");
+
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_files_finds_text_and_skips_binaries() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let dir = workspace(&c);
+        let ctx = tctx(&c);
+
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn main() { let needle = 1; }\n").unwrap();
+        std::fs::write(dir.join("src/blob.bin"), [0u8, 1, 2, 3]).unwrap();
+
+        let hits = tool_search_files(
+            &ctx,
+            &serde_json::json!({"pattern": "needle", "glob": "*.rs"}),
+        )
+        .unwrap();
+        assert!(hits.contains("src/a.rs:1"), "{hits}");
+
+        let none = tool_search_files(
+            &ctx,
+            &serde_json::json!({"pattern": "needle", "glob": "*.bin"}),
+        )
+        .unwrap();
+        assert!(none.contains("没有匹配"), "{none}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_tools_are_registered_and_idempotently_seeded() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        crate::agents::seed_file_tools(&c).unwrap();
+        let names: Vec<String> = crate::agents::list_tools(&c, crate::agents::DEFAULT_USER)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        for n in ["read_file", "write_file", "edit_file", "list_dir", "search_files"] {
+            assert!(names.contains(&n.to_string()), "missing {n}");
+        }
+        assert_eq!(crate::agents::seed_file_tools(&c).unwrap(), 0, "seed must be idempotent");
+    }
+
+    #[test]
+    fn files_is_the_top_tier_and_network_does_not_grant_it() {
+        assert_eq!(crate::agents::normalize_tier("files"), "files");
+        assert!(crate::agents::tier_rank("files") > crate::agents::tier_rank("network"));
+    }
+
 }
