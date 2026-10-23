@@ -347,3 +347,49 @@ title shared by two notes is refused; head-truncation is admitted; the vault
 file is written and holds the new text; revisions prune to 20 newest-first;
 the loop resolves both tools through the 0086 registry seeds) and
 `repo.rs` (`insert_note_revision` / `note_revisions` / `get_note_revision`).
+
+## 14. The stream is a preview; the answer is the record
+
+A chat answer is generated once and observed twice. Text leaves for the UI while
+the model is still writing, and the finished, post-processed `ChatAnswer` lands
+afterwards — fabricated citation tokens stripped, state classified, citations
+frozen. Only the second one is persisted. The preview exists so a 40-second wait
+is legible; it is never a second source of truth, which is why the bubble is
+**replaced** when the answer arrives rather than appended to.
+
+- **Deltas leave early, coalesced.** `chat_live::LiveRun` buffers and flushes on
+  a 60 ms window with a 240-character cap (~16 paints/s reads as continuous). A
+  token-by-token stream without coalescing is one IPC call and one Svelte
+  re-render per token, which is slower than the blocking call it replaced.
+- **The preview hides what will change.** Citation tokens (`⟦source · loc⟧`) and
+  a `SUGGESTIONS:` trailer are removed before display — including a token that
+  has only half arrived — so text never appears and then rewrites itself. The
+  preview is generated from the raw stream, not from the persisted answer,
+  because the latter does not exist yet.
+- **Stop reaches the provider, not just the UI.** `chat_cancel` flips the run's
+  flag; providers read it between chunks and return what they have. A stopped
+  answer is `Aborted`, which is a different state from `Truncated`: the user
+  ended it, so the partial is kept and no continuation is invited.
+- **Every provider streams, or the feature is a lie for that user.** A chain that
+  silently degrades to one giant delta still looks fine in tests and looks stuck
+  in practice (the placeholder would claim "retrieving" for the whole
+  generation). Hence: Claude's `/v1/messages` with `stream: true`, Gemini's
+  `streamGenerateContent`, and the OpenAI-compatible path all override
+  `Llm::complete_stream`. The trait default — hand the finished text over as one
+  delta — remains only for the offline stub and for endpoints that ignore
+  `stream`; the UI keeps its typewriter for exactly those.
+- **A fallback switch may not repeat text.** The chain walks to the next model
+  only while nothing has reached the screen; once a delta is out, the failure is
+  the answer. Retrying after partial text would print the beginning twice.
+- **The blocking command is gone, not deprecated.** Two entry points would be two
+  pipelines to keep in sync — the same reason `retrieval_trace` mirrors
+  `chat_answer_stream` step by step. An uncalled command does not ship.
+
+Enforced by: `chat_live.rs` (coalescing loses nothing and never emits an empty
+event; a big chunk flushes immediately; text after Stop never reaches the UI;
+cancelling a finished run is a no-op) and `llm.rs` (`complete_stream` forwards
+each delta and reports the real finish reason; inline reasoning is held back;
+Stop is honoured mid-stream; Claude's events carry text / stop / usage and a
+refusal; input and output token counts survive in different frames; the
+fallback chain switches only before the first delta, and `name()` follows the
+model that served).
