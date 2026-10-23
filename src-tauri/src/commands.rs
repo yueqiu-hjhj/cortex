@@ -8138,6 +8138,35 @@ pub async fn docx_apply_edits(
     .map_err(|e| Error::Other(format!("docx edit failed: {e}")))?
 }
 
+/// Sheets + head rows of an existing workbook, for the cell editor.
+#[tauri::command]
+pub async fn xlsx_preview(
+    path: String,
+    sheet: Option<String>,
+    max_rows: Option<usize>,
+) -> Result<crate::office::xlsx::SheetPreview> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::xlsx::preview(Path::new(&path), sheet.as_deref(), max_rows.unwrap_or(40))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("xlsx preview failed: {e}")))?
+}
+
+/// Change cells in an existing workbook. Always writes a NEW file: a spreadsheet
+/// the user already has cannot be regenerated, so the original stays as it was.
+#[tauri::command]
+pub async fn xlsx_set_cells(
+    path: String,
+    output: String,
+    edits: Vec<crate::office::xlsx::CellEdit>,
+) -> Result<crate::office::xlsx::XlsxEditOutcome> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::office::xlsx::set_cells(Path::new(&path), Path::new(&output), &edits)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("xlsx edit failed: {e}")))?
+}
+
 #[tauri::command]
 pub async fn pdf_merge(paths: Vec<String>, dest: String) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || crate::office::pdf::merge(&paths, Path::new(&dest)))

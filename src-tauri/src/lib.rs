@@ -908,6 +908,8 @@ pub fn run() {
             commands::export_draft_docx,
             commands::docx_read_paragraphs,
             commands::docx_apply_edits,
+            commands::xlsx_preview,
+            commands::xlsx_set_cells,
             commands::pdf_merge,
             commands::pdf_split,
             commands::pdf_watermark,

@@ -9,7 +9,7 @@
   import Icon from "./Icon.svelte";
 
   let open = $state(false);
-  let tab = $state<"docx" | "pdf">("docx");
+  let tab = $state<"docx" | "xlsx" | "pdf">("docx");
 
   // ---- Word 审阅 ----
   let docxPath = $state("");
@@ -230,6 +230,102 @@
     }
     return { opts: [], type: "text" as const };
   }
+
+  // ---- 表格改单元格 ----
+  // 已有的表格不能重新生成，所以只在副本上改，原文件一个字节都不动。
+  let xlsxPath = $state("");
+  let xlsxBusy = $state(false);
+  let xlsxErr = $state("");
+  let xlsxMsg = $state("");
+  let xlsxSheets = $state<string[]>([]);
+  let xlsxSheet = $state("");
+  let xlsxRows = $state<string[][]>([]);
+  let xlsxTruncated = $state(false);
+  let xlsxEdits = $state<api.CellEdit[]>([]);
+  let xlsxCell = $state("");
+  let xlsxValue = $state("");
+  let xlsxChanged = $state<api.CellChange[]>([]);
+
+  /** 0 → A, 25 → Z, 26 → AA. */
+  function colName(i: number): string {
+    let out = "";
+    let n = i + 1;
+    while (n > 0) {
+      const r = (n - 1) % 26;
+      out = String.fromCharCode(65 + r) + out;
+      n = Math.floor((n - 1) / 26);
+    }
+    return out;
+  }
+
+  async function pickXlsx() {
+    xlsxErr = "";
+    xlsxMsg = "";
+    xlsxChanged = [];
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const p = await pick({ multiple: false, filters: [{ name: "Excel 表格", extensions: ["xlsx"] }] });
+      const path = Array.isArray(p) ? p[0] : p;
+      if (!path) return;
+      xlsxPath = path;
+      xlsxEdits = [];
+      await loadSheet();
+    } catch (e) {
+      xlsxErr = String(e);
+    }
+  }
+
+  async function loadSheet(name?: string) {
+    if (!xlsxPath) return;
+    xlsxBusy = true;
+    xlsxErr = "";
+    try {
+      const p = await api.xlsxPreview(xlsxPath, name, 40);
+      xlsxSheets = p.sheets;
+      xlsxSheet = p.sheet;
+      xlsxRows = p.rows;
+      xlsxTruncated = p.truncated;
+    } catch (e) {
+      xlsxErr = String(e);
+    } finally {
+      xlsxBusy = false;
+    }
+  }
+
+  function addEdit() {
+    const cell = xlsxCell.trim().toUpperCase();
+    if (!cell) return;
+    // 同一个单元格改两次没有意义，后来的覆盖前面的。
+    xlsxEdits = [...xlsxEdits.filter((e) => e.cell !== cell), { sheet: xlsxSheet, cell, value: xlsxValue }];
+    xlsxCell = "";
+    xlsxValue = "";
+  }
+
+  async function saveXlsx() {
+    if (!xlsxPath || !xlsxEdits.length || xlsxBusy) return;
+    xlsxBusy = true;
+    xlsxErr = "";
+    xlsxMsg = "";
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const stem = xlsxPath.replace(/\.xlsx$/i, "");
+      const dest = await save({
+        defaultPath: `${stem}.已改.xlsx`,
+        filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
+      });
+      if (!dest) return;
+      const r = await api.xlsxSetCells(xlsxPath, dest, xlsxEdits);
+      xlsxChanged = r.changed;
+      xlsxMsg = `已改 ${r.changed.length} 个单元格${r.skipped.length ? `，${r.skipped.length} 处没改` : ""} → ${dest}`;
+      app.pushToast({ kind: "success", title: "表格已更新", body: dest });
+      if (r.changed.length) xlsxEdits = [];
+      await loadSheet(xlsxSheet);
+    } catch (e) {
+      xlsxErr = String(e);
+    } finally {
+      xlsxBusy = false;
+    }
+  }
 </script>
 
 <button class="btn" onclick={() => (open = !open)}>文档工具</button>
@@ -244,6 +340,7 @@
       </div>
       <div class="tabs">
         <button class="tab" class:on={tab === "docx"} onclick={() => (tab = "docx")}>Word 审阅回写</button>
+        <button class="tab" class:on={tab === "xlsx"} onclick={() => (tab = "xlsx")}>表格改单元格</button>
         <button class="tab" class:on={tab === "pdf"} onclick={() => (tab = "pdf")}>PDF 工具</button>
       </div>
 
@@ -281,6 +378,71 @@
               <div class="etext">{ed.text}</div>
               {#if ed.comment}<div class="enote">附批注：{ed.comment}</div>{/if}
             {/if}
+          </div>
+        {/each}
+      {:else if tab === "xlsx"}
+        <p class="hint">点表格里的单元格 → 填新值 → 加入改动；数字按数字写、以 = 开头按公式写、留空即清除。写入的是副本，原表格不会被改动。</p>
+        <div class="frow">
+          <button class="btn" onclick={pickXlsx}>{xlsxPath ? "换一个文件" : "选择 .xlsx"}</button>
+          <span class="fpath" title={xlsxPath}>{xlsxPath || "未选择文件"}</span>
+        </div>
+        {#if xlsxSheets.length > 1}
+          <div class="arow">
+            {#each xlsxSheets as sh (sh)}
+              <button class="btn" class:on={sh === xlsxSheet} disabled={xlsxBusy} onclick={() => loadSheet(sh)}>{sh}</button>
+            {/each}
+          </div>
+        {/if}
+        {#if xlsxRows.length}
+          <div class="gridwrap">
+            <table class="grid">
+              <tbody>
+                {#each xlsxRows as row, ri (ri)}
+                  <tr>
+                    <th>{ri + 1}</th>
+                    {#each row as c, ci (ci)}
+                      <td
+                        class:sel={xlsxCell === `${colName(ci)}${ri + 1}`}
+                        onclick={() => (xlsxCell = `${colName(ci)}${ri + 1}`)}
+                        title={`${colName(ci)}${ri + 1}`}>{c}</td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          {#if xlsxTruncated}<div class="count">只显示前 40 行（也可以直接手填地址）</div>{/if}
+        {/if}
+        <div class="frow">
+          <input class="wm" bind:value={xlsxCell} placeholder="单元格，如 B4" />
+          <input class="wm" bind:value={xlsxValue} placeholder="新值 / =SUM(B4:B6)" onkeydown={(e) => e.key === "Enter" && addEdit()} />
+          <button class="btn" disabled={!xlsxCell.trim()} onclick={addEdit}>加入改动</button>
+        </div>
+        {#if xlsxEdits.length}
+          <div class="arow">
+            <span class="count">{xlsxEdits.length} 处待改</span>
+            <button class="btn" disabled={xlsxBusy} onclick={() => (xlsxEdits = [])}>清空</button>
+            <button class="btn primary" disabled={xlsxBusy} onclick={saveXlsx}>{xlsxBusy ? "写入中…" : "写入副本（另存新文件）"}</button>
+          </div>
+        {/if}
+        {#if xlsxErr}<div class="err">{xlsxErr}</div>{/if}
+        {#if xlsxMsg}<div class="msg">{xlsxMsg}</div>{/if}
+        {#each xlsxEdits as e, i (e.cell)}
+          <div class="edit">
+            <div class="ehead">
+              <span class="op">{e.sheet || xlsxSheet}</span>
+              <span class="anchor">{e.cell}</span>
+              <button class="x" title="移除" onclick={() => (xlsxEdits = xlsxEdits.filter((_, j) => j !== i))}><Icon name="x" size={10} /></button>
+            </div>
+            <div class="etext">{e.value === "" ? "（清除内容）" : e.value}</div>
+          </div>
+        {/each}
+        {#each xlsxChanged as c, i (i)}
+          <div class="edit">
+            <div class="ehead">
+              <span class="op">{c.sheet} · {c.cell}</span>
+            </div>
+            <div class="etext">{c.before || "（空）"} → {c.after || "（空）"}</div>
           </div>
         {/each}
       {:else}
@@ -329,6 +491,44 @@
 {/if}
 
 <style>
+  .gridwrap {
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .grid {
+    border-collapse: collapse;
+    font-size: var(--t-xs);
+    color: var(--fg);
+  }
+  .grid th {
+    position: sticky;
+    left: 0;
+    background: var(--surface-2, rgba(255, 255, 255, 0.04));
+    color: var(--fg-faint);
+    font-weight: 400;
+    padding: 2px 6px;
+    border-right: 1px solid var(--border);
+  }
+  .grid td {
+    padding: 2px 8px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    cursor: pointer;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .grid td.sel {
+    outline: 1px solid var(--accent);
+    background: rgba(124, 92, 240, 0.14);
+  }
+  .btn.on {
+    border-color: var(--accent);
+    color: var(--fg-bright);
+  }
   .bg {
     position: fixed;
     inset: 0;

@@ -3308,6 +3308,40 @@ export const docxApplyEdits = (path: string, output: string, author: string, edi
 export const docxReviewEdits = (path: string, instruction?: string) =>
   invoke<DocxEdit[]>("docx_review_edits", { path, instruction: instruction ?? null });
 
+/** A workbook's sheets and its head rows — what the editor shows before you
+ *  pick a cell. Read-only. */
+export interface SheetPreview {
+  sheets: string[];
+  sheet: string;
+  rows: string[][];
+  truncated: boolean;
+}
+export interface CellEdit {
+  /** Sheet name; omitted → the first sheet. */
+  sheet?: string;
+  /** A1 address, e.g. "B4". */
+  cell: string;
+  /** Typed like Excel: "=SUM(A1:A3)" is a formula, "42" a number, "" clears. */
+  value: string;
+}
+export interface CellChange {
+  sheet: string;
+  cell: string;
+  before: string;
+  after: string;
+}
+export interface XlsxEditOutcome {
+  output: string;
+  changed: CellChange[];
+  skipped: string[];
+}
+export const xlsxPreview = (path: string, sheet?: string, maxRows?: number) =>
+  invoke<SheetPreview>("xlsx_preview", { path, sheet: sheet ?? null, maxRows: maxRows ?? null });
+/** Write cells into a COPY of an existing workbook (`output`); the input is
+ *  never touched. Returns the change list and anything that had to be skipped. */
+export const xlsxSetCells = (path: string, output: string, edits: CellEdit[]) =>
+  invoke<XlsxEditOutcome>("xlsx_set_cells", { path, output, edits });
+
 /** Concatenate PDFs, in order, into one file at `dest`. */
 export const pdfMerge = (paths: string[], dest: string) =>
   invoke<void>("pdf_merge", { paths, dest });

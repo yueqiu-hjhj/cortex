@@ -524,6 +524,571 @@ pub fn save_workbook(path: &Path, kind: &str, title: &str, meta: Option<&str>, p
     build_workbook(path, &sheets)
 }
 
+// ------------------------------------------------- editing an existing book
+
+/// A value written into one cell. `Blank` clears the content but keeps the
+/// cell's style — "clear the cell" in Excel means keep the formatting.
+#[derive(Debug, Clone)]
+pub enum CellValue {
+    Text(String),
+    Num(f64),
+    /// Formula WITHOUT the leading `=`; no cached result is written, so Excel
+    /// recalculates on open instead of showing a value that is already stale.
+    Formula(String),
+    Blank,
+}
+
+/// One cell assignment for [`set_cells`].
+///
+/// `value` is typed the way Excel types it: a leading `=` is a formula, a bare
+/// number is a number, an empty string clears the cell, anything else is text.
+/// Keeping the IPC surface to strings means the UI asks "which cell, what
+/// value" instead of demanding a type first — and `007` behaves like it does in
+/// Excel (becomes 7), which is the behaviour a person already expects.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CellEdit {
+    /// Sheet name; omitted → the workbook's first sheet.
+    #[serde(default)]
+    pub sheet: Option<String>,
+    /// A1-style address, e.g. `B2`.
+    pub cell: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+impl CellEdit {
+    fn typed(&self) -> CellValue {
+        let s = self.value.trim();
+        if s.is_empty() {
+            CellValue::Blank
+        } else if let Some(f) = s.strip_prefix('=') {
+            CellValue::Formula(f.to_string())
+        } else if let Ok(n) = s.parse::<f64>() {
+            CellValue::Num(n)
+        } else {
+            CellValue::Text(self.value.clone())
+        }
+    }
+}
+
+/// What one assignment actually changed, including the previous value — the
+/// "改了哪几处" list the caller shows so an edit is never a silent rewrite.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CellChange {
+    pub sheet: String,
+    pub cell: String,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct XlsxEditOutcome {
+    pub output: String,
+    pub changed: Vec<CellChange>,
+    /// Assignments that could not be applied, each with its reason. A bad
+    /// address is reported, never guessed at.
+    pub skipped: Vec<String>,
+}
+
+/// Edit cells of an existing workbook, writing the result to `output`.
+///
+/// The input is never touched: a spreadsheet the user already has cannot be
+/// regenerated, so the only safe edit is one that lands next to it. Values are
+/// written as XML surgery on the sheet part, which is what keeps everything
+/// this code does not understand — styles, merges, conditional formatting,
+/// images, other sheets — byte-identical.
+pub fn set_cells(input: &Path, output: &Path, edits: &[CellEdit]) -> Result<XlsxEditOutcome> {
+    if input == output {
+        return Err(Error::Other("输出文件需与原文件不同（改表在副本上做）".into()));
+    }
+    if edits.is_empty() {
+        return Err(Error::Other("没有要改的单元格".into()));
+    }
+    let mut parts = crate::office::read_zip_parts(input)?;
+    let sheets = sheet_parts(&parts)?;
+    let shared = shared_strings(&parts);
+    let first = sheets.first().map(|(n, _)| n.clone());
+    let mut changed = Vec::new();
+    let mut skipped = Vec::new();
+
+    for (name, part) in &sheets {
+        let mine: Vec<&CellEdit> = edits
+            .iter()
+            .filter(|e| match &e.sheet {
+                Some(s) => s == name,
+                None => first.as_deref() == Some(name.as_str()),
+            })
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let idx = parts
+            .iter()
+            .position(|(n, _)| n == part)
+            .ok_or_else(|| Error::Other(format!("缺少工作表部件 {part}")))?;
+        let mut xml = String::from_utf8(parts[idx].1.clone())
+            .map_err(|_| Error::Other(format!("{part} 不是 UTF-8")))?;
+        for e in mine {
+            match set_cell_in_sheet(&xml, &e.cell, &e.typed(), &shared) {
+                Ok((next, before)) => {
+                    xml = next;
+                    changed.push(CellChange {
+                        sheet: name.clone(),
+                        cell: e.cell.trim().to_uppercase(),
+                        before,
+                        after: e.value.trim().to_string(),
+                    });
+                }
+                Err(err) => skipped.push(format!("{}!{}: {err}", name, e.cell.trim())),
+            }
+        }
+        parts[idx].1 = xml.into_bytes();
+    }
+
+    // A sheet that does not exist is a mistake worth naming — silently writing
+    // nothing would look like the edit succeeded.
+    for e in edits {
+        if let Some(s) = &e.sheet {
+            if !sheets.iter().any(|(n, _)| n == s) {
+                skipped.push(format!("{s}: 表格里没有这个工作表"));
+            }
+        }
+    }
+    crate::office::write_zip(output, &parts)?;
+    Ok(XlsxEditOutcome { output: output.display().to_string(), changed, skipped })
+}
+
+// ------------------------------------------------------------ preview
+
+/// What the caller needs to pick a cell: the sheet list, the active sheet, and
+/// its head rows. Read-only, so a bad path costs nothing.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SheetPreview {
+    pub sheets: Vec<String>,
+    pub sheet: String,
+    pub rows: Vec<Vec<String>>,
+    /// True when there are more rows than were returned.
+    pub truncated: bool,
+}
+
+/// Render one spreadsheet cell the way it reads on screen.
+fn calamine_text(d: &calamine::Data) -> String {
+    use calamine::Data;
+    match d {
+        Data::Empty => String::new(),
+        Data::Int(i) => i.to_string(),
+        Data::Float(f) => num_text(*f),
+        Data::String(s) => s.clone(),
+        Data::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        Data::DateTime(dt) => num_text(dt.as_f64()),
+        Data::DateTimeIso(s) => s.clone(),
+        Data::DurationIso(s) => s.clone(),
+        Data::Error(e) => format!("#{e}"),
+    }
+}
+
+pub fn preview(path: &Path, sheet: Option<&str>, max_rows: usize) -> Result<SheetPreview> {
+    use calamine::Reader;
+    let mut wb = calamine::open_workbook_auto(path)
+        .map_err(|e| Error::Other(format!("打开表格失败：{e}")))?;
+    let sheets = wb.sheet_names().to_vec();
+    let name = match sheet {
+        Some(s) if sheets.iter().any(|n| n == s) => s.to_string(),
+        _ => sheets
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::Other("表格里没有工作表".into()))?,
+    };
+    let range = wb
+        .worksheet_range(&name)
+        .map_err(|e| Error::Other(format!("读取工作表 {name} 失败：{e}")))?;
+    let max = max_rows.clamp(1, 200);
+    let rows: Vec<Vec<String>> = range
+        .rows()
+        .take(max)
+        .map(|r| r.iter().map(calamine_text).collect())
+        .collect();
+    Ok(SheetPreview { sheets, sheet: name, rows, truncated: range.height() > max })
+}
+
+// ------------------------------------------------------- XML surface
+
+/// One located element: `<name …>`, `<name …/>`, or `<name …>…</name>`.
+#[derive(Debug, Clone, Copy)]
+struct Element {
+    start: usize,
+    /// Index of the `>` that closes the OPENING tag.
+    tag_end: usize,
+    content_start: usize,
+    /// One past the element's final `>` (== `content_start` when self-closing).
+    end: usize,
+    self_closing: bool,
+    name_len: usize,
+}
+
+impl Element {
+    fn tag<'a>(&self, s: &'a str) -> &'a str {
+        &s[self.start + 1..self.tag_end]
+    }
+    fn inner<'a>(&self, s: &'a str) -> &'a str {
+        if self.self_closing {
+            ""
+        } else {
+            // content ends where the closing tag starts
+            &s[self.content_start..self.end - (self.name_len + 3)]
+        }
+    }
+}
+
+/// Locate the next `<name>` / `<name/>` at or after `from`. Names are matched
+/// exactly (so `<c` never matches `<cols>`), comments and closing tags are
+/// skipped, and no XML parser is involved: the sheet part of a workbook is
+/// machine-written and shallow, and round-tripping it through a parser would
+/// reorder attributes and namespaces that other writers key off.
+fn find_element(s: &str, name: &str, from: usize) -> Option<Element> {
+    let mut i = from.min(s.len());
+    while let Some(off) = s[i..].find('<') {
+        let start = i + off;
+        let rest = &s[start..];
+        if rest.starts_with("</") || rest.starts_with("<!") || rest.starts_with("<?") {
+            i = start + 2;
+            continue;
+        }
+        let name_start = start + 1;
+        if !s[name_start..].starts_with(name) {
+            i = name_start;
+            continue;
+        }
+        let after = name_start + name.len();
+        let next = s[after..].chars().next()?;
+        if !(next.is_whitespace() || next == '>' || next == '/') {
+            i = after;
+            continue;
+        }
+        let tag_end = after + s[after..].find('>')?;
+        let self_closing = s[name_start..tag_end].trim_end().ends_with('/');
+        let content_start = tag_end + 1;
+        if self_closing {
+            return Some(Element {
+                start,
+                tag_end,
+                content_start,
+                end: content_start,
+                self_closing,
+                name_len: name.len(),
+            });
+        }
+        let close = format!("</{name}>");
+        let close_at = s[tag_end..].find(&close)? + tag_end;
+        return Some(Element {
+            start,
+            tag_end,
+            content_start,
+            end: close_at + close.len(),
+            self_closing,
+            name_len: name.len(),
+        });
+    }
+    None
+}
+
+/// Value of one attribute inside a tag's text (`r="B2"` → `B2`). Requires a
+/// whitespace boundary in front so `id` cannot match `sheetId` or `r:id`.
+fn find_attr(tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let mut from = 0;
+    while let Some(i) = tag[from..].find(&needle) {
+        let at = from + i;
+        let boundary = tag[..at].chars().next_back().map(char::is_whitespace).unwrap_or(true);
+        if boundary {
+            let vstart = at + needle.len();
+            let vend = vstart + tag[vstart..].find('"')?;
+            return Some(tag[vstart..vend].to_string());
+        }
+        from = at + needle.len();
+    }
+    None
+}
+
+/// A1 address → (0-based column, 1-based row). `$B$2` is accepted (people paste
+/// absolute references), anything else is refused.
+fn parse_a1(addr: &str) -> Option<(usize, u32)> {
+    let mut letters = String::new();
+    let mut digits = String::new();
+    for c in addr.trim().chars().filter(|c| *c != '$') {
+        if c.is_ascii_alphabetic() && digits.is_empty() {
+            letters.push(c.to_ascii_uppercase());
+        } else if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            return None;
+        }
+    }
+    if letters.is_empty() || digits.is_empty() || letters.len() > 3 {
+        return None;
+    }
+    let mut col = 0usize;
+    for b in letters.bytes() {
+        col = col * 26 + (b - b'A' + 1) as usize;
+    }
+    let row: u32 = digits.parse().ok()?;
+    if row == 0 {
+        return None;
+    }
+    Some((col - 1, row))
+}
+
+fn num_text(n: f64) -> String {
+    if n.is_finite() && (n - n.trunc()).abs() < 1e-9 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+fn render_cell(addr: &str, style: Option<&str>, value: &CellValue) -> String {
+    let s = style
+        .map(|v| format!(" s=\"{}\"", v.trim()))
+        .unwrap_or_default();
+    match value {
+        CellValue::Blank => format!("<c r=\"{addr}\"{s}/>"),
+        CellValue::Num(n) => format!("<c r=\"{addr}\"{s}><v>{}</v></c>", num_text(*n)),
+        // The cached value would be wrong the moment the formula is opened, so
+        // none is written; Excel fills it in. A formula that references other
+        // edited cells must see their new values, which only a real recalc can
+        // guarantee.
+        CellValue::Formula(f) => format!(
+            "<c r=\"{addr}\"{s}><f>{}</f></c>",
+            crate::office::xml_escape(f.trim_start_matches('='))
+        ),
+        // Inline string: self-contained, so editing needs no sharedStrings
+        // surgery and cannot corrupt the index every other cell depends on.
+        CellValue::Text(t) => format!(
+            "<c r=\"{addr}\"{s} t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
+            crate::office::xml_escape(t)
+        ),
+    }
+}
+
+/// The displayed previous value of a cell, for the change list.
+fn cell_text(xml: &str, el: &Element, shared: &[String]) -> String {
+    let tag = el.tag(xml);
+    let ty = find_attr(tag, "t");
+    let inner = el.inner(xml);
+    if let Some(t) = find_element(inner, "t", 0) {
+        return crate::office::xml_unescape(t.inner(inner));
+    }
+    if let Some(f) = find_element(inner, "f", 0) {
+        return format!("={}", crate::office::xml_unescape(f.inner(inner)));
+    }
+    if let Some(v) = find_element(inner, "v", 0) {
+        let raw = v.inner(inner).to_string();
+        return match ty.as_deref() {
+            Some("s") => raw
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| shared.get(i).cloned())
+                .unwrap_or(raw),
+            Some("b") => if raw.trim() == "1" { "TRUE" } else { "FALSE" }.to_string(),
+            Some("str") => crate::office::xml_unescape(&raw),
+            _ => raw,
+        };
+    }
+    String::new()
+}
+
+/// Write one cell into a sheet part. Returns the new XML and the old display
+/// value. Missing rows and cells are created in order; a bad address is an
+/// error, not a guess.
+fn set_cell_in_sheet(
+    xml: &str,
+    cell: &str,
+    value: &CellValue,
+    shared: &[String],
+) -> Result<(String, String)> {
+    let (col, row) = parse_a1(cell)
+        .ok_or_else(|| Error::Other("不是合法的单元格地址（应形如 B2）".into()))?;
+    let addr = format!("{}{}", col_letters(col), row);
+
+    let row_label = row.to_string();
+    let mut cursor = 0;
+    let mut row_el: Option<Element> = None;
+    while let Some(el) = find_element(xml, "row", cursor) {
+        if find_attr(el.tag(xml), "r").map(|v| v.trim() == row_label).unwrap_or(false) {
+            row_el = Some(el);
+            break;
+        }
+        cursor = el.end.max(el.start + 1);
+    }
+
+    let Some(row_el) = row_el else {
+        // No such row: create it, in numeric order.
+        let sd = find_element(xml, "sheetData", 0)
+            .ok_or_else(|| Error::Other("工作表缺少 sheetData".into()))?;
+        let new_row = format!("<row r=\"{row}\">{}</row>", render_cell(&addr, None, value));
+        if sd.self_closing {
+            let opened = format!(
+                "<{}{new_row}</sheetData>",
+                sd.tag(xml).trim_end_matches('/').trim_end()
+            );
+            let mut out = String::with_capacity(xml.len() + opened.len());
+            out.push_str(&xml[..sd.start]);
+            out.push_str(&opened);
+            out.push_str(&xml[sd.end..]);
+            return Ok((out, String::new()));
+        }
+        let mut at = sd.end - "</sheetData>".len();
+        let mut c = sd.content_start;
+        while let Some(re) = find_element(xml, "row", c) {
+            if re.start >= at {
+                break;
+            }
+            let r = find_attr(re.tag(xml), "r").and_then(|v| v.trim().parse::<u32>().ok());
+            if r.map(|r| r > row).unwrap_or(false) {
+                at = re.start;
+                break;
+            }
+            c = re.end.max(re.start + 1);
+        }
+        let mut out = String::with_capacity(xml.len() + new_row.len());
+        out.push_str(&xml[..at]);
+        out.push_str(&new_row);
+        out.push_str(&xml[at..]);
+        return Ok((out, String::new()));
+    };
+
+    // Collect the row's cells so a new one lands in column order.
+    let mut cells: Vec<Element> = Vec::new();
+    let inner_end = if row_el.self_closing {
+        row_el.content_start
+    } else {
+        row_el.end - "</row>".len()
+    };
+    let mut c = row_el.content_start;
+    while c < inner_end {
+        match find_element(xml, "c", c) {
+            Some(ce) if ce.start < inner_end => {
+                c = ce.end.max(ce.start + 1);
+                cells.push(ce);
+            }
+            _ => break,
+        }
+    }
+
+    let hit = cells
+        .iter()
+        .find(|ce| find_attr(ce.tag(xml), "r").map(|r| r.trim().eq_ignore_ascii_case(&addr)).unwrap_or(false));
+
+    if let Some(ce) = hit {
+        let before = cell_text(xml, ce, shared);
+        let style = find_attr(ce.tag(xml), "s");
+        let new_cell = render_cell(&addr, style.as_deref(), value);
+        let mut out = String::with_capacity(xml.len() + new_cell.len());
+        out.push_str(&xml[..ce.start]);
+        out.push_str(&new_cell);
+        out.push_str(&xml[ce.end..]);
+        return Ok((out, before));
+    }
+
+    let new_cell = render_cell(&addr, None, value);
+    if row_el.self_closing {
+        // `<row r="5"/>` has nowhere to put a child: reopen it.
+        let opened = format!(
+            "<{}{new_cell}</row>",
+            row_el.tag(xml).trim_end_matches('/').trim_end()
+        );
+        let mut out = String::with_capacity(xml.len() + opened.len());
+        out.push_str(&xml[..row_el.start]);
+        out.push_str(&opened);
+        out.push_str(&xml[row_el.end..]);
+        return Ok((out, String::new()));
+    }
+    let at = cells
+        .iter()
+        .find(|ce| {
+            find_attr(ce.tag(xml), "r")
+                .and_then(|r| parse_a1(&r))
+                .map(|(c, _)| c > col)
+                .unwrap_or(false)
+        })
+        .map(|ce| ce.start)
+        .unwrap_or(inner_end);
+    let mut out = String::with_capacity(xml.len() + new_cell.len());
+    out.push_str(&xml[..at]);
+    out.push_str(&new_cell);
+    out.push_str(&xml[at..]);
+    Ok((out, String::new()))
+}
+
+/// sheet name → sheet part path, in workbook order.
+fn sheet_parts(parts: &[(String, Vec<u8>)]) -> Result<Vec<(String, String)>> {
+    let wb = parts
+        .iter()
+        .find(|(n, _)| n == "xl/workbook.xml")
+        .ok_or_else(|| Error::Other("不是 xlsx：缺少 xl/workbook.xml".into()))?;
+    let wb_xml = std::str::from_utf8(&wb.1)
+        .map_err(|_| Error::Other("workbook.xml 不是 UTF-8".into()))?;
+    let rels_xml = parts
+        .iter()
+        .find(|(n, _)| n == "xl/_rels/workbook.xml.rels")
+        .and_then(|(_, b)| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+
+    let mut targets: Vec<(String, String)> = Vec::new();
+    let mut cur = 0;
+    while let Some(rel) = find_element(rels_xml, "Relationship", cur) {
+        let tag = rel.tag(rels_xml);
+        if let (Some(id), Some(target)) = (find_attr(tag, "Id"), find_attr(tag, "Target")) {
+            // Targets are relative to xl/, unless absolute.
+            let path = match target.strip_prefix('/') {
+                Some(abs) => abs.to_string(),
+                None => format!("xl/{}", target.trim_start_matches("./")),
+            };
+            targets.push((id, path));
+        }
+        cur = rel.end.max(rel.start + 1);
+    }
+
+    let mut out = Vec::new();
+    let mut cur = 0;
+    while let Some(sh) = find_element(wb_xml, "sheet", cur) {
+        let tag = sh.tag(wb_xml);
+        let name = find_attr(tag, "name").unwrap_or_default();
+        let rid = find_attr(tag, "r:id").unwrap_or_default();
+        if let Some((_, path)) = targets.iter().find(|(id, _)| *id == rid) {
+            out.push((crate::office::xml_unescape(&name), path.clone()));
+        }
+        cur = sh.end.max(sh.start + 1);
+    }
+    if out.is_empty() {
+        return Err(Error::Other("表格里没有工作表".into()));
+    }
+    Ok(out)
+}
+
+/// The workbook's shared-string table, so a change list can show the old text
+/// instead of `t="s"` index 17.
+fn shared_strings(parts: &[(String, Vec<u8>)]) -> Vec<String> {
+    let Some((_, bytes)) = parts.iter().find(|(n, _)| n == "xl/sharedStrings.xml") else {
+        return Vec::new();
+    };
+    let Ok(xml) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cur = 0;
+    while let Some(si) = find_element(xml, "si", cur) {
+        out.push(
+            find_element(si.inner(xml), "t", 0)
+                .map(|t| crate::office::xml_unescape(t.inner(si.inner(xml))))
+                .unwrap_or_default(),
+        );
+        cur = si.end.max(si.start + 1);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +1188,143 @@ mod tests {
         assert_eq!(sanitize_sheet_name(&long).chars().count(), 31);
         let deduped = dedupe_names(&["Sheet".into(), "Sheet".into()]);
         assert_ne!(deduped[0], deduped[1]);
+    }
+
+
+    // ---- editing an existing workbook ----
+
+    /// A workbook shaped like the ones the app produces: title, header, three
+    /// data rows, one formula column.
+    fn edit_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("cortex-xlsx-edit-{tag}-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("原表.xlsx");
+        let sheets = vec![SheetSpec {
+            name: "数据".into(),
+            title: Some("测试表".into()),
+            headers: vec!["名称".into(), "数量".into()],
+            widths: vec![],
+            rows: vec![
+                vec![Cell::Text("a".into()), Cell::Num(3.0)],
+                vec![Cell::Text("b".into()), Cell::Num(7.0)],
+                vec![Cell::Text("合计".into()), Cell::Formula("SUM(B4:B5)".into())],
+            ],
+            chart: None,
+        }];
+        build_workbook(&src, &sheets).unwrap();
+        let out = dir.join("改后.xlsx");
+        (dir, src, out)
+    }
+
+    fn cell_of(xml: &str, addr: &str) -> Option<String> {
+        let needle = format!("<c r=\"{addr}\"");
+        let at = xml.find(&needle)?;
+        let end = at + xml[at..].find('>')? + 1;
+        Some(xml[at..end].to_string())
+    }
+
+    #[test]
+    fn editing_a_copy_writes_numbers_text_and_formulas_without_touching_the_input() {
+        let (dir, src, out) = edit_fixture("apply");
+        let before_xml = find_part(&crate::office::read_zip_parts(&src).unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(cell_of(&before_xml, "A3").unwrap().contains("s=\"2\""), "the header row is styled");
+
+        let edits = vec![
+            CellEdit { sheet: Some("数据".into()), cell: "B4".into(), value: "11".into() },
+            CellEdit { sheet: Some("数据".into()), cell: "A4".into(), value: "甲".into() },
+            CellEdit { sheet: Some("数据".into()), cell: "D4".into(), value: "=B4*2".into() },
+            CellEdit { sheet: Some("数据".into()), cell: "A9".into(), value: "新行".into() },
+            CellEdit { sheet: Some("数据".into()), cell: "A3".into(), value: "名称2".into() },
+        ];
+        let r = set_cells(&src, &out, &edits).unwrap();
+        assert_eq!(r.changed.len(), 5, "skipped: {:?}", r.skipped);
+        assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+
+        // The original is byte-identical: an edit never rewrites what it read.
+        let after_src = crate::office::read_zip_parts(&src).unwrap();
+        assert_eq!(find_part(&after_src, "xl/worksheets/sheet1.xml"), before_xml);
+
+        let xml = find_part(&crate::office::read_zip_parts(&out).unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(xml.contains("<v>11</v>"), "number not written: {xml}");
+        assert!(xml.contains("<t xml:space=\"preserve\">甲</t>"), "text not inlined: {xml}");
+        assert!(xml.contains("<f>B4*2</f>"), "formula not written: {xml}");
+        assert!(xml.contains("<row r=\"9\""), "missing row not created: {xml}");
+        // Formatting survived: rewriting a styled cell keeps its `s=` index,
+        // which is what makes an edit in place rather than a rebuild.
+        let header = cell_of(&xml, "A3").unwrap();
+        assert!(header.contains("s=\"2\""), "the style is gone: {header}");
+        assert!(xml.contains("名称2"), "the header text was not replaced: {header}");
+
+        // And the file opens as a workbook with the new values.
+        use calamine::Reader;
+        let mut wb = calamine::open_workbook_auto(&out).unwrap();
+        let range = wb.worksheet_range("数据").unwrap();
+        assert_eq!(crate::office::xlsx::calamine_text(&range[(3, 0)]), "甲");
+        assert_eq!(crate::office::xlsx::calamine_text(&range[(3, 1)]), "11");
+        assert_eq!(crate::office::xlsx::calamine_text(&range[(8, 0)]), "新行");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_that_does_not_exist_yet_lands_in_numeric_order() {
+        let (dir, src, out) = edit_fixture("order");
+        set_cells(&src, &out, &[CellEdit { sheet: None, cell: "B2".into(), value: "9".into() }]).unwrap();
+        let xml = find_part(&crate::office::read_zip_parts(&out).unwrap(), "xl/worksheets/sheet1.xml");
+        let r2 = xml.find("<row r=\"2\"").expect("row 2 created");
+        let r3 = xml.find("<row r=\"3\"").expect("row 3 is the header");
+        assert!(r2 < r3, "a new row must not be appended out of order");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clearing_a_cell_drops_the_value_but_keeps_the_formatting() {
+        let (dir, src, out) = edit_fixture("clear");
+        // A3 is the styled header cell; clearing it must not strip the format.
+        let r = set_cells(&src, &out, &[CellEdit { sheet: Some("数据".into()), cell: "A3".into(), value: String::new() }]).unwrap();
+        assert_eq!(r.changed[0].before, "名称", "the change list shows what was there");
+        let xml = find_part(&crate::office::read_zip_parts(&out).unwrap(), "xl/worksheets/sheet1.xml");
+        let cleared = cell_of(&xml, "A3").unwrap();
+        assert!(cleared.ends_with("/>"), "cleared cell is empty: {cleared}");
+        assert!(cleared.contains("s=\"2\""), "a cleared cell keeps its style: {cleared}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mistakes_are_reported_instead_of_written() {
+        let (dir, src, out) = edit_fixture("skip");
+        let r = set_cells(
+            &src,
+            &out,
+            &[
+                CellEdit { sheet: Some("不存在".into()), cell: "A1".into(), value: "x".into() },
+                CellEdit { sheet: Some("数据".into()), cell: "不是地址".into(), value: "x".into() },
+            ],
+        )
+        .unwrap();
+        assert!(r.changed.is_empty());
+        assert_eq!(r.skipped.len(), 2, "{:?}", r.skipped);
+        assert!(r.skipped.iter().any(|m| m.contains("不存在")), "{:?}", r.skipped);
+        assert!(r.skipped.iter().any(|m| m.contains("不是合法的单元格地址")), "{:?}", r.skipped);
+        // Refusing to write into itself is the difference between an edit and
+        // destroying the only copy.
+        let err = set_cells(&src, &src, &[CellEdit { sheet: None, cell: "A1".into(), value: "x".into() }])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("副本"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_shows_the_sheets_and_their_head_rows() {
+        let (dir, src, _) = edit_fixture("preview");
+        let p = preview(&src, None, 10).unwrap();
+        assert_eq!(p.sheets, vec!["数据".to_string()]);
+        assert_eq!(p.sheet, "数据");
+        assert_eq!(p.rows[0][0], "测试表", "title row");
+        assert_eq!(p.rows[2][0], "名称", "header row");
+        assert!(!p.truncated);
+        assert!(preview(&src, Some("数据"), 2).unwrap().truncated, "the cap is honest");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
