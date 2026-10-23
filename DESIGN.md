@@ -181,9 +181,20 @@ Either way, the next answer summarizes the thread and continues in a fresh one:
   a rollover the user doesn't notice is a conversation that silently lost its
   thread.
 
+**The summary is repairable.** It *is* the conversation's memory for every
+turn that follows, so a wrong summary keeps being wrong. It is therefore shown
+as a readable card in the transcript (not just fed to the model), and
+`regenerate_rollover_summary` re-summarizes it from the archived thread it
+stands in for. The rewrite replaces that one system message and nothing else —
+the lineage row, the carried question and every other message are untouched;
+the `ROLLOVER_PREFIX` is re-applied rather than trusted, so a rewrite can never
+quietly turn the preamble into an ordinary system message. Takes effect from
+the next turn, because the current prompt was already assembled.
+
 Enforced by: `repo.rs` (archive-nothing/carry-question/lineage, no-steal,
 budget + off switch, head+tail window, inherited-summary visibility,
-two-watermark policy incl. the no-shed no-roll guard, context-budget floor).
+rewrite-in-place, two-watermark policy incl. the no-shed no-roll guard,
+context-budget floor).
 
 ## 8. Recent turns are fed back into the prompt — windowed, never duplicated
 

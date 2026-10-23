@@ -182,6 +182,13 @@ export interface RolloverInfo {
    *  "prompt" (this turn's prompt did). */
   reason: "transcript" | "prompt";
 }
+/** A rewritten rollover summary plus what it now stands in for. */
+export interface RolloverSummary {
+  summary: string;
+  from_thread_id: string;
+  /** Messages in the archived thread this summary replaces. */
+  source_messages: number;
+}
 /** The five terminal states of one generation. */
 export type AnswerState = "completed" | "truncated" | "blocked" | "aborted" | "failed";
 export interface RetrievalMeta {
@@ -899,6 +906,12 @@ export const addChatMessage = (
     answerState: answerState ?? null,
   });
 export const clearChat = (subjectId: string) => invoke<void>("clear_chat", { subjectId });
+/** Rewrite this thread's inherited rollover summary from the archived thread
+ *  it came from. A wrong summary poisons every later turn (it is prepended to
+ *  the system prompt), so re-summarizing is the repair. Applies from the NEXT
+ *  turn — the current one was already assembled. */
+export const regenerateRolloverSummary = (subjectId: string) =>
+  invoke<RolloverSummary>("regenerate_rollover_summary", { subjectId });
 /** Re-check one answer's frozen citation quotes against current source text
  *  (0078). One status per citation, in citation order; null entries are
  *  pre-0078 citations with no snapshot. Empty when no such message. */

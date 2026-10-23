@@ -758,6 +758,7 @@ pub fn run() {
             citesnap::verify_citation_snapshots,
             citesnap::refreeze_citation,
             answer_health::answer_health,
+            commands::regenerate_rollover_summary,
             commands::source_backrefs,
             commands::question_index,
             agents::roles_list,

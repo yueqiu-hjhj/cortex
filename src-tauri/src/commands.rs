@@ -2114,6 +2114,61 @@ fn summarize_for_rollover(model: &dyn crate::llm::Llm, transcript: &str) -> Stri
     }
 }
 
+/// Rewrite the inherited rollover summary from the archived thread it came
+/// from. The summary is a machine's account of a conversation the user
+/// actually had, so it can be wrong — and a wrong summary poisons every later
+/// turn, because chat_answer prepends it to the system prompt. Re-summarizing
+/// is the only repair, and the user can only ask for it if they can read the
+/// summary first (which is why it is shown, not just fed to the model).
+///
+/// Takes effect from the NEXT turn: this turn's prompt was already assembled.
+#[tauri::command]
+pub async fn regenerate_rollover_summary(
+    app: AppHandle,
+    subject_id: String,
+) -> Result<crate::models::RolloverSummary> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::models::RolloverSummary> {
+        let state = app.state::<AppState>();
+        let (from_tid, transcript, source_messages) = {
+            let c = state.db.lock().unwrap();
+            // Only a thread that actually inherited a summary can rewrite one.
+            if repo::active_rollover_summary(&c, &subject_id)?.is_none() {
+                return Err(Error::NotFound("rollover summary".into()));
+            }
+            let tid = repo::current_thread(&c, &subject_id)?;
+            let from_tid = repo::rolled_from_of(&c, &tid)?
+                .ok_or_else(|| Error::NotFound("previous thread".into()))?;
+            let transcript = repo::rollover_transcript(&c, &from_tid, 8000)?;
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM chat_messages WHERE thread_id=?1",
+                rusqlite::params![from_tid],
+                |r| r.get(0),
+            )?;
+            (from_tid, transcript, n)
+        };
+        // No DB lock across the model call (same rule as the rollover itself).
+        let model = {
+            let c = state.db.lock().unwrap();
+            let keys = read_keys(&c)?;
+            let mut m = load_model(&c, &keys, "chat")?;
+            apply_budget(&mut m, &c, "chat");
+            m
+        };
+        let summary = summarize_for_rollover(model.as_ref(), &transcript);
+        {
+            let c = state.db.lock().unwrap();
+            repo::replace_rollover_summary(&c, &subject_id, &summary)?;
+        }
+        Ok(crate::models::RolloverSummary {
+            summary,
+            from_thread_id: from_tid,
+            source_messages,
+        })
+    })
+    .await
+    .map_err(|e| Error::Other(format!("regenerate rollover summary failed: {e}")))?
+}
+
 /// Scoped retrieval-augmented chat. Embeds the query, retrieves top-k chunks
 /// (optionally narrowed to a single source), and asks the configured LLM to
 /// answer from that context with inline ⟦source · loc⟧ citations.

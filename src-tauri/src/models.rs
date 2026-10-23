@@ -246,6 +246,16 @@ pub struct RolloverInfo {
     pub reason: String,
 }
 
+/// A rewritten rollover summary plus the thread it was derived from, so the UI
+/// can say what the summary actually covers instead of asking for trust.
+#[derive(Debug, Clone, Serialize)]
+pub struct RolloverSummary {
+    pub summary: String,
+    pub from_thread_id: String,
+    /// Messages in the archived thread this summary now stands in for.
+    pub source_messages: i64,
+}
+
 /// A persisted chat message (belongs to one conversation thread).
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMsg {

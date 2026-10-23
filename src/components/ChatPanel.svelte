@@ -121,6 +121,38 @@
       refreezing = { ...refreezing, [key]: false };
     }
   }
+
+  // Rollover summary (0082): the summary IS the conversation's memory for
+  // every turn after a rollover, so a wrong one keeps being wrong. It is shown
+  // rather than only fed to the model, and it can be rewritten from the
+  // archived thread it stands in for.
+  const ROLLOVER_PREFIX = "（自动续接）以下是此前对话的摘要，仅用于衔接上下文：\n";
+  function rolloverBody(text: string): string | null {
+    return text.startsWith(ROLLOVER_PREFIX) ? text.slice(ROLLOVER_PREFIX.length) : null;
+  }
+  let regenBusy = $state(false);
+  async function regenSummary() {
+    const subjectId = app.activeSubjectId ?? "";
+    if (!subjectId || regenBusy) return;
+    regenBusy = true;
+    try {
+      const out = await api.regenerateRolloverSummary(subjectId);
+      const text = `${ROLLOVER_PREFIX}${out.summary}`;
+      messages = messages.map((m) =>
+        m.role === "system" && rolloverBody(m.text) !== null ? { ...m, text } : m,
+      );
+      if (app.chatRollover) app.chatRollover = { ...app.chatRollover, summary: out.summary };
+      app.pushToast({
+        kind: "success",
+        title: "摘要已重写",
+        body: `依据上一段对话的 ${out.source_messages} 条记录重写，从下一轮回答开始生效。`,
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "重写摘要失败", body: String(e) });
+    } finally {
+      regenBusy = false;
+    }
+  }
   let draft = $state("");
   // Streaming + suggestions now live in the store (app.sendChat) so a reply keeps
   // going even if this panel unmounts. We only surface the live text when it's for
@@ -783,6 +815,9 @@
           <summary>查看摘要</summary>
           <p>{app.chatRollover.summary}</p>
         </details>
+        <button type="button" class="rn-regen" disabled={regenBusy} onclick={regenSummary}>
+          {regenBusy ? "重写中…" : "重写摘要"}
+        </button>
       </span>
       <button class="btn btn--icon btn--sm btn--ghost" title="知道了" onclick={() => (app.chatRollover = null)}>
         <Icon name="x" size={12} />
@@ -811,7 +846,21 @@
 
       {#each messages as m, i (i)}
         {#if m.role === "system"}
-          <div class="bubble system">— {m.text} —</div>
+          {@const rbody = rolloverBody(m.text)}
+          {#if rbody !== null}
+            <div class="rollover-card">
+              <div class="rc-head">
+                <Icon name="chat" size={11} />
+                <span class="rc-title">接续自上一段对话 · 以下是它的摘要</span>
+                <button type="button" class="rc-regen" disabled={regenBusy} onclick={regenSummary}>
+                  {regenBusy ? "重写中…" : "重写摘要"}
+                </button>
+              </div>
+              <p class="rc-body">{rbody}</p>
+            </div>
+          {:else}
+            <div class="bubble system">— {m.text} —</div>
+          {/if}
         {:else if m.role === "user"}
           <div class="bubble user" data-msg-at={m.created_at}>{m.text}</div>
         {:else}
@@ -1315,6 +1364,33 @@
     font-size: 11.5px;
     color: var(--fg-muted);
     white-space: pre-wrap;
+  }
+  .rn-regen, .rc-regen {
+    flex: none; margin-top: 4px; padding: 2px 8px; border-radius: 6px;
+    border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+    background: transparent; color: var(--accent);
+    font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .rn-regen:hover:not(:disabled), .rc-regen:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  .rn-regen:disabled, .rc-regen:disabled { opacity: 0.55; cursor: progress; }
+  /* The inherited summary as a transcript row (0082): reloading the thread used
+     to dump it as one long "— （自动续接）… —" line. It is the conversation's
+     memory, so it gets a card and a repair button instead. */
+  .rollover-card {
+    margin: 10px 12px;
+    padding: 9px 11px;
+    border: 1px dashed color-mix(in oklab, var(--accent) 35%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--accent) 5%, transparent);
+  }
+  .rc-head { display: flex; align-items: center; gap: 7px; color: var(--accent); }
+  .rc-title { flex: 1; min-width: 0; font-size: 11px; letter-spacing: 0.04em; }
+  .rc-head .rc-regen { margin-top: 0; }
+  .rc-body {
+    margin: 6px 0 0; font-size: 12px; line-height: 1.6;
+    color: var(--fg-muted); white-space: pre-wrap;
   }
 
   .evidence { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }

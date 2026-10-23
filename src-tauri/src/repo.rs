@@ -1856,6 +1856,12 @@ fn window(s: &str, cap: usize) -> String {
     format!("{h}\n……（中间省略）……\n{t}")
 }
 
+/// Prefix that marks a thread's inherited rollover summary (0082). One
+/// definition, because three places depend on it agreeing: the writer
+/// (`rollover_thread`), the reader that feeds it to the model
+/// (`active_rollover_summary`) and the repair path (`replace_rollover_summary`).
+pub const ROLLOVER_PREFIX: &str = "（自动续接）以下是此前对话的摘要，仅用于衔接上下文：\n";
+
 /// Roll the conversation over (0082): the old thread keeps its full history
 /// (nothing is deleted), a fresh thread is created with `rolled_from` lineage,
 /// `summary` is persisted as its first system message, this turn's question is
@@ -1903,7 +1909,7 @@ pub fn rollover_thread(
         params![
             new_id(),
             id,
-            format!("（自动续接）以下是此前对话的摘要，仅用于衔接上下文：\n{summary}"),
+            format!("{ROLLOVER_PREFIX}{summary}"),
             summary_ts
         ],
     )?;
@@ -1926,6 +1932,39 @@ pub fn active_rollover_summary(conn: &Connection, subject_id: &str) -> Result<Op
         )
         .optional()?;
     Ok(row)
+}
+
+/// The thread this one was rolled over from, if any (0082 lineage).
+pub fn rolled_from_of(conn: &Connection, thread_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT rolled_from FROM chat_threads WHERE id=?1",
+            params![thread_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Rewrite the active thread's inherited summary. A machine summary that
+/// distorted the conversation poisons every later turn, and the user can see
+/// that it did — this is the repair. The prefix is re-applied rather than
+/// trusted: it is what marks the row as a summary, so a rewrite can never
+/// quietly turn the preamble into an ordinary system message.
+pub fn replace_rollover_summary(conn: &Connection, subject_id: &str, summary: &str) -> Result<()> {
+    let tid = current_thread(conn, subject_id)?;
+    let text = format!("{ROLLOVER_PREFIX}{summary}");
+    let n = conn.execute(
+        "UPDATE chat_messages SET text=?2 WHERE id = (
+             SELECT id FROM chat_messages
+             WHERE thread_id=?1 AND role='system' AND text LIKE '（自动续接）%'
+             ORDER BY created_at DESC, rowid DESC LIMIT 1)",
+        params![tid, text],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound("rollover summary".into()));
+    }
+    Ok(())
 }
 
 /// Per-message cap for the history window (chars): a pasted 20k-char source
@@ -5511,6 +5550,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rolled_from.as_deref(), Some(old.as_str()), "lineage is recorded");
+    }
+
+    /// A rewritten summary replaces the inherited one in place: the lineage
+    /// row, the carried question and every other message stay untouched, and
+    /// the prefix survives (it is how the row is found next time).
+    #[test]
+    fn rollover_summary_can_be_rewritten_without_touching_anything_else() {
+        let st = AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sid = insert_subject(&c, "线代", None, None, None).unwrap();
+        add_chat_message(&c, &sid, "user", "什么是特征值？").unwrap();
+        add_chat_message(&c, &sid, "assistant", "特征值是……").unwrap();
+        let old = current_thread(&c, &sid).unwrap();
+        add_chat_message(&c, &sid, "user", "那特征向量呢？").unwrap();
+        let new = rollover_thread(&c, &sid, &old, "旧摘要：只提到了特征值。").unwrap();
+
+        assert_eq!(rolled_from_of(&c, &new).unwrap().as_deref(), Some(old.as_str()));
+        assert_eq!(active_rollover_summary(&c, &sid).unwrap().as_deref().map(|s| s.contains("旧摘要")), Some(true));
+
+        replace_rollover_summary(&c, &sid, "新摘要：特征值与特征向量都讲了。").unwrap();
+        let text = active_rollover_summary(&c, &sid).unwrap().unwrap();
+        assert!(text.starts_with(ROLLOVER_PREFIX));
+        assert!(text.contains("新摘要"));
+        assert!(!text.contains("旧摘要"));
+
+        // The carried question and the lineage are not collateral damage.
+        let msgs = list_chat_messages(&c, &sid).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[1].text, "那特征向量呢？");
+        assert_eq!(rolled_from_of(&c, &new).unwrap().as_deref(), Some(old.as_str()));
+
+        // A thread that never inherited a summary can't be rewritten.
+        let fresh = insert_subject(&c, "英语", None, None, None).unwrap();
+        assert!(replace_rollover_summary(&c, &fresh, "不该写进去").is_err());
+        assert_eq!(rolled_from_of(&c, current_thread(&c, &fresh).unwrap().as_str()).unwrap(), None);
     }
 
     /// Only a question that is the thread's NEWEST row travels with the
