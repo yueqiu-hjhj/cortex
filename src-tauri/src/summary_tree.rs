@@ -456,9 +456,108 @@ fn keyword_score(node: &SummaryNode, terms: &[String]) -> i64 {
     terms.iter().filter(|t| hay.contains(t.as_str())).count() as i64
 }
 
-/// Assemble hierarchical context within `max_chars` bytes:
-///   ~10% subject overview → ~25% topic digests → ~25% source digests →
-///   remaining ~40% raw chunk text.
+// ---- context intent: what shape of context does this question want? --------
+
+/// Which layer of the library a question is asking about. The context block is
+/// one budget split four ways (overview → topics → sources → raw text), and
+/// the right split depends on the question: "梳理一下这学期的框架" wants the
+/// digests, "这个公式为什么成立" wants the raw passage. A fixed 10/25/25/40
+/// spent 60% of the budget on layers a pinpoint question never reads, and
+/// starved the digests a synthesis question is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextIntent {
+    /// Wants the exact passage: definition, derivation, why/how.
+    Pinpoint,
+    /// Ordinary question — the historical 10/25/25/40 split.
+    Balanced,
+    /// Wants the shape of the material: summary, comparison, whole-topic view.
+    Synthesis,
+}
+
+impl ContextIntent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContextIntent::Pinpoint => "pinpoint",
+            ContextIntent::Balanced => "balanced",
+            ContextIntent::Synthesis => "synthesis",
+        }
+    }
+}
+
+/// Intent words. Deliberately two small closed vocabularies, bilingual: the
+/// cost of a miss is only a suboptimal split, and every branch still includes
+/// both digests and raw text — precision here is not worth an LLM call on the
+/// hot path of every question.
+const SYNTHESIS_WORDS: &[&str] = &[
+    "总结", "概括", "梳理", "总览", "概览", "整体", "全貌", "框架", "大纲", "脉络",
+    "对比", "比较", "区别", "联系", "关系", "哪些", "这章", "本章", "本课", "本学期",
+    "整个", "全部", "综合",
+    "summary", "summarize", "overview", "outline", "compare", "comparison",
+    "difference", "whole", "entire", "recap", "synthesize", "review",
+];
+const PINPOINT_WORDS: &[&str] = &[
+    "什么是", "什么意思", "是什么", "定义", "为什么", "为何", "怎么算", "如何",
+    "公式", "证明", "推导", "定理", "第几页", "页码", "原文",
+    "what is", "why", "how", "define", "definition", "formula", "prove",
+    "proof", "derive", "page",
+];
+
+/// Classify the question, then (only if it carries no intent words) let the
+/// retrieval shape speak: hits spread across many sources means the question
+/// pulls threads together (synthesis), hits all from one source mean it is
+/// about that passage (pinpoint). This second signal is what makes the split
+/// work for questions that are not phrased like textbook prompts.
+pub fn context_intent(query: Option<&str>, raw_hits: &[ChunkHit]) -> ContextIntent {
+    if let Some(q) = query {
+        let lower = q.to_lowercase();
+        let syn = SYNTHESIS_WORDS.iter().filter(|w| lower.contains(*w)).count();
+        let pin = PINPOINT_WORDS.iter().filter(|w| lower.contains(*w)).count();
+        // Majority wins; a tie leans synthesis — an overview answer still
+        // carries the raw passages, a pinpoint answer cannot reconstruct a
+        // whole-topic picture.
+        if syn > pin {
+            return ContextIntent::Synthesis;
+        }
+        if pin > syn {
+            return ContextIntent::Pinpoint;
+        }
+        if syn > 0 {
+            // Tie (e.g. "总结一下为什么"): intent words were present at all.
+            return ContextIntent::Synthesis;
+        }
+    }
+    let mut sources: Vec<&str> = raw_hits.iter().map(|h| h.source_id.as_str()).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    if raw_hits.len() >= 4 && sources.len() >= 3 {
+        return ContextIntent::Synthesis;
+    }
+    if !raw_hits.is_empty() && sources.len() == 1 {
+        return ContextIntent::Pinpoint;
+    }
+    ContextIntent::Balanced
+}
+
+/// Split `total` bytes across (overview, topics, sources, raw). The four
+/// always add up to `total`; only the proportions move:
+///   synthesis 15/35/30/20 — the digests ARE the answer material
+///   balanced  10/25/25/40 — the historical split
+///   pinpoint  5/10/15/70 — the passage is the answer material
+pub fn budget_split(intent: ContextIntent, total: usize) -> (usize, usize, usize, usize) {
+    let (ov_pct, ov_cap, tp_pct, sr_pct) = match intent {
+        ContextIntent::Synthesis => (15, 2_400, 35, 30),
+        ContextIntent::Balanced => (10, 1_400, 25, 25),
+        ContextIntent::Pinpoint => (5, 800, 10, 15),
+    };
+    let overview = (total * ov_pct / 100).min(ov_cap);
+    let topics = total * tp_pct / 100;
+    let sources = total * sr_pct / 100;
+    let raw = total.saturating_sub(overview + topics + sources);
+    (overview, topics, sources, raw)
+}
+
+/// Assemble hierarchical context within `max_chars` bytes, with the split
+/// chosen by `context_intent` (see `budget_split` for the proportions).
 /// `topic_ids` empty = whole subject; `source_ids` (when non-empty) pins the
 /// scope to exactly those sources; `raw_hits` are pre-retrieved chunks (chat
 /// mode). When `raw_hits` is empty (generation mode) the raw layer is filled by
@@ -475,10 +574,8 @@ pub fn context_block(
     max_chars: usize,
 ) -> Result<(String, Vec<String>)> {
     let total = max_chars.max(4000);
-    let overview_budget = (total * 10 / 100).min(1400);
-    let topics_budget = total * 25 / 100;
-    let sources_budget = total * 25 / 100;
-    let raw_budget = total - overview_budget - topics_budget - sources_budget;
+    let intent = context_intent(query, raw_hits);
+    let (overview_budget, topics_budget, sources_budget, raw_budget) = budget_split(intent, total);
 
     let terms = query.map(repo::query_terms).unwrap_or_default();
     let mut out = String::new();
@@ -814,5 +911,92 @@ mod tests {
         let cut = clip(&s, 50);
         assert!(cut.chars().count() < s.chars().count());
         assert!(cut.ends_with('\u{2026}'));
+    }
+
+    fn hit(id: &str, source_id: &str, text: &str) -> ChunkHit {
+        ChunkHit {
+            id: id.into(),
+            source_id: source_id.into(),
+            source_name: format!("{source_id}.md"),
+            text: text.into(),
+            loc: None,
+            char_start: None,
+            char_end: None,
+            score: 0.5,
+        }
+    }
+
+    /// Intent words win over retrieval shape; the shape decides only when the
+    /// question carries none. A tie leans synthesis (an overview answer still
+    /// carries raw passages; a pinpoint answer cannot reconstruct a topic).
+    #[test]
+    fn intent_words_win_then_retrieval_shape_decides() {
+        use ContextIntent::*;
+        let spread: Vec<ChunkHit> = (0..4)
+            .map(|i| hit(&format!("h{i}"), &format!("s{i}"), "text"))
+            .collect();
+        let single = vec![hit("h1", "s1", "text"), hit("h2", "s1", "text")];
+
+        // Words.
+        assert_eq!(context_intent(Some("梳理一下这学期的框架"), &[]), Synthesis);
+        assert_eq!(context_intent(Some("这个公式为什么成立"), &[]), Pinpoint);
+        assert_eq!(context_intent(Some("对比 A 和 B 的区别"), &[]), Synthesis);
+        // Majority: two synthesis words vs one pinpoint word.
+        assert_eq!(context_intent(Some("总结并对比这两章的框架，为什么"), &[]), Synthesis);
+        // Tie leans synthesis.
+        assert_eq!(context_intent(Some("总结一下为什么"), &[]), Synthesis);
+
+        // No words: the retrieval shape speaks.
+        assert_eq!(context_intent(None, &spread), Synthesis, "hit spread across 3+ sources pulls threads together");
+        assert_eq!(context_intent(Some("特征值分解"), &single), Pinpoint, "one source = it is about that passage");
+        assert_eq!(context_intent(Some("特征值分解"), &[]), Balanced);
+    }
+
+    /// The four layers always add up to the whole budget; only the proportions
+    /// move, and the raw share is ordered pinpoint > balanced > synthesis.
+    #[test]
+    fn budget_split_adds_up_and_moves_the_raw_share() {
+        for total in [4_000usize, 18_000, 24_000, 60_000] {
+            let (ov, tp, sr, raw) = budget_split(ContextIntent::Balanced, total);
+            assert_eq!(ov + tp + sr + raw, total, "total {total}");
+        }
+        let raw_of = |i| budget_split(i, 24_000).3;
+        assert!(raw_of(ContextIntent::Pinpoint) > raw_of(ContextIntent::Balanced));
+        assert!(raw_of(ContextIntent::Balanced) > raw_of(ContextIntent::Synthesis));
+        // The overview cap tracks the intent: a synthesis question may spend
+        // more of the budget on the whole-library picture.
+        assert_eq!(budget_split(ContextIntent::Synthesis, 24_000).0, 2_400);
+        assert_eq!(budget_split(ContextIntent::Pinpoint, 24_000).0, 800);
+    }
+
+    /// End to end: the same library, the same hits, two questions — the
+    /// synthesis question gets more digest bytes, the pinpoint question gets
+    /// more passage bytes. Small budget on purpose: the per-block caps (900
+    /// bytes) only bite above it, and the point is that the LAYERS move, not
+    /// that the total grows.
+    #[test]
+    fn the_split_follows_the_question_not_a_fixed_ratio() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let (sid, t1, s1) = seed_library(&c);
+        let now = now_ms();
+        upsert_raw(&c, &sid, &node("topic", &t1, &format!("主题脉络：{}", "向量检索".repeat(300)), now));
+        let hits = vec![hit("ch1", &s1, &"BM25 的得分函数由词频与逆文档频率组成。".repeat(40))];
+
+        let (syn, _) = context_block(&c, &sid, &[], None, Some("总结本章脉络"), &hits, 4_000).unwrap();
+        let (pin, _) = context_block(&c, &sid, &[], None, Some("这个公式为什么成立"), &hits, 4_000).unwrap();
+        let split_at = |t: &str| t.find("\n\n[原文").unwrap_or(t.len());
+        let (syn_digest, syn_raw) = (split_at(&syn), split_at(&pin));
+        assert!(
+            syn_digest > syn_raw,
+            "the synthesis question spends more on digests ({syn_digest} vs {syn_raw})"
+        );
+        assert!(
+            pin[split_at(&pin)..].len() > syn[syn_digest..].len(),
+            "the pinpoint question spends more on the passage ({} vs {})",
+            pin.len() - split_at(&pin),
+            syn.len() - syn_digest
+        );
+        assert!(syn.contains("主题脉络"), "the synthesis block carries the topic digest");
     }
 }

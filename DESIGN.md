@@ -66,6 +66,34 @@ fallback, legacy no-quote, DB roundtrip with re-index).
 
 Enforced by: `backrefs.rs` edge tests; `repo.rs` fabrication-count roundtrip.
 
+## 4b. The context budget is shaped by the question (pinpoint / balanced / synthesis)
+
+One prompt budget is split four ways — subject overview → topic digests →
+source digests → raw passages. A fixed 10/25/25/40 spent 60% of it on layers a
+pinpoint question never reads, and starved the digests a synthesis question is
+made of. `summary_tree::context_intent` classifies the question (two small
+bilingual word lists; when the question carries no intent words, the retrieval
+shape decides: hits spread across 3+ sources mean the question pulls threads
+together, hits from one source mean it is about that passage) and
+`budget_split` moves the proportions:
+
+| intent | overview | topics | sources | raw |
+|---|---|---|---|---|
+| synthesis | 15% (cap 2.4k) | 35% | 30% | ~20% |
+| balanced | 10% (cap 1.4k) | 25% | 25% | ~40% |
+| pinpoint | 5% (cap 0.8k) | 10% | 15% | ~70% |
+
+Nothing is withheld in any mode — every layer still appears, so a pinpoint
+answer is never blind to the topic and a synthesis answer still carries the
+passages it cites. The split is a pure function, and the badge the UI shows
+(`RetrievalMeta.intent`) is computed by the same function on the same hits, so
+the badge can never disagree with what the model actually read.
+
+Enforced by: `summary_tree.rs` (intent words + tie + shape fallback; the four
+shares always sum to the budget and raw is ordered pinpoint > balanced >
+synthesis; end-to-end: same library and hits, two questions, digest bytes move
+one way and passage bytes the other).
+
 ## 5. Eval is decidable, not decorative (0080)
 
 The retrieval eval reports **per stratum** (factual / conceptual /

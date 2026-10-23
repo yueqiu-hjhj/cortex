@@ -170,6 +170,13 @@ pub struct RetrievalMeta {
     /// (0 = none included or disabled). Drives the UI's honesty chip.
     #[serde(default)]
     pub history_turns: i64,
+    /// How the context budget was split for THIS question:
+    /// "pinpoint" (the passage is the answer material) | "balanced" |
+    /// "synthesis" (the digests are). Nothing is withheld either way — only
+    /// the proportions move — but the UI says so, because a synthesis-shaped
+    /// answer to a pinpoint question deserves an explanation.
+    #[serde(default)]
+    pub intent: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

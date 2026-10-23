@@ -5383,6 +5383,7 @@ mod tests {
             scope: "subject".into(),
             abstained: false,
             history_turns: 2,
+            intent: "balanced".into(),
         };
         add_chat_message_full(&c, &sid, "assistant", "回答 [1]", &[], Some(&meta), None, None).unwrap();
         add_chat_message_full(
@@ -5391,7 +5392,7 @@ mod tests {
             "assistant",
             "零命中回答",
             &[],
-            Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true, history_turns: 0 }),
+            Some(&crate::models::RetrievalMeta { hits: 0, scope: "subject".into(), abstained: true, history_turns: 0, intent: "balanced".into() }),
             None,
             None,
         )

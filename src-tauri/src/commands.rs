@@ -2532,6 +2532,12 @@ pub async fn chat_answer(
         },
         abstained,
         history_turns,
+        // Same pure function the context block itself uses, on the same hits
+        // and query — the badge can never disagree with how the budget was
+        // actually split.
+        intent: crate::summary_tree::context_intent(Some(&query), &hits)
+            .as_str()
+            .to_string(),
     };
 
     Ok(ChatAnswer {

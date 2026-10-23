@@ -809,6 +809,19 @@
                 >上文 · {historyTurns} 轮</span
               >
             {/if}
+            {#if m.retrieval?.intent === "synthesis"}
+              <span
+                class="retr-badge state-intent"
+                title="这个问题听起来要「整体脉络」（总结、对比、框架），所以上下文预算多分给了主题/材料摘要，原始片段相应减少——回答的视角因此偏概览。"
+                >概览视角</span
+              >
+            {:else if m.retrieval?.intent === "pinpoint"}
+              <span
+                class="retr-badge state-intent"
+                title="这个问题要的是具体位置（定义、公式、为什么），所以上下文预算多分给了原文片段，摘要层相应压缩——回答的视角因此偏精读。"
+                >精读视角</span
+              >
+            {/if}
             <RichText text={m.text} />
             {#if cites.length}
               <div class="evidence">
@@ -1185,6 +1198,13 @@
     color: var(--fg-muted);
     background: color-mix(in oklab, var(--fg-muted) 8%, transparent);
     border-color: color-mix(in oklab, var(--fg-muted) 25%, transparent);
+  }
+  /* Context-intent badge: informational, not a warning — the answer is not
+     degraded, the budget simply leaned toward the layer the question wants. */
+  .retr-badge.state-intent {
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    border-color: color-mix(in oklab, var(--accent) 28%, transparent);
   }
   .retr-stat {
     display: inline-flex;

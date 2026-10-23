@@ -168,6 +168,9 @@ export interface RetrievalMeta {
   abstained: boolean;
   /** Earlier user turns of this thread fed back into the prompt. */
   history_turns?: number;
+  /** How the context budget was split: pinpoint | balanced | synthesis.
+   *  Nothing is withheld either way — only the layer proportions move. */
+  intent?: "pinpoint" | "balanced" | "synthesis";
 }
 export interface CsItem { t: string; d: string }
 export interface CsSection { id: string; title: string; state: string; items: CsItem[]; image?: string | null }
