@@ -66,6 +66,8 @@ pub struct WorkItem {
     /// Derived: the next occurrence for a recurring item, when one falls after
     /// `now`. None for one-shot items.
     pub next_due_ms: Option<i64>,
+    /// 1-based week of the parent goal's plan; None = not week-bound.
+    pub week_index: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +92,12 @@ pub struct Goal {
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Long-term plan pasted by the user; the source for week-by-week extraction.
+    pub plan_text: Option<String>,
+    /// How many weeks the plan covers (4..=52).
+    pub plan_weeks: Option<i64>,
+    /// Week-1 anchor in ms; NULL means `deadline_ms - plan_weeks * 7 days`.
+    pub start_ms: Option<i64>,
     /// Derived: how many work items are attached and how many are done.
     pub item_count: i64,
     pub done_item_count: i64,
@@ -481,7 +489,8 @@ const ITEM_COLUMNS: &str = "w.id, w.kind, w.title, w.body, w.status, w.priority,
      w.done_at, \
      (SELECT COUNT(*) FROM work_items c WHERE c.parent_id = w.id), \
      (SELECT COUNT(*) FROM work_items c WHERE c.parent_id = w.id \
-        AND c.status IN ('open','doing','blocked'))";
+        AND c.status IN ('open','doing','blocked')), \
+     w.week_index";
 
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
     Ok(WorkItem {
@@ -507,6 +516,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
         child_count: row.get(19)?,
         open_child_count: row.get(20)?,
         next_due_ms: None,
+        week_index: row.get(21)?,
     })
 }
 
@@ -523,6 +533,16 @@ fn finish(mut items: Vec<WorkItem>, now: i64) -> Vec<WorkItem> {
 }
 
 // ------------------------------------------------------------------- CRUD
+
+/// Tag an item with the week of its goal's plan (1-based). Kept out of
+/// `ItemInput` so the 14 existing literals don't all need a new field.
+pub fn set_week_index(conn: &Connection, item_id: &str, week: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE work_items SET week_index=?2, updated_at=?3 WHERE id=?1",
+        params![item_id, week, now_ms()],
+    )?;
+    Ok(())
+}
 
 pub fn get_item(conn: &Connection, id: &str) -> Result<WorkItem> {
     let sql = format!("SELECT {ITEM_COLUMNS} FROM work_items w WHERE w.id = ?1");
@@ -781,13 +801,17 @@ fn row_to_goal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Goal> {
         status: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
-        item_count: row.get(11)?,
-        done_item_count: row.get(12)?,
+        plan_text: row.get(11)?,
+        plan_weeks: row.get(12)?,
+        start_ms: row.get(13)?,
+        item_count: row.get(14)?,
+        done_item_count: row.get(15)?,
     })
 }
 
 const GOAL_COLUMNS: &str = "g.id, g.title, g.kind, g.metric, g.target, g.current, \
      g.deadline_ms, g.subject_id, g.status, g.created_at, g.updated_at, \
+     g.plan_text, g.plan_weeks, g.start_ms, \
      (SELECT COUNT(*) FROM work_items w WHERE w.goal_id = g.id), \
      (SELECT COUNT(*) FROM work_items w WHERE w.goal_id = g.id AND w.status = 'done')";
 

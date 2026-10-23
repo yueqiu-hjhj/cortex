@@ -2679,6 +2679,11 @@ export interface Goal {
   status: string;
   created_at: number;
   updated_at: number;
+  /** Pasted long-term plan (0085) and how many weeks it covers. */
+  plan_text: string | null;
+  plan_weeks: number | null;
+  /** Week-1 anchor (ms); null = deadline - plan_weeks * 7 days. */
+  start_ms: number | null;
   item_count: number;
   done_item_count: number;
 }
@@ -2794,6 +2799,8 @@ export interface PlanRequest {
   day_end_min?: number | null;
   break_min?: number | null;
   replace?: boolean | null;
+  /** Only plan items tagged with this week (1-based) plus unassigned ones. */
+  only_week?: number | null;
 }
 
 export interface Unscheduled {
@@ -2851,6 +2858,42 @@ export interface GoalPlanOutcome {
 
 export const materializeGoal = (req: GoalPlanRequest) =>
   invoke<GoalPlanOutcome>("materialize_goal", { req });
+
+// ---- long-term plan → week-tagged tasks (0085) ---------------------------
+
+export interface PlanDraft {
+  week: number;
+  title: string;
+  minutes: number;
+  fixed: boolean;
+  reason: string | null;
+}
+
+export interface PlanBuildOutcome {
+  drafts: PlanDraft[];
+  created: number;
+  skipped: number;
+  minutes: number;
+  weeks: number;
+}
+
+/** Save the pasted plan; `startDay` is optional (falls back to deadline). */
+export const goalPlanSet = (
+  goalId: string,
+  planText: string,
+  weeks: number,
+  startDay?: string | null,
+) =>
+  invoke<Goal>("goal_plan_set", {
+    goalId,
+    planText,
+    weeks,
+    startDay: startDay ?? null,
+  });
+
+/** Split the stored plan into week-tagged tasks. apply=false previews. */
+export const goalPlanBuild = (goalId: string, today: string, apply: boolean) =>
+  invoke<PlanBuildOutcome>("goal_plan_build", { goalId, today, apply });
 
 // ---- papers: the research reading list (migration 0038) ------------------
 
@@ -3315,6 +3358,10 @@ export interface Separation {
 export interface EvalReport {
   mode: string;
   k: number;
+  /** Embedding space used for this run. */
+  space: string;
+  /** Canonical subject scope for real-corpus runs, or "synthetic". */
+  scope: string;
   evaluated: number;
   recall_at_k: number;
   mrr: number;
@@ -3335,8 +3382,8 @@ export interface MetricVerdict {
   verdict: "adopt" | "regress" | "neutral";
 }
 
-/** The mechanical verdict of one candidate run against the previous run of
- *  the same kind (KnowNote adoption rule). */
+/** The mechanical verdict of one candidate run against the previous run with
+ *  the same k, embedding space, and subject scope (KnowNote adoption rule). */
 export interface EvalVerdict {
   baseline_at: number;
   mode: string;

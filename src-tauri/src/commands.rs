@@ -7019,6 +7019,58 @@ pub fn materialize_goal(state: State<AppState>, req: crate::planner::GoalPlanReq
     crate::planner::materialize_goal(&c, &req)
 }
 
+/// Save a pasted long-term plan (0085): text, week count, optional week-1 anchor.
+#[tauri::command]
+pub fn goal_plan_set(
+    state: State<AppState>,
+    goal_id: String,
+    plan_text: String,
+    weeks: i64,
+    start_day: Option<String>,
+) -> Result<crate::workitems::Goal> {
+    let c = state.db.lock().unwrap();
+    crate::plan_build::set_plan(&c, &goal_id, &plan_text, weeks, start_day.as_deref())
+}
+
+/// Split the stored plan into week-tagged tasks. `apply=false` previews: the
+/// drafts come back, nothing is written. The model splits content; the
+/// deterministic planner still decides when each block happens.
+#[tauri::command]
+pub async fn goal_plan_build(
+    app: AppHandle,
+    goal_id: String,
+    today: String,
+    apply: bool,
+) -> Result<crate::plan_build::BuildOutcome> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::plan_build::BuildOutcome> {
+        let state = app.state::<AppState>();
+        let (model, goal) = {
+            let c = state.db.lock().unwrap();
+            let keys = read_keys(&c)?;
+            let model = load_model(&c, &keys, "chat")?;
+            let goal = crate::workitems::get_goal(&c, &goal_id)?;
+            (model, goal)
+        };
+        let drafts = crate::plan_build::build(&*model, &goal, &today)?;
+        let (created, skipped, minutes, weeks) = if apply {
+            let c = state.db.lock().unwrap();
+            let out = crate::plan_build::apply(&c, &goal, &drafts)?;
+            (out.created, out.skipped, out.minutes, out.weeks)
+        } else {
+            (0, 0, 0, goal.plan_weeks.unwrap_or(0))
+        };
+        Ok(crate::plan_build::BuildOutcome {
+            drafts,
+            created,
+            skipped,
+            minutes,
+            weeks,
+        })
+    })
+    .await
+    .map_err(|e| Error::Other(format!("计划拆解失败: {e}")))?
+}
+
 // ---- papers: the research reading list (migration 0038) ------------------
 
 #[tauri::command]

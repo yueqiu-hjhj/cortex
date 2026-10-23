@@ -236,6 +236,7 @@ fn normalize_action(input: &JobIn) -> Result<(String, Option<String>)> {
             }
             Ok(("sync".into(), Some(r.to_string())))
         }
+        Some("planner") => Ok(("planner".into(), None)),
         _ => Ok(("prompt".into(), None)),
     }
 }
@@ -374,6 +375,7 @@ fn execute(app: &AppHandle, job: &CronJob) -> Result<CronRun> {
 
     let outcome = match job.action.as_str() {
         "sync" => sync_action(app, job),
+        "planner" => planner_action(app, job),
         _ => generate(app, job),
     };
     let finished = now_ms();
@@ -428,6 +430,100 @@ fn execute(app: &AppHandle, job: &CronJob) -> Result<CronRun> {
 }
 
 /// The actual work: prompt → chat-slot model → text (+ optional source row).
+/// Local `YYYY-MM-DD` for the job's timezone — the planner speaks day labels.
+fn local_day_label(ms: i64, tz_offset_minutes: i64) -> String {
+    let local = ms + tz_offset_minutes * 60_000;
+    let day = local.div_euclid(86_400_000);
+    let (y, m, d) = civil_from_days(day);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// "planner" action: for every active goal with a pasted long-term plan, make
+/// sure the current week has tasks, then plan the current calendar week.
+///
+/// Locks are held only for DB reads/writes; the model call runs unlocked so a
+/// slow provider can never freeze the UI.
+fn planner_action(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>)> {
+    let state = app.state::<AppState>();
+    let (model, today, pending) = {
+        let c = state.db.lock().unwrap();
+        let keys = crate::commands::read_keys(&c)?;
+        let model = crate::commands::load_model(&c, &keys, "chat")?;
+        let today = local_day_label(now_ms(), job.tz_offset_minutes);
+        let today_idx = crate::workitems::parse_day(&today)
+            .ok_or_else(|| Error::Other(format!("bad day '{today}'")))?;
+        let mut pending = Vec::new();
+        for g in crate::workitems::list_goals(&c)? {
+            if g.status != "active" || g.plan_text.is_none() || g.plan_weeks.is_none() {
+                continue;
+            }
+            let Some(week) = crate::plan_build::current_week(&g, today_idx) else {
+                continue;
+            };
+            let have: i64 = c.query_row(
+                "SELECT COUNT(*) FROM work_items WHERE goal_id=?1 AND week_index=?2 \
+                 AND status IN ('open','doing','blocked')",
+                rusqlite::params![g.id, week],
+                |r| r.get(0),
+            )?;
+            if have == 0 {
+                pending.push((g, week));
+            }
+        }
+        (model, today, pending)
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    for (goal, week) in pending {
+        match crate::plan_build::build(&*model, &goal, &today) {
+            Ok(drafts) => {
+                let week_drafts: Vec<crate::plan_build::Draft> =
+                    drafts.into_iter().filter(|d| d.week == week).collect();
+                if week_drafts.is_empty() {
+                    lines.push(format!("「{}」第 {week} 周没有可生成的任务", goal.title));
+                    continue;
+                }
+                let c = state.db.lock().unwrap();
+                match crate::plan_build::apply(&c, &goal, &week_drafts) {
+                    Ok(out) => lines.push(format!(
+                        "「{}」第 {week} 周生成 {} 项（{} 分钟）",
+                        goal.title, out.created, out.minutes
+                    )),
+                    Err(e) => lines.push(format!("「{}」写入失败：{e}", goal.title)),
+                }
+            }
+            Err(e) => lines.push(format!("「{}」生成失败：{e}", goal.title)),
+        }
+    }
+
+    let today_idx = crate::workitems::parse_day(&today)
+        .ok_or_else(|| Error::Other(format!("bad day '{today}'")))?;
+    // Monday of the current week (day 0 = Thursday).
+    let monday = crate::workitems::format_day(today_idx - (today_idx + 3).rem_euclid(7));
+    let plan = {
+        let c = state.db.lock().unwrap();
+        crate::planner::plan_week(
+            &c,
+            &crate::planner::PlanRequest {
+                start_day: monday,
+                days: Some(7),
+                daily_minutes: None,
+                day_start_min: None,
+                day_end_min: None,
+                break_min: None,
+                replace: Some(true),
+                only_week: None,
+            },
+        )?
+    };
+    lines.push(format!(
+        "本周已排 {} 块 / {} 分钟",
+        plan.blocks.len(),
+        plan.minutes_planned
+    ));
+    Ok((lines.join("\n"), None))
+}
+
 fn generate(app: &AppHandle, job: &CronJob) -> Result<(String, Option<String>)> {
     let state = app.state::<AppState>();
     // Gather what the LLM needs (model, optional subject name) under the lock,

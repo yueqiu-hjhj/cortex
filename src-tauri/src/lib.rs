@@ -77,6 +77,7 @@ pub mod moc;
 pub mod cross_book;
 pub mod workitems;
 pub mod planner;
+pub mod plan_build;
 pub mod papers;
 pub mod plugins;
 pub mod providers;
@@ -864,6 +865,8 @@ pub fn run() {
             commands::complete_plan_block,
             commands::plan_board,
             commands::materialize_goal,
+            commands::goal_plan_set,
+            commands::goal_plan_build,
             // papers (Phase 3)
             commands::paper_import,
             commands::paper_list,

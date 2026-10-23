@@ -344,7 +344,7 @@
     kind: "daily",
     intervalMinutes: 60,
     dailyTime: "08:00",
-    action: "prompt", // "prompt" | "sync"
+    action: "prompt", // "prompt" | "sync" | "planner"
     connectorId: "",
     autoFlashcards: false,
   });
@@ -356,8 +356,9 @@
   }
   async function cronCreate() {
     const isSync = cronForm.action === "sync";
+    const isPlanner = cronForm.action === "planner";
     if (!cronForm.name.trim() || cronBusy) return;
-    if (!isSync && !cronForm.prompt.trim()) return;
+    if (!isSync && !isPlanner && !cronForm.prompt.trim()) return;
     if (isSync && (!cronForm.connectorId || !cronForm.subjectId)) return;
     cronBusy = true;
     try {
@@ -371,7 +372,7 @@
         daily_time: cronForm.kind === "daily" ? cronForm.dailyTime : null,
         // JS getTimezoneOffset is minutes WEST of UTC; backend wants east.
         tz_offset_minutes: -new Date().getTimezoneOffset(),
-        action: isSync ? "sync" : "prompt",
+        action: isPlanner ? "planner" : isSync ? "sync" : "prompt",
         action_ref: isSync ? cronForm.connectorId : null,
         auto_flashcards: isSync ? cronForm.autoFlashcards : false,
       });
@@ -3719,7 +3720,7 @@ Notes: {about}</pre>
                     {#if !j.enabled}<span class="slot-hint">已暂停</span>{/if}
                   </div>
                   <div class="mt-task-d mono">上次：{cronFmt(j.last_run_at)} · 下次：{cronFmt(j.next_run_at)}</div>
-                  <div class="mt-task-d">{j.action === "sync" ? `定时拉取连接器 ${j.action_ref} 的新内容到关联科目` : j.prompt}</div>
+                  <div class="mt-task-d">{j.action === "sync" ? `定时拉取连接器 ${j.action_ref} 的新内容到关联科目` : j.action === "planner" ? "按长期计划生成当周任务并自动排期" : j.prompt}</div>
                 </div>
                 <div class="xtra-stack" style="flex-direction:row; gap:6px; align-items:center">
                   <button class="btn btn--sm btn--ghost" onclick={() => cronToggle(j)}>
@@ -3790,11 +3791,12 @@ Notes: {about}</pre>
             <div class="xtra-row">
               <div class="xtra-label">
                 <div class="mt-task-t">任务类型</div>
-                <div class="mt-task-d">提示词 = 跑一次 AI；同步 = 定时拉取研究连接器的新内容</div>
+                <div class="mt-task-d">提示词 = 跑一次 AI；同步 = 定时拉取连接器；排期 = 按长期计划生成当周任务并自动排进日历</div>
               </div>
               <select class="input" value={cronForm.action} onchange={(e) => (cronForm.action = (e.target as HTMLSelectElement).value)}>
                 <option value="prompt">AI 提示词</option>
                 <option value="sync">连接器同步</option>
+                <option value="planner">长期计划排期</option>
               </select>
             </div>
             {#if cronForm.action === "sync"}
@@ -3817,7 +3819,7 @@ Notes: {about}</pre>
                 </div>
                 <input type="checkbox" bind:checked={cronForm.autoFlashcards} />
               </div>
-            {:else}
+            {:else if cronForm.action === "prompt"}
               <div class="xtra-row">
                 <div class="xtra-label">
                   <div class="mt-task-t">提示词</div>

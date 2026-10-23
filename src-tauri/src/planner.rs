@@ -55,6 +55,10 @@ pub struct PlanRequest {
     /// Rewrite planner-owned blocks in the horizon. Manual blocks are always
     /// preserved. Default true.
     pub replace: Option<bool>,
+    /// Only consider items tagged with this week (1-based) plus unassigned
+    /// ones. Without it, planning week 1 can pull week 12's tasks into the
+    /// remaining capacity.
+    pub only_week: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +178,15 @@ pub fn plan_week(conn: &Connection, req: &PlanRequest) -> Result<PlanOutcome> {
         // via its rrule and must not be pinned to a single day here.
         if it.rrule.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false) {
             continue;
+        }
+        // A week-scoped plan must not borrow work from other weeks. Unassigned
+        // items (week_index NULL) still belong to no week and stay eligible.
+        if let Some(w) = req.only_week {
+            if let Some(iw) = it.week_index {
+                if iw != w {
+                    continue;
+                }
+            }
         }
 
         let mut score: i64 = 0;
@@ -849,6 +862,7 @@ mod tests {
             day_end_min: Some(1320),
             break_min: Some(10),
             replace: Some(true),
+            only_week: None,
         }
     }
 
@@ -887,6 +901,25 @@ mod tests {
         assert!(out.minutes_planned <= 240, "planned {} > capacity", out.minutes_planned);
         assert_eq!(out.unscheduled.len(), 2, "leftovers must be reported, not hidden");
         assert!(out.unscheduled.iter().all(|u| u.minutes == 60));
+    }
+
+    #[test]
+    fn a_week_scoped_plan_does_not_borrow_other_weeks() {
+        let st = state();
+        let c = st.db.lock().unwrap();
+        let w1 = create_item(&c, &item("week one", 60, Some(1), "low")).unwrap();
+        let w12 = create_item(&c, &item("week twelve", 60, Some(1), "low")).unwrap();
+        let free = create_item(&c, &item("unassigned", 60, Some(1), "low")).unwrap();
+        workitems::set_week_index(&c, &w1.id, 1).unwrap();
+        workitems::set_week_index(&c, &w12.id, 12).unwrap();
+
+        let mut req = request(1, 180);
+        req.only_week = Some(1);
+        let out = plan_week(&c, &req).unwrap();
+        let planned: Vec<&str> = out.blocks.iter().map(|b| b.item_id.as_str()).collect();
+        assert!(planned.contains(&w1.id.as_str()), "week 1 belongs here");
+        assert!(planned.contains(&free.id.as_str()), "unassigned stays eligible");
+        assert!(!planned.contains(&w12.id.as_str()), "week 12 must not fill week 1");
     }
 
     #[test]
@@ -1128,6 +1161,7 @@ mod calibration_tests {
                 day_end_min: Some(1320),
                 break_min: Some(10),
                 replace: Some(true),
+                only_week: None,
             },
         )
         .unwrap();
@@ -1276,6 +1310,7 @@ mod goal_tests {
                 day_end_min: Some(1320),
                 break_min: Some(10),
                 replace: Some(true),
+                only_week: None,
             },
         )
         .unwrap();

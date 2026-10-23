@@ -19,7 +19,7 @@
   }
 
   const DAYS = 7;
-  let today = localDay();
+  let today = $state(localDay());
   let rows = $state<api.BlockRow[]>([]);
   let outcome = $state<api.PlanOutcome | null>(null);
   let capacity = $state(120);
@@ -30,6 +30,88 @@
   let dragId = $state<string | null>(null);
   let goals = $state<api.Goal[]>([]);
   let goalMsg = $state<string | null>(null);
+
+  // ── long-term plan (0085) ─────────────────────────────────────────────
+  // Picking a goal + week turns the grid into that week of the plan; the
+  // rolling 7-day view stays the default so nothing changes for users who
+  // never paste a plan.
+  let goalPick = $state("");
+  let weekNo = $state(1);
+  let onlyWeek = $state<number | null>(null);
+  let planEdit = $state<string | null>(null);
+  let planForm = $state({ text: "", weeks: 12, start: "" });
+  let planBusy = $state<string | null>(null);
+
+  const pickedGoal = $derived(goals.find((g) => g.id === goalPick) ?? null);
+  const pickedWeeks = $derived(Math.max(1, pickedGoal?.plan_weeks ?? 1));
+
+  function goalAnchorMs(g: api.Goal): number {
+    if (g.start_ms != null) return g.start_ms;
+    if (g.deadline_ms != null && g.plan_weeks) {
+      return g.deadline_ms - g.plan_weeks * 7 * 86_400_000;
+    }
+    return Date.now();
+  }
+
+  function pickWeek() {
+    if (!pickedGoal) {
+      today = localDay();
+      onlyWeek = null;
+    } else {
+      const ms = goalAnchorMs(pickedGoal) + (weekNo - 1) * 7 * 86_400_000;
+      today = localDay(new Date(ms));
+      onlyWeek = weekNo;
+    }
+    void load();
+  }
+
+  function openPlan(g: api.Goal) {
+    planEdit = planEdit === g.id ? null : g.id;
+    planForm = {
+      text: g.plan_text ?? "",
+      weeks: g.plan_weeks ?? 12,
+      start: g.start_ms != null ? localDay(new Date(g.start_ms)).label : "",
+    };
+  }
+
+  async function savePlan(g: api.Goal) {
+    if (!planForm.text.trim()) {
+      error = "先粘贴一份长期计划";
+      return;
+    }
+    planBusy = g.id;
+    try {
+      await api.goalPlanSet(g.id, planForm.text, planForm.weeks, planForm.start || null);
+      planEdit = null;
+      goalMsg = `「${g.title}」计划已保存（${planForm.weeks} 周）`;
+      await loadGoals();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      planBusy = null;
+    }
+  }
+
+  async function buildPlan(g: api.Goal) {
+    if (!g.plan_text) {
+      openPlan(g);
+      error = "先粘贴长期计划，再拆解";
+      return;
+    }
+    if (!confirm(`把「${g.title}」的计划拆成 ${g.plan_weeks ?? 12} 周任务？\n（按周打标签、可重复执行，已存在的同名任务会跳过）`)) return;
+    planBusy = g.id;
+    goalMsg = null;
+    try {
+      const out = await api.goalPlanBuild(g.id, today.label, true);
+      goalMsg = `「${g.title}」生成 ${out.created} 项任务（${minutesLabel(out.minutes)}）` +
+        (out.skipped ? `，跳过 ${out.skipped} 项已有任务` : "");
+      await Promise.all([loadGoals(), load()]);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      planBusy = null;
+    }
+  }
 
   function dayKeys(fromLabel: string, n: number): string[] {
     const [y, m, d] = fromLabel.split("-").map(Number);
@@ -161,6 +243,7 @@
         day_end_min: 22 * 60,
         break_min: 10,
         replace: true,
+        only_week: onlyWeek,
       });
       await load();
     } catch (e) {
@@ -244,6 +327,43 @@
       </p>
     </div>
     <div class="controls">
+      {#if goals.some((g) => g.plan_weeks)}
+        <label class="cap">
+          <span>周次</span>
+          <select
+            class="pick"
+            value={goalPick}
+            onchange={(e) => {
+              goalPick = (e.target as HTMLSelectElement).value;
+              weekNo = 1;
+              pickWeek();
+            }}
+          >
+            <option value="">滚动 7 天</option>
+            {#each goals.filter((g) => g.plan_weeks) as g (g.id)}
+              <option value={g.id}>{g.title}（{g.plan_weeks} 周）</option>
+            {/each}
+          </select>
+        </label>
+        {#if pickedGoal}
+          <label class="cap">
+            <span>第</span>
+            <select
+              class="pick"
+              value={String(weekNo)}
+              onchange={(e) => {
+                weekNo = Number((e.target as HTMLSelectElement).value);
+                pickWeek();
+              }}
+            >
+              {#each Array.from({ length: pickedWeeks }, (_, i) => i + 1) as w (w)}
+                <option value={String(w)}>{w}</option>
+              {/each}
+            </select>
+            <span>周</span>
+          </label>
+        {/if}
+      {/if}
       <label class="cap">
         <span>每天</span>
         <input type="number" min="15" max="960" step="15" bind:value={capacity} />
@@ -312,12 +432,46 @@
               {#if g.deadline_ms}
                 · 截止 {new Date(g.deadline_ms).toLocaleDateString("zh-CN")}
               {/if}
+              {#if g.plan_weeks}
+                · 计划 {g.plan_weeks} 周
+              {/if}
             </span>
           </div>
-          <button class="btn" disabled={busy === g.id} onclick={() => breakdown(g)}>
-            {busy === g.id ? "生成中…" : "生成任务"}
-          </button>
+          <div class="gbtns">
+            <button class="btn" onclick={() => openPlan(g)}>
+              {g.plan_text ? "编辑计划" : "粘贴长期计划"}
+            </button>
+            {#if g.plan_text}
+              <button class="btn primary" disabled={planBusy === g.id} onclick={() => buildPlan(g)}>
+                {planBusy === g.id ? "拆解中…" : "拆成周任务"}
+              </button>
+            {/if}
+            <button class="btn" disabled={busy === g.id} onclick={() => breakdown(g)} title="按 BKT 掌握度生成复习任务（需绑定科目）">
+              {busy === g.id ? "生成中…" : "生成任务"}
+            </button>
+          </div>
         </div>
+        {#if planEdit === g.id}
+          <div class="plan-edit">
+            <textarea
+              rows="8"
+              placeholder="粘贴 4–16 周的长期计划 / 课程大纲 / 题目清单。拆解时每条 30–180 分钟，每周最多 6 条。"
+              bind:value={planForm.text}
+            ></textarea>
+            <div class="plan-row">
+              <label>周数
+                <input type="number" min="1" max="52" bind:value={planForm.weeks} />
+              </label>
+              <label>第 1 周开始
+                <input type="date" bind:value={planForm.start} />
+              </label>
+              <span class="faint">留空 = 按截止日期倒推</span>
+              <button class="btn primary" disabled={planBusy === g.id} onclick={() => savePlan(g)}>
+                {planBusy === g.id ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        {/if}
       {/each}
       {#if goalMsg}<p class="note">{goalMsg}</p>{/if}
     </section>
@@ -716,6 +870,57 @@
   .gmeta {
     font-size: 11px;
     color: var(--fg-faint);
+  }
+  .gbtns {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .plan-edit {
+    margin: 6px 0 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .plan-edit textarea {
+    width: 100%;
+    resize: vertical;
+    font: inherit;
+    font-size: var(--t-sm);
+    line-height: 1.5;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+  }
+  .plan-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+  .plan-row input,
+  .pick {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 6px;
+    font: inherit;
+    font-size: 12px;
+  }
+  .plan-row input[type="number"] {
+    width: 64px;
+  }
+  .pick {
+    max-width: 190px;
   }
   .empty {
     padding: 40px 0;
