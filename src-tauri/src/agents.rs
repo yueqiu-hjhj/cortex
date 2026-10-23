@@ -49,6 +49,10 @@ pub struct AgentRun {
     /// Shared-conversation id (0047). Empty = legacy ungrouped run.
     #[serde(default)]
     pub thread_id: String,
+    /// Parent run when this one was spawned by `delegate` (0089). Empty for
+    /// top-level runs.
+    #[serde(default)]
+    pub parent_run_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +115,7 @@ pub fn get_agent(conn: &Connection, user_id: &str, id: &str) -> Result<Agent> {
     ).map_err(|e| Error::NotFound(format!("agent {id} ({e})")))
 }
 
-pub const TOOL_TIERS: &[&str] = &["read", "write", "network", "files"];
+pub const TOOL_TIERS: &[&str] = &["read", "write", "network", "files", "shell"];
 
 /// Normalize a stored/requested tier; garbage falls back to the safe default.
 pub fn normalize_tier(s: &str) -> &'static str {
@@ -122,6 +126,10 @@ pub fn normalize_tier(s: &str) -> &'static str {
         // can touch anything outside the database, so it must be granted
         // explicitly — a network agent does NOT get it by default.
         "files" => "files",
+        // Shell is above files: running a command can do anything the file
+        // tools can, plus execute arbitrary code. It is opt-in twice (tier +
+        // a command allowlist in settings).
+        "shell" => "shell",
         _ => "read",
     }
 }
@@ -131,6 +139,7 @@ pub fn tier_rank(t: &str) -> u8 {
         "write" => 1,
         "network" => 2,
         "files" => 3,
+        "shell" => 4,
         _ => 0,
     }
 }
@@ -240,7 +249,7 @@ pub fn start_run_in_thread(
     tx.commit()?;
     Ok(AgentRun { id, agent_id: agent.id, user_id: user_id.into(), status: "pending".into(),
         input: input.into(), result: None, error: None, steps: 0, started_at: now, finished_at: None,
-        thread_id: thread })
+        thread_id: thread, parent_run_id: String::new() })
 }
 
 pub fn append_message(conn: &Connection, run_id: &str, role: &str, content: &str, tool_name: Option<&str>) -> Result<()> {
@@ -267,9 +276,27 @@ pub fn finish_run(conn: &Connection, run_id: &str, status: &str, result: Option<
     Ok(())
 }
 
+/// Start a run spawned by another run's `delegate` tool: a real run with its
+/// own thread and transcript, plus the parent link so the UI can nest it.
+pub fn start_child_run(
+    conn: &Connection,
+    user_id: &str,
+    agent_id: &str,
+    input: &str,
+    parent_run_id: &str,
+) -> Result<AgentRun> {
+    let mut run = start_run_in_thread(conn, user_id, agent_id, input, None)?;
+    conn.execute(
+        "UPDATE agent_runs SET parent_run_id=?2 WHERE id=?1",
+        params![run.id, parent_run_id],
+    )?;
+    run.parent_run_id = parent_run_id.to_string();
+    Ok(run)
+}
+
 pub fn list_runs(conn: &Connection, user_id: &str, limit: i64) -> Result<Vec<AgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, finished_at, thread_id
+        "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, finished_at, thread_id, parent_run_id
            FROM agent_runs WHERE user_id=?1 ORDER BY started_at DESC LIMIT ?2"
     )?;
     let rows = stmt.query_map(params![user_id, limit], |r| {
@@ -278,6 +305,7 @@ pub fn list_runs(conn: &Connection, user_id: &str, limit: i64) -> Result<Vec<Age
             status: r.get(3)?, input: r.get(4)?, result: r.get(5)?, error: r.get(6)?,
             steps: r.get(7)?, started_at: r.get(8)?, finished_at: r.get(9)?,
             thread_id: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
+            parent_run_id: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
         })
     })?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
@@ -504,21 +532,23 @@ pub fn seed_bundled_skills(conn: &Connection) -> Result<usize> {
 /// idempotent on every launch. They are gated by the `files` tier, which no
 /// existing agent has, so seeding alone grants nobody access.
 pub fn seed_file_tools(conn: &Connection) -> Result<usize> {
-    const TOOLS: &[(&str, &str, &str)] = &[
-        ("tool-read-file", "read_file", "Read a text file inside the agent workspace, with line numbers."),
-        ("tool-write-file", "write_file", "Create or overwrite a text file inside the workspace."),
-        ("tool-edit-file", "edit_file", "Replace one exact, unique string in a file (preferred for code edits)."),
-        ("tool-list-dir", "list_dir", "List files and folders inside the workspace."),
-        ("tool-search-files", "search_files", "Recursively search file contents inside the workspace."),
+    const TOOLS: &[(&str, &str, &str, &str)] = &[
+        ("tool-read-file", "read_file", "Read a text file inside the agent workspace, with line numbers.", "files"),
+        ("tool-write-file", "write_file", "Create or overwrite a text file inside the workspace.", "files"),
+        ("tool-edit-file", "edit_file", "Replace one exact, unique string in a file (preferred for code edits).", "files"),
+        ("tool-list-dir", "list_dir", "List files and folders inside the workspace.", "files"),
+        ("tool-search-files", "search_files", "Recursively search file contents inside the workspace.", "files"),
+        ("tool-delegate", "delegate", "Delegate a focused task to another agent. The child runs with its own tools and cannot exceed this agent's permission tier.", "read"),
+        ("tool-run-command", "run_command", "Run one allowlisted command inside the workspace (shell tier; no shell metacharacters).", "shell"),
     ];
     let now = crate::db::now_ms();
     let mut seeded = 0;
-    for (id, name, desc) in TOOLS {
+    for (id, name, desc, kind) in TOOLS {
         seeded += conn.execute(
             "INSERT OR IGNORE INTO agent_tools \
              (id, user_id, name, description, kind, enabled, schema_json, built_in, created_at) \
-             VALUES (?1,?2,?3,?4,'files',1,'{}',1,?5)",
-            params![id, DEFAULT_USER, name, desc, now],
+             VALUES (?1,?2,?3,?4,?5,1,'{}',1,?6)",
+            params![id, DEFAULT_USER, name, desc, kind, now],
         )?;
     }
     Ok(seeded)
@@ -561,9 +591,10 @@ pub fn preset_roles() -> Vec<PresetRole> {
                 "read_file",
                 "edit_file",
                 "write_file",
+                "run_command",
                 "search_notes",
             ]),
-            tool_tier: "files".into(),
+            tool_tier: "shell".into(),
         },
         PresetRole {
             id: "review-scholar".into(),

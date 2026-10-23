@@ -19,6 +19,9 @@
   /** File tools are scoped to this directory (setting `agent_workspace`). */
   let workspace = $state("");
   let workspaceSaving = $state(false);
+  /** Command allowlist for run_command (shell tier). Empty = disabled. */
+  let shellAllow = $state("");
+  let shellSaving = $state(false);
 
   $effect(() => { void load(); });
   async function load() {
@@ -29,6 +32,7 @@
       ]);
       if (!runAgentId && agents.length) runAgentId = agents[0].id;
       try { workspace = (await api.getSetting("agent_workspace")) ?? ""; } catch { /* optional */ }
+      try { shellAllow = (await api.getSetting("agent_shell_allowlist")) ?? ""; } catch { /* optional */ }
     } catch (e) { app.pushToast({ kind: "error", title: "智能体加载失败", body: String(e) }); }
     finally { loaded = true; }
     void loadKbs();
@@ -53,6 +57,21 @@
       app.pushToast({ kind: "error", title: "保存失败", body: String(e) });
     } finally {
       workspaceSaving = false;
+    }
+  }
+
+  async function saveShellAllow() {
+    shellSaving = true;
+    try {
+      await api.setSetting("agent_shell_allowlist", shellAllow.trim());
+      app.pushToast({
+        kind: "success",
+        title: shellAllow.trim() ? "命令白名单已保存" : "命令执行已禁用",
+      });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "保存失败", body: String(e) });
+    } finally {
+      shellSaving = false;
     }
   }
 
@@ -387,7 +406,8 @@
             <option value="read">只读（read）</option>
             <option value="write">可写应用（write）</option>
             <option value="network">可外联（network，含 MCP）</option>
-            <option value="files">可读写文件（files，最高）</option>
+            <option value="files">可读写文件（files）</option>
+            <option value="shell">可执行命令（shell，最高）</option>
           </select>
         </label>
         <label class="check"><input type="checkbox" bind:checked={editing.enabled} /> 启用</label>
@@ -435,6 +455,18 @@
         {workspaceSaving ? "保存中…" : "保存"}
       </button>
     </div>
+    <p class="mut" style="margin:0">
+      命令白名单（每行一个前缀）：只有这里列出的程序能被 <span class="mono">run_command</span> 执行，
+      留空 = 禁用命令执行。例如填 <span class="mono">cargo test</span> 只允许以它开头的命令。
+      不支持管道、重定向和多条命令。
+    </p>
+    <div class="row-inline">
+      <textarea class="input" rows="3" bind:value={shellAllow}
+        placeholder={"cargo test\npython\ngit status"}></textarea>
+      <button class="btn" disabled={shellSaving} onclick={saveShellAllow}>
+        {shellSaving ? "保存中…" : "保存白名单"}
+      </button>
+    </div>
   </div>
 
   <div class="card">
@@ -472,7 +504,7 @@
               <li>
                 <button class={"run" + (selectedRun?.id === r.id ? " on" : "")} onclick={() => void showRun(r)}>
                   <span class={"status " + r.status}>{r.status}</span>
-                  <span class="mono run-input">{r.input.slice(0, 40)}{r.input.length > 40 ? "..." : ""}</span>
+                  <span class="mono run-input">{#if r.parent_run_id}<span class="mut">↳ 子任务 </span>{/if}{r.input.slice(0, 40)}{r.input.length > 40 ? "..." : ""}</span>
                   <span class="mut mono">{r.steps} steps</span>
                 </button>
               </li>

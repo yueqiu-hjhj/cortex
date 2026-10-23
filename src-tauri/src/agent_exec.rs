@@ -176,6 +176,18 @@ fn builtin_tools() -> &'static [BuiltinTool] {
                 tier: "files",
                 run: tool_search_files,
             },
+            BuiltinTool {
+                name: "delegate",
+                usage: r#"delegate {"agent_id": "…", "task": "聚焦的子任务"} — 把子任务交给另一个智能体（独立运行记录；目标权限不能高于你；最多 2 层、每次运行最多 3 个）."#,
+                tier: "read",
+                run: tool_delegate_stub,
+            },
+            BuiltinTool {
+                name: "run_command",
+                usage: r#"run_command {"command": "cargo test", "cwd": ".", "timeout_sec": 30} — 在工作目录内运行一条白名单命令（shell 权限）；不支持管道/重定向/多条命令."#,
+                tier: "shell",
+                run: tool_run_command,
+            },
         ]
     })
 }
@@ -778,6 +790,90 @@ fn tool_fetch_page(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
         Err(e) => Ok(format!("打开页面失败：{e}")),
     }
 }
+// ---------------------------------------------------------- delegation (0089)
+//
+// An agent can hand a focused task to another agent. The child is a real run
+// with its own thread and transcript, and the parent link is recorded so the
+// UI can nest it. The rule that makes this safe: a child may never have a
+// HIGHER permission tier than its parent — delegation is not a way to borrow
+// privileges.
+
+const MAX_DELEGATION_DEPTH: u8 = 2;
+const MAX_CHILDREN_PER_RUN: i64 = 3;
+
+/// `delegate` is handled by the loop (it needs the model and the depth); this
+/// stub only exists so the tool appears in the prompt and the registry.
+fn tool_delegate_stub(_ctx: &ToolCtx, _args: &serde_json::Value) -> Result<String> {
+    Ok("delegate 由运行循环处理".into())
+}
+
+fn delegate_task(
+    c: &Connection,
+    user_id: &str,
+    parent: &Agent,
+    parent_run_id: &str,
+    args: &serde_json::Value,
+    model: &dyn Llm,
+    data_dir: Option<&std::path::Path>,
+    depth: u8,
+) -> Result<String> {
+    if depth >= MAX_DELEGATION_DEPTH {
+        return Ok(format!("拒绝委派：已达最大层级（{MAX_DELEGATION_DEPTH} 层）"));
+    }
+    let agent_id = args
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if agent_id.is_empty() || task.is_empty() {
+        return Ok("delegate 需要 agent_id 与 task 两个参数".into());
+    }
+    let child = match crate::agents::get_agent(c, user_id, agent_id) {
+        Ok(a) => a,
+        Err(_) => return Ok(format!("没有 id 为 {agent_id} 的智能体")),
+    };
+    if !child.enabled {
+        return Ok(format!("「{}」已停用，不能委派", child.name));
+    }
+    if child.id == parent.id {
+        return Ok("不能委派给自己".into());
+    }
+    let parent_rank = crate::agents::tier_rank(&parent.tool_tier);
+    let child_rank = crate::agents::tier_rank(&child.tool_tier);
+    if child_rank > parent_rank {
+        return Ok(format!(
+            "权限拒绝：「{}」是 {} 级，高于你的 {} 级（委派不能提权）",
+            child.name,
+            crate::agents::normalize_tier(&child.tool_tier),
+            crate::agents::normalize_tier(&parent.tool_tier)
+        ));
+    }
+    let kids: i64 = c.query_row(
+        "SELECT COUNT(*) FROM agent_runs WHERE parent_run_id=?1",
+        [parent_run_id],
+        |r| r.get(0),
+    )?;
+    if kids >= MAX_CHILDREN_PER_RUN {
+        return Ok(format!(
+            "拒绝委派：本次运行已派出 {kids} 个子任务（上限 {MAX_CHILDREN_PER_RUN}）"
+        ));
+    }
+    // The child uses the parent's model: switching providers mid-run would
+    // need a second key lookup and would make cost attribution confusing.
+    let run = crate::agents::start_child_run(c, user_id, &child.id, task, parent_run_id)?;
+    match execute_run_at(c, user_id, &child, &run.id, model, data_dir, depth + 1) {
+        Ok(done) => Ok(format!(
+            "子智能体「{}」完成（run {}，{} 步）：\n{}",
+            child.name,
+            done.id,
+            done.steps,
+            done.result.unwrap_or_else(|| "(无输出)".into())
+        )),
+        Err(e) => Ok(format!("子智能体「{}」失败：{e}", child.name)),
+    }
+}
+
 // ------------------------------------------------------- files (files tier)
 //
 // The Claude-Code-shaped tools: read, write, exact edit, list, search. Every
@@ -1126,6 +1222,107 @@ fn tool_search_files(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> 
     Ok(out)
 }
 
+/// One allowlisted command, no shell. Splitting the string ourselves (instead
+/// of `sh -c`) is what makes the allowlist meaningful: a prefix like `cargo`
+/// cannot be turned into `cargo ... ; rm -rf ~` because metacharacters are
+/// refused outright. Not a container: it runs in the workspace with the user's
+/// permissions, which is exactly why the tier is `shell` and the allowlist is
+/// empty by default.
+fn tool_run_command(ctx: &ToolCtx, args: &serde_json::Value) -> Result<String> {
+    let raw = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        return Err(Error::Other("缺少 command 参数".into()));
+    }
+    if raw
+        .chars()
+        .any(|c| matches!(c, ';' | '|' | '&' | '>' | '<' | '`' | '$' | '\n' | '\r'))
+    {
+        return Err(Error::Other(
+            "命令里不允许 shell 元字符（; | & > < ` $ 换行）；一次只跑一条命令".into(),
+        ));
+    }
+    let allow = repo::get_setting(ctx.conn, "agent_shell_allowlist")?.unwrap_or_default();
+    let entries: Vec<&str> = allow
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return Err(Error::Other(
+            "还没有配置命令白名单：在「智能体」页填入允许的程序（每行一个，如 cargo / python）".into(),
+        ));
+    }
+    let permitted = entries
+        .iter()
+        .any(|e| raw == *e || raw.starts_with(&format!("{e} ")));
+    if !permitted {
+        return Err(Error::Other(format!(
+            "命令不在白名单内。允许：{}",
+            entries.join(" / ")
+        )));
+    }
+    let cwd = resolve_inside(
+        ctx,
+        args.get("cwd").and_then(|v| v.as_str()).unwrap_or("."),
+        false,
+    )?;
+    if !cwd.is_dir() {
+        return Err(Error::Other(format!("cwd 不是目录：{}", cwd.display())));
+    }
+    let timeout = args
+        .get("timeout_sec")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(30)
+        .clamp(1, 120);
+    let mut parts = raw.split_whitespace();
+    let prog = parts.next().unwrap_or("");
+    let argv: Vec<&str> = parts.collect();
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| Error::Other(format!("启动失败（{prog}）：{e}")))?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(e) => return Err(Error::Other(format!("等待进程失败：{e}"))),
+        }
+        if started.elapsed().as_secs() >= timeout as u64 {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(format!("命令超时（{timeout}s）已终止：{raw}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Error::Other(format!("读取输出失败：{e}")))?;
+    let mut text = format!("$ {raw}\n");
+    text.push_str(&String::from_utf8_lossy(&out.stdout));
+    if !out.stderr.is_empty() {
+        text.push_str("\n[stderr]\n");
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+    }
+    text.push_str(&format!(
+        "\n[exit {}]",
+        out.status.code().unwrap_or(-1)
+    ));
+    if text.len() > 64 * 1024 {
+        text.truncate(64 * 1024);
+        text.push_str("\n…（输出已截断）");
+    }
+    Ok(text)
+}
+
 // ------------------------------------------------------------- the loop
 
 /// Load the tool implementations the agent may call: its whitelist ∩ the
@@ -1296,6 +1493,20 @@ pub fn execute_run(
     model: &dyn Llm,
     data_dir: Option<&std::path::Path>,
 ) -> Result<crate::agents::AgentRun> {
+    execute_run_at(c, user_id, agent, run_id, model, data_dir, 0)
+}
+
+/// `depth` counts delegation hops. Top-level runs start at 0; a child spawned
+/// by `delegate` runs at depth+1 and may not go past MAX_DELEGATION_DEPTH.
+fn execute_run_at(
+    c: &Connection,
+    user_id: &str,
+    agent: &Agent,
+    run_id: &str,
+    model: &dyn Llm,
+    data_dir: Option<&std::path::Path>,
+    depth: u8,
+) -> Result<crate::agents::AgentRun> {
     let tools = resolve_tools(c, user_id, agent)?;
     let mcp_tools = resolve_mcp_tools(c, user_id, agent)?;
     let skills = skill_bodies(c, user_id, agent)?;
@@ -1349,7 +1560,12 @@ pub fn execute_run(
                 append_message(c, run_id, "tool", &denial, Some(&name))?;
                 continue;
             }
-            let output = if let Some(t) = impl_tool {
+            let output = if name == "delegate" {
+                match delegate_task(c, user_id, agent, run_id, &args, model, data_dir, depth) {
+                    Ok(o) => o,
+                    Err(e) => format!("委派失败：{e}"),
+                }
+            } else if let Some(t) = impl_tool {
                 match (t.run)(&ctx, &args) {
                     Ok(o) => o,
                     Err(e) => format!("工具执行失败：{e}"),
@@ -1389,7 +1605,10 @@ pub fn execute_run(
                         .join("、")
                 )
             };
-            let cap = if matches!(name.as_str(), "read_file" | "search_files" | "list_dir") {
+            let cap = if matches!(
+                name.as_str(),
+                "read_file" | "search_files" | "list_dir" | "run_command" | "delegate"
+            ) {
                 FILE_RESULT_CHARS
             } else {
                 TOOL_RESULT_CHARS
@@ -2313,6 +2532,150 @@ mod tests {
     fn files_is_the_top_tier_and_network_does_not_grant_it() {
         assert_eq!(crate::agents::normalize_tier("files"), "files");
         assert!(crate::agents::tier_rank("files") > crate::agents::tier_rank("network"));
+    }
+
+    // ---- delegation (0089) + run_command (shell tier) -----------------------
+
+    fn agent_tier(c: &Connection, name: &str, tools: &[&str], tier: &str) -> Agent {
+        let tool_names: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
+        upsert_agent(
+            c,
+            crate::agents::DEFAULT_USER,
+            None,
+            name,
+            None,
+            "你是测试智能体。",
+            &[],
+            &tool_names,
+            None,
+            0.2,
+            3,
+            true,
+            tier,
+        )
+        .unwrap()
+    }
+
+    fn no_model() -> Scripted {
+        Scripted {
+            replies: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn delegate_refuses_privilege_escalation() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let parent = agent_tier(&c, "只读", &["delegate"], "read");
+        let child = agent_tier(&c, "文件手", &["read_file"], "files");
+        let out = delegate_task(
+            &c,
+            crate::agents::DEFAULT_USER,
+            &parent,
+            "run-parent",
+            &serde_json::json!({"agent_id": child.id, "task": "读个文件"}),
+            &no_model(),
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(out.contains("权限拒绝"), "{out}");
+        assert!(out.contains("委派不能提权"), "{out}");
+    }
+
+    #[test]
+    fn delegate_guards_self_depth_and_child_cap() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let parent = agent_tier(&c, "父", &["delegate"], "read");
+        let child = agent_tier(&c, "子", &[], "read");
+        let args = serde_json::json!({"agent_id": child.id, "task": "子任务"});
+
+        let self_call = delegate_task(
+            &c, crate::agents::DEFAULT_USER, &parent, "r", 
+            &serde_json::json!({"agent_id": parent.id, "task": "自己"}),
+            &no_model(), None, 0,
+        ).unwrap();
+        assert!(self_call.contains("不能委派给自己"), "{self_call}");
+
+        let too_deep = delegate_task(
+            &c, crate::agents::DEFAULT_USER, &parent, "r", &args, &no_model(), None, 2,
+        ).unwrap();
+        assert!(too_deep.contains("最大层级"), "{too_deep}");
+
+        for _ in 0..3 {
+            crate::agents::start_child_run(&c, crate::agents::DEFAULT_USER, &child.id, "x", "r").unwrap();
+        }
+        let capped = delegate_task(
+            &c, crate::agents::DEFAULT_USER, &parent, "r", &args, &no_model(), None, 0,
+        ).unwrap();
+        assert!(capped.contains("上限"), "{capped}");
+    }
+
+    #[test]
+    fn delegate_runs_a_child_and_links_it() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let parent = agent_tier(&c, "父", &["delegate"], "read");
+        let child = agent_tier(&c, "子", &[], "read");
+        let scripted = Scripted {
+            replies: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                "ANSWER: 子任务完成".to_string(),
+            ])),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        };
+        let out = delegate_task(
+            &c,
+            crate::agents::DEFAULT_USER,
+            &parent,
+            "run-parent",
+            &serde_json::json!({"agent_id": child.id, "task": "做点小事"}),
+            &scripted,
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(out.contains("子智能体"), "{out}");
+        assert!(out.contains("子任务完成"), "{out}");
+        let linked: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM agent_runs WHERE parent_run_id='run-parent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, 1, "the child run must point at its parent");
+    }
+
+    #[test]
+    fn run_command_needs_allowlist_and_blocks_metachars() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let dir = workspace(&c);
+        let ctx = tctx(&c);
+
+        let err = tool_run_command(&ctx, &serde_json::json!({"command": "rustc --version"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("白名单"), "{err}");
+
+        repo::set_setting(&c, "agent_shell_allowlist", "rustc").unwrap();
+        let err = tool_run_command(&ctx, &serde_json::json!({"command": "rustc --version; whoami"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("元字符"), "{err}");
+
+        let err = tool_run_command(&ctx, &serde_json::json!({"command": "python -c 1"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("不在白名单"), "{err}");
+
+        let ok = tool_run_command(&ctx, &serde_json::json!({"command": "rustc --version"})).unwrap();
+        assert!(ok.contains("rustc"), "{ok}");
+        assert!(ok.contains("[exit 0]"), "{ok}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 }

@@ -566,6 +566,8 @@ export interface AgentRun {
   steps: number; started_at: number; finished_at: number | null;
   /** Shared-conversation id (0047). "" = legacy ungrouped run. */
   thread_id?: string;
+  /** Parent run when spawned by delegate (0089). "" for top-level runs. */
+  parent_run_id?: string;
 }
 export interface AgentMessage {
   id: string; run_id: string; role: string; content: string;
