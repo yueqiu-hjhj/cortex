@@ -10,7 +10,7 @@
 //! skills (e.g. "answer with citations only") are seeded in 0034.
 
 use crate::error::{Error, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_USER: &str = "u-default";
@@ -80,6 +80,20 @@ pub struct Skill {
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    /// local | bundled | imported (0090) — where this skill came from.
+    #[serde(default = "default_skill_source")]
+    pub source: String,
+    /// Revision carried by an import; 1 for a fresh local skill.
+    #[serde(default = "default_skill_version")]
+    pub version: i64,
+}
+
+fn default_skill_source() -> String {
+    "local".to_string()
+}
+
+fn default_skill_version() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,12 +415,13 @@ pub fn history_for_run(conn: &Connection, user_id: &str, run_id: &str, limit: i6
 
 pub fn list_skills(conn: &Connection, user_id: &str) -> Result<Vec<Skill>> {
     let mut stmt = conn.prepare(
-        "SELECT id, user_id, name, description, body, enabled, created_at, updated_at
+        "SELECT id, user_id, name, description, body, enabled, created_at, updated_at, source, version
            FROM agent_skills WHERE user_id=?1 ORDER BY name"
     )?;
     let rows = stmt.query_map([user_id], |r| Ok(Skill {
         id: r.get(0)?, user_id: r.get(1)?, name: r.get(2)?, description: r.get(3)?,
         body: r.get(4)?, enabled: r.get(5)?, created_at: r.get(6)?, updated_at: r.get(7)?,
+        source: r.get(8)?, version: r.get(9)?,
     }))?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
@@ -437,18 +452,19 @@ pub fn upsert_skill(
         None => {
             let id = crate::db::new_id();
             conn.execute(
-                "INSERT INTO agent_skills (id, user_id, name, description, body, enabled, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+                "INSERT INTO agent_skills (id, user_id, name, description, body, enabled, created_at, updated_at, source, version)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?7,'local',1)",
                 params![id, user_id, name, description, body, enabled as i64, now],
             )?;
             id
         }
     };
     conn.query_row(
-        "SELECT id, user_id, name, description, body, enabled, created_at, updated_at
+        "SELECT id, user_id, name, description, body, enabled, created_at, updated_at, source, version
            FROM agent_skills WHERE id=?1", [id], |r| Ok(Skill {
             id: r.get(0)?, user_id: r.get(1)?, name: r.get(2)?, description: r.get(3)?,
             body: r.get(4)?, enabled: r.get(5)?, created_at: r.get(6)?, updated_at: r.get(7)?,
+            source: r.get(8)?, version: r.get(9)?,
         }),
     ).map_err(Into::into)
 }
@@ -517,8 +533,8 @@ pub fn seed_bundled_skills(conn: &Connection) -> Result<usize> {
         if exists == 0 {
             let now = crate::db::now_ms();
             conn.execute(
-                "INSERT INTO agent_skills (id, user_id, name, description, body, enabled, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,0,?6,?6)",
+                "INSERT INTO agent_skills (id, user_id, name, description, body, enabled, created_at, updated_at, source, version)
+                 VALUES (?1,?2,?3,?4,?5,0,?6,?6,'bundled',1)",
                 params![crate::db::new_id(), DEFAULT_USER, name, desc, body, now],
             )?;
             seeded += 1;
@@ -552,6 +568,178 @@ pub fn seed_file_tools(conn: &Connection) -> Result<usize> {
         )?;
     }
     Ok(seeded)
+}
+
+// ---- 技能可移植：导出/导入（0090） -----------------------------------------
+//
+// A skill is the reusable part of an agent, so it should be a file you can
+// carry between machines — not a row trapped in one database. The file carries
+// a schema tag, a version and where it came from; import validates all three
+// before writing anything.
+
+pub const SKILL_SCHEMA: &str = "cortex-skill/v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFile {
+    pub schema: String,
+    #[serde(default = "default_skill_version")]
+    pub version: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub body: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub exported_at: Option<i64>,
+}
+
+fn skill_by_id(conn: &Connection, user_id: &str, id: &str) -> Result<Skill> {
+    conn.query_row(
+        "SELECT id, user_id, name, description, body, enabled, created_at, updated_at, source, version
+           FROM agent_skills WHERE id=?1 AND user_id=?2",
+        params![id, user_id],
+        |r| Ok(Skill {
+            id: r.get(0)?, user_id: r.get(1)?, name: r.get(2)?, description: r.get(3)?,
+            body: r.get(4)?, enabled: r.get(5)?, created_at: r.get(6)?, updated_at: r.get(7)?,
+            source: r.get(8)?, version: r.get(9)?,
+        }),
+    )
+    .map_err(|_| Error::NotFound(format!("skill {id}")))
+}
+
+pub fn skill_to_json(skill: &Skill) -> Result<String> {
+    let file = SkillFile {
+        schema: SKILL_SCHEMA.to_string(),
+        version: skill.version.max(1),
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        body: skill.body.clone(),
+        source: skill.source.clone(),
+        exported_at: Some(crate::db::now_ms()),
+    };
+    serde_json::to_string_pretty(&file)
+        .map_err(|e| Error::Other(format!("技能序列化失败：{e}")))
+}
+
+/// Validate a file before it can touch the database. Pure, so the tests drive
+/// it directly: wrong schema, empty name/body, absurd length.
+pub fn parse_skill_file(raw: &str) -> Result<SkillFile> {
+    let f: SkillFile = serde_json::from_str(raw)
+        .map_err(|e| Error::Other(format!("技能文件不是合法 JSON：{e}")))?;
+    if f.schema != SKILL_SCHEMA {
+        return Err(Error::Other(format!(
+            "技能文件格式不匹配（期望 schema={SKILL_SCHEMA}，实际 {}）",
+            if f.schema.is_empty() { "(空)" } else { &f.schema }
+        )));
+    }
+    let name = f.name.trim().to_string();
+    let body = f.body.trim().to_string();
+    if name.is_empty() {
+        return Err(Error::Other("技能文件缺少 name".into()));
+    }
+    if body.is_empty() {
+        return Err(Error::Other("技能文件缺少 body（技能正文）".into()));
+    }
+    if name.chars().count() > 80 {
+        return Err(Error::Other("技能名太长（上限 80 字）".into()));
+    }
+    if body.chars().count() > 40_000 {
+        return Err(Error::Other("技能正文太长（上限 40000 字）".into()));
+    }
+    Ok(SkillFile {
+        schema: f.schema,
+        version: f.version.max(1),
+        name,
+        description: f.description.trim().to_string(),
+        body,
+        source: f.source,
+        exported_at: f.exported_at,
+    })
+}
+
+pub fn export_skill(
+    conn: &Connection,
+    user_id: &str,
+    skill_id: &str,
+    dest: &std::path::Path,
+) -> Result<String> {
+    let skill = skill_by_id(conn, user_id, skill_id)?;
+    let json = skill_to_json(&skill)?;
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(dest, json).map_err(|e| Error::Other(format!("写入失败：{e}")))?;
+    Ok(dest.display().to_string())
+}
+
+/// Import a skill file. Same name is a conflict unless `overwrite` is set —
+/// silently replacing a skill the user tuned is exactly the kind of surprise
+/// this feature must not have.
+pub fn import_skill(
+    conn: &Connection,
+    user_id: &str,
+    path: &std::path::Path,
+    overwrite: bool,
+) -> Result<Skill> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| Error::Other(format!("读取技能文件失败：{e}")))?;
+    let f = parse_skill_file(&raw)?;
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM agent_skills WHERE user_id=?1 AND name=?2",
+            params![user_id, f.name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let now = crate::db::now_ms();
+    let id = match existing {
+        Some(id) => {
+            if !overwrite {
+                return Err(Error::Other(format!(
+                    "同名技能「{}」已存在；覆盖导入需要显式确认",
+                    f.name
+                )));
+            }
+            conn.execute(
+                "UPDATE agent_skills SET description=?2, body=?3, source='imported', \
+                 version=?4, enabled=1, updated_at=?5 WHERE id=?1",
+                params![id, f.description, f.body, f.version, now],
+            )?;
+            id
+        }
+        None => {
+            let id = crate::db::new_id();
+            conn.execute(
+                "INSERT INTO agent_skills \
+                 (id, user_id, name, description, body, enabled, created_at, updated_at, source, version) \
+                 VALUES (?1,?2,?3,?4,?5,1,?6,?6,'imported',?7)",
+                params![id, user_id, f.name, f.description, f.body, now, f.version],
+            )?;
+            id
+        }
+    };
+    skill_by_id(conn, user_id, &id)
+}
+
+#[tauri::command]
+pub fn skill_export(
+    state: tauri::State<'_, crate::AppState>,
+    skill_id: String,
+    dest: String,
+) -> Result<String> {
+    let c = state.db.lock().unwrap();
+    export_skill(&c, DEFAULT_USER, &skill_id, std::path::Path::new(&dest))
+}
+
+#[tauri::command]
+pub fn skill_import(
+    state: tauri::State<'_, crate::AppState>,
+    path: String,
+    overwrite: bool,
+) -> Result<Skill> {
+    let c = state.db.lock().unwrap();
+    import_skill(&c, DEFAULT_USER, std::path::Path::new(&path), overwrite)
 }
 
 // ---- 预置角色库：角色 = 技能 + 提示词 + 工具集 + 权限等级 ----------------------
@@ -855,4 +1043,77 @@ mod tests {
         assert_eq!(mine.body, "我的定制版本");
         assert!(mine.enabled);
     }
+    // ---- skill portability (0090) ------------------------------------------
+
+    fn skill_temp_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("cortex-skill-{}", crate::db::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn skill_file_rejects_wrong_schema_and_missing_body() {
+        let bad = r#"{"schema":"other/v1","name":"x","body":"y"}"#;
+        assert!(parse_skill_file(bad)
+            .unwrap_err()
+            .to_string()
+            .contains("格式不匹配"));
+        let no_body = r#"{"schema":"cortex-skill/v1","name":"x","body":"  "}"#;
+        assert!(parse_skill_file(no_body)
+            .unwrap_err()
+            .to_string()
+            .contains("body"));
+        let ok = r#"{"schema":"cortex-skill/v1","version":2,"name":" 模板 ","body":" 步骤 "}"#;
+        let f = parse_skill_file(ok).unwrap();
+        assert_eq!(f.name, "模板");
+        assert_eq!(f.body, "步骤");
+        assert_eq!(f.version, 2);
+    }
+
+    #[test]
+    fn skill_export_then_import_roundtrips_version_and_source() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        let sk = upsert_skill(&c, DEFAULT_USER, None, "推导模板", "描述", "第一步…", true).unwrap();
+        assert_eq!(sk.source, "local");
+        assert_eq!(sk.version, 1);
+
+        let dir = skill_temp_dir();
+        let dest = dir.join("s.json");
+        export_skill(&c, DEFAULT_USER, &sk.id, &dest).unwrap();
+        let raw = std::fs::read_to_string(&dest).unwrap();
+        assert!(raw.contains("cortex-skill/v1"), "{raw}");
+
+        let bumped = raw.replace("\"version\": 1", "\"version\": 3");
+        assert!(bumped.contains("\"version\": 3"), "{bumped}");
+        std::fs::write(&dest, bumped).unwrap();
+        let imported = import_skill(&c, DEFAULT_USER, &dest, true).unwrap();
+        assert_eq!(imported.source, "imported");
+        assert_eq!(imported.version, 3);
+        assert_eq!(imported.body, "第一步…");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skill_import_refuses_same_name_without_overwrite() {
+        let st = crate::db::AppState::in_memory().unwrap();
+        let c = st.db.lock().unwrap();
+        upsert_skill(&c, DEFAULT_USER, None, "同名", "", "旧正文", true).unwrap();
+        let dir = skill_temp_dir();
+        let dest = dir.join("s.json");
+        std::fs::write(
+            &dest,
+            r#"{"schema":"cortex-skill/v1","name":"同名","body":"新正文"}"#,
+        )
+        .unwrap();
+        let err = import_skill(&c, DEFAULT_USER, &dest, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("已存在"), "{err}");
+        let out = import_skill(&c, DEFAULT_USER, &dest, true).unwrap();
+        assert_eq!(out.body, "新正文");
+        assert_eq!(out.source, "imported");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

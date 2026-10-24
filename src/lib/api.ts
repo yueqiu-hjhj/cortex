@@ -555,6 +555,10 @@ export interface Agent {
 export interface Skill {
   id: string; user_id: string; name: string; description: string;
   body: string; enabled: boolean; created_at: number; updated_at: number;
+  /** local | bundled | imported (0090). */
+  source?: string;
+  /** Revision carried by an import; 1 for a fresh local skill. */
+  version?: number;
 }
 export interface Tool {
   id: string; user_id: string; name: string; description: string;
@@ -600,6 +604,12 @@ export const agentsExecuteRun = (agentId: string, input: string, runId?: string)
 export const agentsListRuns = (limit: number) => invoke<AgentRun[]>("agents_list_runs", { limit });
 export const agentsListMessages = (runId: string, limit: number) => invoke<AgentMessage[]>("agents_list_messages", { runId, limit });
 export const agentsListSkills = () => invoke<Skill[]>("agents_list_skills", {});
+/** Write one skill to `dest` as a cortex-skill/v1 file. Returns the path. */
+export const skillExport = (skillId: string, dest: string) =>
+  invoke<string>("skill_export", { skillId, dest });
+/** Import a skill file. Same name needs `overwrite` — never silent. */
+export const skillImport = (path: string, overwrite = false) =>
+  invoke<Skill>("skill_import", { path, overwrite });
 export const agentsListTools = () => invoke<Tool[]>("agents_list_tools", {});
 export const generateMaterial = (
   subjectId: string,

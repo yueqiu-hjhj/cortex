@@ -22,6 +22,7 @@
   /** Command allowlist for run_command (shell tier). Empty = disabled. */
   let shellAllow = $state("");
   let shellSaving = $state(false);
+  let skillBusy = $state(false);
 
   $effect(() => { void load(); });
   async function load() {
@@ -72,6 +73,58 @@
       app.pushToast({ kind: "error", title: "保存失败", body: String(e) });
     } finally {
       shellSaving = false;
+    }
+  }
+
+  async function exportSkill(s: api.Skill) {
+    if (skillBusy) return;
+    skillBusy = true;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const dest = await save({
+        defaultPath: `${s.name}.cortex-skill.json`,
+        filters: [{ name: "Cortex Skill", extensions: ["json"] }],
+      });
+      if (!dest) return;
+      await api.skillExport(s.id, dest);
+      app.pushToast({ kind: "success", title: "已导出技能", body: dest });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "导出失败", body: String(e) });
+    } finally {
+      skillBusy = false;
+    }
+  }
+
+  async function importSkill() {
+    if (skillBusy) return;
+    skillBusy = true;
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const picked = await pick({
+        multiple: false,
+        filters: [{ name: "Cortex Skill", extensions: ["json"] }],
+      });
+      if (!picked || Array.isArray(picked)) return;
+      try {
+        await api.skillImport(picked, false);
+      } catch (e) {
+        const msg = String(e);
+        if (!msg.includes("已存在")) throw e;
+        const ok = await app.confirm({
+          title: "同名技能已存在",
+          body: `${msg}\n\n覆盖导入会替换它的正文与版本。`,
+          okLabel: "覆盖导入",
+          danger: true,
+        });
+        if (!ok) return;
+        await api.skillImport(picked, true);
+      }
+      skills = await api.agentsListSkills();
+      app.pushToast({ kind: "success", title: "技能已导入" });
+    } catch (e) {
+      app.pushToast({ kind: "error", title: "导入失败", body: String(e) });
+    } finally {
+      skillBusy = false;
     }
   }
 
@@ -628,6 +681,37 @@
   </div>
 
   <div class="card">
+    <h3>技能</h3>
+    <p class="mut" style="margin:0">
+      技能 = 可复用的工作方式（提示词 + 步骤）。导出文件带 schema、版本与来源，可以在另一台机器导入；
+      同名导入必须显式确认覆盖。
+    </p>
+    {#if !skills.length}
+      <div class="mut">还没有技能。预置角色会带来内置模板。</div>
+    {:else}
+      <ul class="skills">
+        {#each skills as s (s.id)}
+          <li class="sk-row">
+            <div class="sk-info">
+              <span class="sk-name">{s.name}</span>
+              <span class="mut mono">
+                {s.source ?? "local"} · v{s.version ?? 1}{s.enabled ? "" : " · 未启用"}
+              </span>
+              <span class="mut">{s.description}</span>
+            </div>
+            <button class="btn" disabled={skillBusy} onclick={() => void exportSkill(s)}>导出</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <div class="row-inline">
+      <button class="btn" disabled={skillBusy} onclick={() => void importSkill()}>
+        {skillBusy ? "处理中…" : "导入技能文件…"}
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
     <h3>预置角色</h3>
     <p class="mut" style="margin:0">角色 = 技能 + 提示词 + 工具集 + 权限等级。一键创建后就是普通智能体，随便改。</p>
     <div class="preset-grid">
@@ -850,4 +934,28 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
   }
   .preset-desc { margin-top: 4px; font-size: 11px; line-height: 1.5; }
+  .skills {
+    list-style: none;
+    margin: 8px 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .sk-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+  }
+  .sk-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .sk-name {
+    font-size: var(--t-sm);
+  }
 </style>

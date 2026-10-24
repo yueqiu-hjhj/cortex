@@ -776,6 +776,8 @@ pub fn run() {
             commands::question_index,
             agents::roles_list,
             agents::roles_instantiate,
+            agents::skill_export,
+            agents::skill_import,
             // agent write-back queue (L2)
             proposals::list_proposals,
             proposals::list_run_proposals,
