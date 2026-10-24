@@ -1,7 +1,7 @@
 [package]
 name = "cortex"
 default-run = "cortex"
-version = "1.0.35"
+version = "1.0.36"
 description = "Cortex — desktop study OS"
 authors = ["Aidan McConnon"]
 license = "Apache-2.0"
