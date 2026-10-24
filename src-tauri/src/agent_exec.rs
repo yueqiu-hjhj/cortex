@@ -1643,12 +1643,10 @@ fn execute_run_at(
             finish_run(c, run_id, "error", None, Some(&msg))?;
         }
     }
-    crate::agents::list_runs(c, user_id, 1)
-        .ok()
-        .and_then(|v| v.into_iter().find(|r| r.id == run_id))
-        .ok_or_else(|| crate::error::Error::NotFound(format!("run {run_id}")))
-    // list_runs orders by started_at DESC — the just-finished run is the
-    // newest for this user, so the find() above is exact, not heuristic.
+    // Look the run up by id. The old "newest run for this user" heuristic
+    // returned the delegated CHILD (it starts later), so a parent that
+    // delegated could not find itself and surfaced a bogus NotFound.
+    crate::agents::get_run(c, user_id, run_id)
 }
 
 #[cfg(test)]

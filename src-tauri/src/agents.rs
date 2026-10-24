@@ -308,6 +308,35 @@ pub fn start_child_run(
     Ok(run)
 }
 
+/// One run by id, scoped to its owner. Used by the executor to return its own
+/// finished run — the old "newest run for this user" heuristic breaks as soon
+/// as a delegated child is newer than its parent.
+pub fn get_run(conn: &Connection, user_id: &str, id: &str) -> Result<AgentRun> {
+    conn.query_row(
+        "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, \
+                finished_at, thread_id, parent_run_id \
+           FROM agent_runs WHERE id=?1 AND user_id=?2",
+        params![id, user_id],
+        |r| {
+            Ok(AgentRun {
+                id: r.get(0)?,
+                agent_id: r.get(1)?,
+                user_id: r.get(2)?,
+                status: r.get(3)?,
+                input: r.get(4)?,
+                result: r.get(5)?,
+                error: r.get(6)?,
+                steps: r.get(7)?,
+                started_at: r.get(8)?,
+                finished_at: r.get(9)?,
+                thread_id: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                parent_run_id: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
+            })
+        },
+    )
+    .map_err(|_| Error::NotFound(format!("run {id}")))
+}
+
 pub fn list_runs(conn: &Connection, user_id: &str, limit: i64) -> Result<Vec<AgentRun>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, user_id, status, input, result, error, steps, started_at, finished_at, thread_id, parent_run_id

@@ -43,6 +43,10 @@ pub mod vocab;
 pub mod obsidian;
 pub mod agents;
 mod agent_exec;
+
+/// Cross-module end-to-end flows (test-only).
+#[cfg(test)]
+mod flow_tests;
 pub mod citecheck;
 mod deep_research;
 mod video_overview;
